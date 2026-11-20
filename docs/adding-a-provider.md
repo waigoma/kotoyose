@@ -37,8 +37,8 @@ Kotoyose v1.0 では、provider を組み込みとして追加する。
 3. **フックを名前で登録する。** `print_cli_hooks.py` の組み込み登録で `register_parser`、`register_stderr_classifier`、`register_models_parser`、必要に応じて `register_quota_parser` を呼ぶ。
    profile の `parser`、`classify_stderr`、`parse_models` と quota 用のパーサー名を登録名にそろえる。
    `models_command` と `models_source` も宣言すると、接続を指定したモデル探索がこのフックを使う。 [フック登録](../src/kotoyose/print_cli_hooks.py#L98) · [モデル探索](../src/kotoyose/model_discovery.py#L1019)
-4. **配布物を固定する。** `CliInstallSpec` に公式パッケージのバージョン、対象プラットフォームごとのパッケージ名と integrity、アーカイブ内のバイナリの場所と圧縮形式を指定する。
-   Grok は Linux x64 の SHA-512 を固定し、未検証の arm64 は `unset` でインストール対象外にしている。 [配布物の宣言](../src/kotoyose/print_cli_grok_profile.py#L21) · [インストーラー](../src/kotoyose/cli_installer.py#L105)
+4. **公式配布物を固定する。** ベンダーが実行ファイルを直接配布している場合は `direct_binary` を優先する。バージョン固定時にプラットフォームごとの SHA-256 を記録し、`CliInstallSpec` に取得順の URL テンプレートと配布元の OS・アーキテクチャ名を指定する。Grok は Linux x64 を固定し、未検証の Linux arm64 は `unset` で取得を無効にしている。
+   npm のプラットフォーム別パッケージを使う場合は `npm_platform_binary` にパッケージ名、SHA-512 integrity、アーカイブ内の実行ファイルの場所と圧縮形式を指定する。 [配布物の宣言](../src/kotoyose/print_cli_grok_profile.py) · [インストーラー](../src/kotoyose/cli_installer.py)
 5. **ログイン方式と専用 home を決める。** 公式 CLI の挙動に合う `paste_code`、`browser_wait`、`device_code` を選び、`PrintCliLoginSpec` にコマンド、URL の抽出とホスト制限、必要なコードのパターン、タイムアウト、ログイン状態の確認方法を指定する。
    Grok は `device_code` を使い、`models` が終了コード 0 でも `not authenticated` が出ればログアウトと扱う。
    `login_home_env` と必要な補助環境変数を専用ディレクトリに結び付ける。

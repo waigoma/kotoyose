@@ -1,5 +1,11 @@
 # Kotoyose の変更履歴
 
+## 1.0.1
+
+- Grok Build を公式配布の実行ファイルから直接導入するようにした (sha256 を固定して照合、node 不要)。
+- 導入時に node を PATH から探すよう修正。
+- CI の安定化。
+
 ## 1.0.0 (2026-11-21)
 
 - Claude、Codex、Cursor、Antigravity、Grok Build の公式 CLI または SDK に対応。

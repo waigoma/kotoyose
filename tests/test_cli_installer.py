@@ -10,6 +10,7 @@ import sys
 import tarfile
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from kotoyose import cli_installer
@@ -130,15 +131,76 @@ def test_sri_mismatch_prevents_extraction(distribution, monkeypatch):
     assert resolve_print_cli_binary(profile) is None
 
 
-def test_unpinned_platform_does_not_download(distribution, monkeypatch):
-    distribution()
+@pytest.fixture
+def direct_distribution(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(cli_installer, "_platform_key", lambda: "linux-x64")
+    profile = get_print_cli_profile("grok")
+    binary = f"#!{sys.executable}\nprint('grok 1.0.89')\n".encode()
+    entry = replace(profile.install.direct_binaries[0], sha256=hashlib.sha256(binary).hexdigest())
+    return replace(profile, install=replace(profile.install, direct_binaries=(entry,))), binary
 
-    def unexpected_download(_):
+
+@pytest.mark.parametrize("primary_fails", [False, True])
+def test_direct_binary_install_without_node(direct_distribution, monkeypatch, primary_fails):
+    profile, binary = direct_distribution
+    primary = "https://x.ai/cli/grok-1.0.89-linux-x86_64"
+    fallback = "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-1.0.89-linux-x86_64"
+    requests = []
+
+    def download(url, *, max_size):
+        requests.append(url)
+        assert 207850592 <= max_size <= 256 * 1024**2
+        if url == primary and primary_fails:
+            raise httpx.ConnectError("primary unavailable")
+        return binary
+
+    monkeypatch.setattr(cli_installer, "_download", download)
+    monkeypatch.setattr(cli_installer.shutil, "which", lambda _: None)
+    status = cli_installer.install_tool(profile)
+
+    assert requests == ([primary, fallback] if primary_fails else [primary])
+    assert status == cli_installer.tool_status(profile)
+    assert status.installed
+    assert status.binary_version == "grok 1.0.89"
+    assert Path(status.path).read_bytes() == binary
+
+
+def test_direct_binary_hash_mismatch_prevents_execution(direct_distribution, monkeypatch):
+    profile, binary = direct_distribution
+
+    def unexpected_run(*args, **kwargs):
+        pytest.fail("An unverified binary must never run")
+
+    monkeypatch.setattr(cli_installer, "_download", lambda url, *, max_size: binary + b"# corrupted\n")
+    monkeypatch.setattr(cli_installer.subprocess, "run", unexpected_run)
+    with pytest.raises(cli_installer.CliInstallError, match="integrity mismatch"):
+        cli_installer.install_tool(profile)
+    assert not install_path(profile.id, profile.install.version, profile.binary).parent.exists()
+
+
+def test_direct_binary_reuses_existing_npm_install(distribution, monkeypatch):
+    profile = distribution()
+    status = cli_installer.install_tool(profile)
+
+    def unexpected_download(*args, **kwargs):
+        pytest.fail("The installed version must be reused across distribution methods")
+
+    monkeypatch.setattr(cli_installer, "_download", unexpected_download)
+    direct = replace(get_print_cli_profile("grok").install, version=profile.install.version)
+    assert cli_installer.install_tool(replace(profile, install=direct)) == status
+
+
+@pytest.mark.parametrize("platform", ["linux-arm64", "darwin-arm64"])
+def test_unpinned_platform_does_not_download(tmp_path, monkeypatch, platform):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+
+    def unexpected_download(*args, **kwargs):
         pytest.fail("Unpinned distributions must never be downloaded")
 
     monkeypatch.setattr(cli_installer, "_download", unexpected_download)
-    monkeypatch.setattr(cli_installer, "_platform_key", lambda: "linux-arm64")
-    with pytest.raises(cli_installer.CliInstallError, match="integrity is unset"):
+    monkeypatch.setattr(cli_installer, "_platform_key", lambda: platform)
+    with pytest.raises(cli_installer.CliInstallError, match="not available for this platform"):
         cli_installer.install_tool(get_print_cli_profile("grok"))
 
 

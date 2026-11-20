@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .cli_install_spec import CliInstallSpec, NpmPlatformBinary
+from .cli_install_spec import CliInstallSpec, DirectPlatformBinary
 
 if TYPE_CHECKING:
     from .print_cli_profiles import PrintCliProfile
+
+
+_GROK_BINARY_URLS = (
+    "https://x.ai/cli/grok-{version}-{os}-{arch}",
+    "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-{version}-{os}-{arch}",
+)
 
 
 def grok_profile() -> PrintCliProfile:
@@ -21,15 +27,14 @@ def grok_profile() -> PrintCliProfile:
         min_version=(1, 0, 89),
         install=CliInstallSpec(
             version="1.0.89",
-            packages=(
-                NpmPlatformBinary(
-                    "linux-x64", "@xai-official/grok-linux-x64",
-                    "sha512-Pn8FmBEpl/r/rGmnKbHFHmOdJdy/cT0gaJNDO67bPIF0YqCDWvpRo/MdDnzS+1F2DVIzunypsMRTEdESB8H7zw==",
+            method="direct_binary",
+            direct_binaries=(
+                DirectPlatformBinary(
+                    "linux-x64", "linux", "x86_64", _GROK_BINARY_URLS,
+                    "a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f",
                 ),
-                NpmPlatformBinary("linux-arm64", "@xai-official/grok-linux-arm64", "unset"),
+                DirectPlatformBinary("linux-arm64", "linux", "aarch64", _GROK_BINARY_URLS, "unset"),
             ),
-            member="package/bin/grok.br",
-            compression="brotli",
         ),
         argv_template=(
             "--output-format", "streaming-json", "-m", "{model}", "{extra_args}",

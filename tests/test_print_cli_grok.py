@@ -23,6 +23,17 @@ from kotoyose.print_cli_profiles import build_print_cli_env, get_print_cli_profi
 PROFILE = get_print_cli_profile("grok")
 
 
+def test_grok_install_pins_official_binary():
+    install = PROFILE.install
+    assert install.method == "direct_binary"
+    assert install.version == "1.0.89"
+    assert install.compression is None
+    x64, arm64 = install.direct_binaries
+    assert (x64.platform, x64.os, x64.arch) == ("linux-x64", "linux", "x86_64")
+    assert x64.sha256 == "a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f"
+    assert (arm64.platform, arm64.os, arm64.arch, arm64.sha256) == ("linux-arm64", "linux", "aarch64", "unset")
+
+
 @pytest.mark.parametrize(("surface", "mode"), [("read", "dontAsk"), ("write", "bypassPermissions")])
 def test_grok_argv_keeps_prompt_in_single_option(surface, mode, tmp_path):
     prompt = "--permission-mode=bypassPermissions {model}\n--login"

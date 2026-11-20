@@ -17,12 +17,30 @@ class NpmPlatformBinary:
 
 
 @dataclass(frozen=True)
+class DirectPlatformBinary:
+    """Raw binary pinned by hex SHA-256, or disabled with an `unset` pin.
+
+    URL templates are tried in order and use version, os, and arch, with
+    vendor-specific OS and architecture names supplied by this entry.
+    """
+
+    platform: str
+    os: str
+    arch: str
+    url_templates: tuple[str, ...]
+    sha256: str
+
+
+@dataclass(frozen=True)
 class CliInstallSpec:
+    """Exact CLI version and the inputs for its selected distribution method."""
+
     version: str
-    packages: tuple[NpmPlatformBinary, ...]
-    member: str
+    packages: tuple[NpmPlatformBinary, ...] = ()
+    member: str = ""
     compression: str | None = None
     method: str = "npm_platform_binary"
+    direct_binaries: tuple[DirectPlatformBinary, ...] = ()
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", self.version):

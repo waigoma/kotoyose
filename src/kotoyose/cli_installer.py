@@ -27,7 +27,7 @@ from .print_cli_profiles import PrintCliProfile
 
 _MAX_DOWNLOAD = 128 * 1024**2
 _MAX_BINARY = 256 * 1024**2
-_DOWNLOAD_SECONDS = 120
+_DOWNLOAD_SECONDS = 600  # a raw vendor binary can be ~200 MB
 _BROTLI_SCRIPT = """
 const fs = require('node:fs');
 const zlib = require('node:zlib');
@@ -60,7 +60,7 @@ def _platform_key() -> str:
     return f"{platform.system().lower()}-{architecture}"
 
 
-def _download(url: str) -> bytes:
+def _download(url: str, *, max_size: int = _MAX_DOWNLOAD) -> bytes:
     deadline = time.monotonic() + _DOWNLOAD_SECONDS
     data = bytearray()
     with httpx.stream("GET", url, timeout=15, trust_env=False, headers={"Accept-Encoding": "identity"}) as response:
@@ -68,7 +68,7 @@ def _download(url: str) -> bytes:
         for chunk in response.iter_raw():
             if time.monotonic() > deadline:
                 raise CliInstallError("CLI distribution download timed out")
-            if len(data) + len(chunk) > _MAX_DOWNLOAD:
+            if len(data) + len(chunk) > max_size:
                 raise CliInstallError("CLI distribution exceeds the download size limit")
             data.extend(chunk)
     return bytes(data)
@@ -103,10 +103,9 @@ def _extract(data: bytes, member_name: str) -> bytes:
     return binary
 
 
-def _distribution(spec: CliInstallSpec) -> bytes:
-    if spec.method != "npm_platform_binary" or spec.compression not in (None, "brotli"):
+def _fetch_npm(spec: CliInstallSpec, target: str) -> bytes:
+    if spec.compression not in (None, "brotli"):
         raise CliInstallError("Unsupported CLI distribution format")
-    target = _platform_key()
     package = next((entry for entry in spec.packages if entry.platform == target), None)
     if package is None:
         raise CliInstallError(f"CLI installation is unsupported on {target}")
@@ -129,6 +128,39 @@ def _distribution(spec: CliInstallSpec) -> bytes:
             [node, "-e", _BROTLI_SCRIPT, str(_MAX_BINARY)], input=binary,
             capture_output=True, check=True, timeout=30, env={},
         ).stdout
+    return binary
+
+
+def _fetch_direct(spec: CliInstallSpec, target: str) -> bytes:
+    entry = next((entry for entry in spec.direct_binaries if entry.platform == target), None)
+    if entry is None or not re.fullmatch(r"[0-9a-fA-F]{64}", entry.sha256):
+        raise CliInstallError(f"CLI installation is not available for this platform ({target})")
+
+    expected = bytes.fromhex(entry.sha256)
+    last_error = None
+    for template in entry.url_templates:
+        url = template.format(version=spec.version, os=entry.os, arch=entry.arch)
+        try:
+            binary = _download(url, max_size=_MAX_BINARY)
+        except (httpx.HTTPError, CliInstallError) as exc:
+            last_error = exc
+            continue
+        if not hmac.compare_digest(hashlib.sha256(binary).digest(), expected):
+            raise CliInstallError("CLI distribution integrity mismatch")
+        return binary
+    if last_error is not None:
+        raise last_error
+    raise CliInstallError("CLI distribution has no download URLs")
+
+
+def _distribution(spec: CliInstallSpec) -> bytes:
+    target = _platform_key()
+    if spec.method == "npm_platform_binary":
+        binary = _fetch_npm(spec, target)
+    elif spec.method == "direct_binary":
+        binary = _fetch_direct(spec, target)
+    else:
+        raise CliInstallError("Unsupported CLI distribution format")
     if not binary:
         raise CliInstallError("CLI distribution contains an empty binary")
     return binary
