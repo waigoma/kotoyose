@@ -1,0 +1,698 @@
+{
+  "assistant-briefing": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "assistant-chat": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "assistant-classify": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "assistant-classify-subscription": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "assistant-cron": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "assistant-triage": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "example-client-chat": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "example-client-test": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "kotoyose-oneshot": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-assistant-subscription": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-codex-subscription": {
+    "accepted_tools": "sandbox-exec subset",
+    "auth_file": "/opt/fixture/.codex/auth.json",
+    "backend": "native",
+    "cli_binary": "/opt/fixture/programming/kotoyose/.venv/lib/python3.13/site-packages/codex_cli_bin/bin/codex",
+    "codex_egress_limits": null,
+    "codex_execution_mode": "sandbox_exec_v1",
+    "codex_sandbox": null,
+    "credential_mode": "chatgpt_subscription",
+    "error": null,
+    "execution_environment": null,
+    "place": "jail",
+    "rootfs": null,
+    "rootfs_coding": false,
+    "rootfs_digest": null
+  },
+  "orchestrator-coding": {
+    "accepted_tools": "exactly host-coding",
+    "auth_file": "/opt/fixture/.codex/auth.json",
+    "backend": "native",
+    "cli_binary": "/opt/fixture/programming/kotoyose/.venv/lib/python3.13/site-packages/codex_cli_bin/bin/codex",
+    "codex_egress_limits": null,
+    "codex_execution_mode": "host_native_coding_v1",
+    "codex_sandbox": "danger-full-access",
+    "credential_mode": "chatgpt_subscription",
+    "error": null,
+    "execution_environment": "isolated",
+    "place": "room",
+    "rootfs": null,
+    "rootfs_coding": true,
+    "rootfs_digest": null
+  },
+  "orchestrator-coding-grok": {
+    "accepted_tools": null,
+    "auth_file": null,
+    "backend": null,
+    "cli_binary": null,
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": null,
+    "error": "ValueError",
+    "execution_environment": null,
+    "place": null,
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-coding-sol": {
+    "accepted_tools": "exactly host-coding",
+    "auth_file": "/opt/fixture/.codex/auth.json",
+    "backend": "native",
+    "cli_binary": "/opt/fixture/programming/kotoyose/.venv/lib/python3.13/site-packages/codex_cli_bin/bin/codex",
+    "codex_egress_limits": null,
+    "codex_execution_mode": "host_native_coding_v1",
+    "codex_sandbox": "danger-full-access",
+    "credential_mode": "chatgpt_subscription",
+    "error": null,
+    "execution_environment": "isolated",
+    "place": "room",
+    "rootfs": null,
+    "rootfs_coding": true,
+    "rootfs_digest": null
+  },
+  "orchestrator-coding-sonnet": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-decomposer": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-pm": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-review": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-review-judge": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-review-read": {
+    "accepted_tools": "exactly workspace-read",
+    "auth_file": "/opt/fixture/.codex/auth.json",
+    "backend": "native",
+    "cli_binary": "/opt/fixture/programming/kotoyose/.venv/lib/python3.13/site-packages/codex_cli_bin/bin/codex",
+    "codex_egress_limits": null,
+    "codex_execution_mode": "room_read_v1",
+    "codex_sandbox": "read-only",
+    "credential_mode": "chatgpt_subscription",
+    "error": null,
+    "execution_environment": "isolated",
+    "place": "room",
+    "rootfs": null,
+    "rootfs_coding": true,
+    "rootfs_digest": null
+  },
+  "orchestrator-review-terra": {
+    "accepted_tools": "sandbox-exec subset",
+    "auth_file": "/opt/fixture/.codex/auth.json",
+    "backend": "native",
+    "cli_binary": "/opt/fixture/programming/kotoyose/.venv/lib/python3.13/site-packages/codex_cli_bin/bin/codex",
+    "codex_egress_limits": null,
+    "codex_execution_mode": "sandbox_exec_v1",
+    "codex_sandbox": null,
+    "credential_mode": "chatgpt_subscription",
+    "error": null,
+    "execution_environment": null,
+    "place": "jail",
+    "rootfs": null,
+    "rootfs_coding": false,
+    "rootfs_digest": null
+  },
+  "orchestrator-reviewer-bugs-max": {
+    "accepted_tools": null,
+    "auth_file": null,
+    "backend": null,
+    "cli_binary": null,
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": null,
+    "error": "ValueError",
+    "execution_environment": null,
+    "place": null,
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-reviewer-bugs-std": {
+    "accepted_tools": null,
+    "auth_file": null,
+    "backend": null,
+    "cli_binary": null,
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": null,
+    "error": "ValueError",
+    "execution_environment": null,
+    "place": null,
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-reviewer-quality-max": {
+    "accepted_tools": null,
+    "auth_file": null,
+    "backend": null,
+    "cli_binary": null,
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": null,
+    "error": "ValueError",
+    "execution_environment": null,
+    "place": null,
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-reviewer-quality-std": {
+    "accepted_tools": null,
+    "auth_file": null,
+    "backend": null,
+    "cli_binary": null,
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": null,
+    "error": "ValueError",
+    "execution_environment": null,
+    "place": null,
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-reviewer-tests-max": {
+    "accepted_tools": null,
+    "auth_file": null,
+    "backend": null,
+    "cli_binary": null,
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": null,
+    "error": "ValueError",
+    "execution_environment": null,
+    "place": null,
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-reviewer-tests-std": {
+    "accepted_tools": null,
+    "auth_file": null,
+    "backend": null,
+    "cli_binary": null,
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": null,
+    "error": "ValueError",
+    "execution_environment": null,
+    "place": null,
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-sidecar-consult": {
+    "accepted_tools": null,
+    "auth_file": null,
+    "backend": null,
+    "cli_binary": null,
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": null,
+    "error": "ValueError",
+    "execution_environment": null,
+    "place": null,
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-sidecar-prepare": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-sidecar-research": {
+    "accepted_tools": null,
+    "auth_file": null,
+    "backend": null,
+    "cli_binary": null,
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": null,
+    "error": "ValueError",
+    "execution_environment": null,
+    "place": null,
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-sidecar-review": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-sidecar-risk": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-structurer": {
+    "accepted_tools": null,
+    "auth_file": null,
+    "backend": null,
+    "cli_binary": null,
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": null,
+    "error": "ValueError",
+    "execution_environment": null,
+    "place": null,
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "orchestrator-task-agent": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "ow-assistant-chat": {
+    "accepted_tools": [
+      "none",
+      "exactly host-coding"
+    ],
+    "auth_file": null,
+    "backend": "native",
+    "cli_binary": "/var/lib/kotoyose-a0-offline/claude",
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": "runtime_managed",
+    "error": null,
+    "execution_environment": null,
+    "place": [
+      "jail",
+      "room"
+    ],
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  },
+  "ow-assistant-chat-gpt": {
+    "accepted_tools": null,
+    "auth_file": null,
+    "backend": null,
+    "cli_binary": null,
+    "codex_egress_limits": null,
+    "codex_execution_mode": null,
+    "codex_sandbox": null,
+    "credential_mode": null,
+    "error": "ValueError",
+    "execution_environment": null,
+    "place": null,
+    "rootfs": null,
+    "rootfs_coding": null,
+    "rootfs_digest": null
+  }
+}

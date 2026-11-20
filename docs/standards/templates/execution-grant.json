@@ -1,0 +1,23 @@
+{
+  "schema_version": "1",
+  "kind": "grant",
+  "grant_id": "REPLACE_WITH_CALLER_GRANT_ID",
+  "version": 1,
+  "caller_run_ref": "REPLACE_WITH_DURABLE_RUN_REF",
+  "workspace_ref": "REPLACE_WITH_REGISTERED_WORKSPACE_REF",
+  "isolation": "sandbox",
+  "network": "none",
+  "command_spec_refs": ["REPLACE_WITH_REGISTERED_COMMAND_REF"],
+  "runtime_profiles": [],
+  "resource_refs": [
+    "REPLACE_WITH_REGISTERED_ARGV_REF",
+    "REPLACE_WITH_REGISTERED_CWD_REF",
+    "REPLACE_WITH_REGISTERED_TIMEOUT_REF",
+    "REPLACE_WITH_REGISTERED_BUDGET_REF"
+  ],
+  "policy_ref": "REPLACE_WITH_CALLER_POLICY_REF",
+  "not_before": "2026-01-01T00:00:00Z",
+  "expires_at": "2026-01-01T00:05:00Z",
+  "max_seconds": 30,
+  "delegation": "none"
+}

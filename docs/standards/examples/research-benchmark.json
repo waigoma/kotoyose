@@ -1,0 +1,129 @@
+{
+  "schema_version": "1",
+  "suite_id": "public-report-summary-fixture",
+  "dataset_revision": "0123456789abcdef0123456789abcdef01234567",
+  "cases": [
+    {
+      "case_id": "public-report.summary.command",
+      "task_definition": {
+        "name": "research-summary",
+        "question": "Summarize the supplied public report fixture."
+      },
+      "acceptance": {
+        "exit_code": 0,
+        "required_artifacts": [
+          "stdout"
+        ],
+        "artifact_digests": {},
+        "required_json_fields": {}
+      },
+      "expected_failure_classification": "success",
+      "requests": [
+        {
+          "execution": {
+            "schema_version": "1",
+            "kind": "command",
+            "idempotency_key": "public-report-summary-0001",
+            "caller_run_ref": "run:public-report-summary",
+            "workspace_ref": "workspace:public-report:0",
+            "execution_grant_ref": "grant:public-report-summary",
+            "budgets_ref": "budget:public-report-summary",
+            "requirements": {
+              "isolation": "sandbox",
+              "capabilities": [
+                "command_execution",
+                "durable_attempts"
+              ]
+            },
+            "preferences": {},
+            "command_spec_ref": "command:public-report-summary",
+            "argv_ref": "argv:public-report-summary",
+            "cwd_ref": "cwd:public-report-summary",
+            "env_refs": [],
+            "fixture_refs": [
+              "fixture:public-report-summary",
+              "fixture:public-report-response"
+            ],
+            "timeout_policy_ref": "timeout:public-report-summary"
+          }
+        }
+      ],
+      "pins": {
+        "repository_revision": "0123456789abcdef0123456789abcdef01234567",
+        "untracked_inputs_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "task_definition_digest": "052380e75e7f8de7f0141f416f48aef1401461365387416b788021034d8c590a",
+        "acceptance_digest": "f4c7d13538027c623545d77d8fd9f3c59f7eb67b10080f9e3f33d1ca016f6dd9",
+        "provider": null,
+        "model": null,
+        "prompt_digest": null,
+        "profile_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+        "scope_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+        "agent_definition_digest": null,
+        "preset_resolution_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+        "runtime_policy_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+        "cli_digest": null,
+        "runtime_version": "kotoyose-command-fixture/1",
+        "image_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+        "lockfile_digest": "9999999999999999999999999999999999999999999999999999999999999999",
+        "skill_schema_digests": [],
+        "mcp_schema_digests": [],
+        "tool_schema_digests": [],
+        "pack_generator": "public-report-fixture-pack/1",
+        "memory_snapshot_digest": null,
+        "fixture_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "external_response_fixture_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "unreplayable_inputs": [],
+        "replay_constraints": [],
+        "provider_state": "not_applicable",
+        "model_state": "not_applicable"
+      },
+      "cache": {
+        "key_digest": "9045b6880b833143e4accafb6bcba1e7eb0fbf43235c7852bcda223864a86539",
+        "warmup": "cold",
+        "reuse": "disabled",
+        "repetition_conditions": [
+          {
+            "warmup": "cold",
+            "reuse": "disabled",
+            "cache_snapshot_digest": null
+          }
+        ],
+        "key_material": {
+          "request_digests": [
+            "907bd9e6bb4914b894957e10ac9baea7642afe5fdac2dc541eccbec51a29b8d4"
+          ],
+          "pins_digest": "152e6d51f6e2f7cb0b61f166c2638516da0a94a88a2ca95e7dc20bbf3e34b350",
+          "warmup": "cold",
+          "reuse": "disabled",
+          "repetition_conditions": [
+            {
+              "warmup": "cold",
+              "reuse": "disabled",
+              "cache_snapshot_digest": null
+            }
+          ]
+        }
+      },
+      "side_effects": {
+        "mode": "isolated_mock",
+        "response_fixture_ref": "fixture:public-report-response",
+        "external_calls": "fixture_replay",
+        "mutation_replay": "forbidden"
+      },
+      "retention_references": [
+        {
+          "kind": "fixture",
+          "ref": "fixture:public-report-summary",
+          "pin": "benchmark:public-report.summary.command",
+          "proof_ref": "benchmark:adopted:public-report-summary"
+        },
+        {
+          "kind": "fixture",
+          "ref": "fixture:public-report-response",
+          "pin": "benchmark:public-report.summary.command",
+          "proof_ref": "benchmark:adopted:public-report-summary"
+        }
+      ]
+    }
+  ]
+}

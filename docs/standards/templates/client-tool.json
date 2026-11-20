@@ -1,0 +1,19 @@
+{
+  "schema_version": "1",
+  "kind": "client_tool",
+  "name": "desktop_pet_set_mood",
+  "description": "Set the visible mood of the caller-owned desktop pet.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "mood": {
+        "type": "string"
+      }
+    },
+    "required": ["mood"],
+    "additionalProperties": false
+  },
+  "effect": "set",
+  "max_payload_bytes": 4096,
+  "timeout_seconds": 10
+}

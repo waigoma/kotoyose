@@ -1,0 +1,484 @@
+{
+  "schema_version": "1",
+  "suite_id": "phase3-code-search-evaluation-template",
+  "dataset_revision": "0123456789abcdef0123456789abcdef01234567",
+  "cases": [
+    {
+      "case_id": "phase3.code-search.case-001.pack_only",
+      "task_definition": {
+        "name": "phase3-code-search-evaluation",
+        "dataset_case_ref": "dataset:phase3-code-search:case-001",
+        "evaluation_variant": "pack_only",
+        "goal": "Resolve the same repository task and emit the fixed verification and provenance result.",
+        "template_notice": "Clone this paired case across every required failure-classification stratum before adoption."
+      },
+      "acceptance": {
+        "exit_code": null,
+        "required_artifacts": [
+          "evaluation-result.json"
+        ],
+        "artifact_digests": {},
+        "required_json_fields": {
+          "evaluation-result.json": [
+            "verification_status",
+            "retrieval_sources",
+            "provenance_audit"
+          ]
+        }
+      },
+      "expected_failure_classification": "repair_effective",
+      "requests": [
+        {
+          "execution": {
+            "schema_version": "1",
+            "idempotency_key": "phase3-code-search-case-001-pack-only",
+            "caller_run_ref": "run:phase3-code-search-evaluation",
+            "workspace_ref": "workspace:phase3-evaluation:0",
+            "execution_grant_ref": "grant:phase3-code-search-evaluation",
+            "artifact_spec_ref": null,
+            "budgets_ref": "budget:phase3-code-search-evaluation",
+            "requirements": {
+              "isolation": "sandbox",
+              "capabilities": [
+                "repository_context_pack"
+              ],
+              "worker_requirements": {
+                "os": "linux",
+                "applications": [],
+                "gpu": "none",
+                "workspace_locality": "local",
+                "native": "forbidden"
+              }
+            },
+            "preferences": {},
+            "kind": "agent",
+            "agent_definition_ref": "agent-definition:phase3-code-search-evaluation",
+            "runtime_profile": "runtime-profile:phase3-evaluation",
+            "inputs": [
+              {
+                "kind": "instructions",
+                "provenance": "trusted",
+                "content_ref": "input:phase3-evaluation-instructions"
+              },
+              {
+                "kind": "task_request",
+                "provenance": "trusted",
+                "content_ref": "input:phase3-dataset-case-001"
+              },
+              {
+                "kind": "repository_context",
+                "provenance": "project",
+                "content_ref": "pack:phase3-dataset-case-001"
+              }
+            ],
+            "tool_refs": [
+              "builtin:sandbox-exec@1"
+            ],
+            "skill_refs": [],
+            "mcp_refs": [],
+            "approval_bindings": [],
+            "client_key": null
+          }
+        }
+      ],
+      "pins": {
+        "repository_revision": "0123456789abcdef0123456789abcdef01234567",
+        "untracked_inputs_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "task_definition_digest": "599dc4056ca068355fab91824fd298cf8b8ff7fb8d1c5b942a6db38717f9d850",
+        "acceptance_digest": "f6fcaac23de97062e2d27d3655d33d8da705d7d043ba243ffa47327ff3d8d3bd",
+        "provider": "evaluation-provider",
+        "provider_state": "resolved",
+        "model": "evaluation-model-2026-09",
+        "model_state": "resolved",
+        "prompt_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "profile_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+        "scope_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+        "agent_definition_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+        "preset_resolution_digest": "5555555555555555555555555555555555555555555555555555555555555555",
+        "runtime_policy_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+        "cli_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+        "runtime_version": "evaluation-runtime/REPLACE_WITH_PINNED_VERSION",
+        "image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "lockfile_digest": "8888888888888888888888888888888888888888888888888888888888888888",
+        "skill_schema_digests": [],
+        "mcp_schema_digests": [],
+        "tool_schema_digests": [
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ],
+        "pack_generator": "repository-context-pack/REPLACE_WITH_PINNED_VERSION",
+        "memory_snapshot_digest": null,
+        "fixture_digest": "9999999999999999999999999999999999999999999999999999999999999999",
+        "external_response_fixture_digest": null,
+        "unreplayable_inputs": [],
+        "replay_constraints": [
+          {
+            "pin": "repository_context_pack_digest",
+            "reason": "The template does not retain the registered Pack resource envelope; replace it with a retained immutable resource before execution."
+          }
+        ]
+      },
+      "cache": {
+        "key_digest": "607ff04e2b2c2c7966d50bd71856ca837937f1f746ee7d005d85c3d6bc989adb",
+        "key_material": {
+          "request_digests": [
+            "504382997736116c5ac14a49ace44d2cb93db277bd3a2669bf228d235a551856"
+          ],
+          "pins_digest": "646582cbeb6fa0191e1f783bf0603ee7fb03eca5e9d68d2ab4f6ebf4a9f6a9cd",
+          "warmup": "cold",
+          "reuse": "disabled",
+          "repetition_conditions": [
+            {
+              "warmup": "cold",
+              "reuse": "disabled",
+              "cache_snapshot_digest": null
+            }
+          ]
+        },
+        "warmup": "cold",
+        "reuse": "disabled",
+        "repetition_conditions": [
+          {
+            "warmup": "cold",
+            "reuse": "disabled",
+            "cache_snapshot_digest": null
+          }
+        ]
+      },
+      "side_effects": {
+        "mode": "read_only",
+        "response_fixture_ref": null,
+        "external_calls": "none",
+        "mutation_replay": "forbidden"
+      },
+      "retention_references": []
+    },
+    {
+      "case_id": "phase3.code-search.case-001.pack_code_search",
+      "task_definition": {
+        "name": "phase3-code-search-evaluation",
+        "dataset_case_ref": "dataset:phase3-code-search:case-001",
+        "evaluation_variant": "pack_code_search",
+        "goal": "Resolve the same repository task and emit the fixed verification and provenance result.",
+        "template_notice": "Clone this paired case across every required failure-classification stratum before adoption."
+      },
+      "acceptance": {
+        "exit_code": null,
+        "required_artifacts": [
+          "evaluation-result.json"
+        ],
+        "artifact_digests": {},
+        "required_json_fields": {
+          "evaluation-result.json": [
+            "verification_status",
+            "retrieval_sources",
+            "provenance_audit"
+          ]
+        }
+      },
+      "expected_failure_classification": "repair_effective",
+      "requests": [
+        {
+          "execution": {
+            "schema_version": "1",
+            "idempotency_key": "phase3-code-search-case-001-code-search",
+            "caller_run_ref": "run:phase3-code-search-evaluation",
+            "workspace_ref": "workspace:phase3-evaluation:0",
+            "execution_grant_ref": "grant:phase3-code-search-evaluation",
+            "artifact_spec_ref": null,
+            "budgets_ref": "budget:phase3-code-search-evaluation",
+            "requirements": {
+              "isolation": "sandbox",
+              "capabilities": [
+                "repository_context_pack",
+                "external_mcp"
+              ],
+              "worker_requirements": {
+                "os": "linux",
+                "applications": [],
+                "gpu": "none",
+                "workspace_locality": "local",
+                "native": "forbidden"
+              }
+            },
+            "preferences": {},
+            "kind": "agent",
+            "agent_definition_ref": "agent-definition:phase3-code-search-evaluation",
+            "runtime_profile": "runtime-profile:phase3-evaluation",
+            "inputs": [
+              {
+                "kind": "instructions",
+                "provenance": "trusted",
+                "content_ref": "input:phase3-evaluation-instructions"
+              },
+              {
+                "kind": "task_request",
+                "provenance": "trusted",
+                "content_ref": "input:phase3-dataset-case-001"
+              },
+              {
+                "kind": "repository_context",
+                "provenance": "project",
+                "content_ref": "pack:phase3-dataset-case-001"
+              }
+            ],
+            "tool_refs": [
+              "builtin:sandbox-exec@1"
+            ],
+            "skill_refs": [],
+            "mcp_refs": [
+              "mcp:code-search-evaluation@1"
+            ],
+            "approval_bindings": [],
+            "client_key": null
+          }
+        }
+      ],
+      "pins": {
+        "repository_revision": "0123456789abcdef0123456789abcdef01234567",
+        "untracked_inputs_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "task_definition_digest": "f200170a3103f1837daef61b0aca9a33062e38693ba1663d6165b35c44d36f32",
+        "acceptance_digest": "f6fcaac23de97062e2d27d3655d33d8da705d7d043ba243ffa47327ff3d8d3bd",
+        "provider": "evaluation-provider",
+        "provider_state": "resolved",
+        "model": "evaluation-model-2026-09",
+        "model_state": "resolved",
+        "prompt_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "profile_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+        "scope_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+        "agent_definition_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+        "preset_resolution_digest": "5555555555555555555555555555555555555555555555555555555555555555",
+        "runtime_policy_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+        "cli_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+        "runtime_version": "evaluation-runtime/REPLACE_WITH_PINNED_VERSION",
+        "image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "lockfile_digest": "8888888888888888888888888888888888888888888888888888888888888888",
+        "skill_schema_digests": [],
+        "mcp_schema_digests": [
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        ],
+        "tool_schema_digests": [
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ],
+        "pack_generator": "repository-context-pack/REPLACE_WITH_PINNED_VERSION",
+        "memory_snapshot_digest": null,
+        "fixture_digest": "9999999999999999999999999999999999999999999999999999999999999999",
+        "external_response_fixture_digest": null,
+        "unreplayable_inputs": [],
+        "replay_constraints": [
+          {
+            "pin": "repository_context_pack_digest",
+            "reason": "The template does not retain the registered Pack resource envelope; replace it with a retained immutable resource before execution."
+          },
+          {
+            "pin": "code_search_index_digest",
+            "reason": "The code-search index is not built or retained by this template."
+          },
+          {
+            "pin": "retrieval_config_digest",
+            "reason": "The code-search query and ranking configuration is not pinned by the current ReplayPins schema."
+          }
+        ]
+      },
+      "cache": {
+        "key_digest": "62d30e51416a776ab7448ba27a83cacaac094dd3ccfe56ed02803d6c22f37ed9",
+        "key_material": {
+          "request_digests": [
+            "686af99586a7c2e15e4040740f369e89eeb66980cc16b0c18dea4305aa2047ec"
+          ],
+          "pins_digest": "570cb6b7993a3b8c928cb48e5ffe5a34b923abbf0ccf9aa75531bea56fd85e28",
+          "warmup": "cold",
+          "reuse": "disabled",
+          "repetition_conditions": [
+            {
+              "warmup": "cold",
+              "reuse": "disabled",
+              "cache_snapshot_digest": null
+            }
+          ]
+        },
+        "warmup": "cold",
+        "reuse": "disabled",
+        "repetition_conditions": [
+          {
+            "warmup": "cold",
+            "reuse": "disabled",
+            "cache_snapshot_digest": null
+          }
+        ]
+      },
+      "side_effects": {
+        "mode": "read_only",
+        "response_fixture_ref": null,
+        "external_calls": "none",
+        "mutation_replay": "forbidden"
+      },
+      "retention_references": []
+    },
+    {
+      "case_id": "phase3.code-search.case-001.pack_rag",
+      "task_definition": {
+        "name": "phase3-code-search-evaluation",
+        "dataset_case_ref": "dataset:phase3-code-search:case-001",
+        "evaluation_variant": "pack_rag",
+        "goal": "Resolve the same repository task and emit the fixed verification and provenance result.",
+        "template_notice": "Clone this paired case across every required failure-classification stratum before adoption."
+      },
+      "acceptance": {
+        "exit_code": null,
+        "required_artifacts": [
+          "evaluation-result.json"
+        ],
+        "artifact_digests": {},
+        "required_json_fields": {
+          "evaluation-result.json": [
+            "verification_status",
+            "retrieval_sources",
+            "provenance_audit"
+          ]
+        }
+      },
+      "expected_failure_classification": "repair_effective",
+      "requests": [
+        {
+          "execution": {
+            "schema_version": "1",
+            "idempotency_key": "phase3-code-search-case-001-rag",
+            "caller_run_ref": "run:phase3-code-search-evaluation",
+            "workspace_ref": "workspace:phase3-evaluation:0",
+            "execution_grant_ref": "grant:phase3-code-search-evaluation",
+            "artifact_spec_ref": null,
+            "budgets_ref": "budget:phase3-code-search-evaluation",
+            "requirements": {
+              "isolation": "sandbox",
+              "capabilities": [
+                "repository_context_pack",
+                "external_mcp"
+              ],
+              "worker_requirements": {
+                "os": "linux",
+                "applications": [],
+                "gpu": "none",
+                "workspace_locality": "local",
+                "native": "forbidden"
+              }
+            },
+            "preferences": {},
+            "kind": "agent",
+            "agent_definition_ref": "agent-definition:phase3-code-search-evaluation",
+            "runtime_profile": "runtime-profile:phase3-evaluation",
+            "inputs": [
+              {
+                "kind": "instructions",
+                "provenance": "trusted",
+                "content_ref": "input:phase3-evaluation-instructions"
+              },
+              {
+                "kind": "task_request",
+                "provenance": "trusted",
+                "content_ref": "input:phase3-dataset-case-001"
+              },
+              {
+                "kind": "repository_context",
+                "provenance": "project",
+                "content_ref": "pack:phase3-dataset-case-001"
+              }
+            ],
+            "tool_refs": [
+              "builtin:sandbox-exec@1"
+            ],
+            "skill_refs": [],
+            "mcp_refs": [
+              "mcp:rag-evaluation@1"
+            ],
+            "approval_bindings": [],
+            "client_key": null
+          }
+        }
+      ],
+      "pins": {
+        "repository_revision": "0123456789abcdef0123456789abcdef01234567",
+        "untracked_inputs_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "task_definition_digest": "2140841ccd846fac44377a89648e028a091ee74e2d566b9ea73340f8f6ac811e",
+        "acceptance_digest": "f6fcaac23de97062e2d27d3655d33d8da705d7d043ba243ffa47327ff3d8d3bd",
+        "provider": "evaluation-provider",
+        "provider_state": "resolved",
+        "model": "evaluation-model-2026-09",
+        "model_state": "resolved",
+        "prompt_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "profile_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+        "scope_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+        "agent_definition_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+        "preset_resolution_digest": "5555555555555555555555555555555555555555555555555555555555555555",
+        "runtime_policy_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+        "cli_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+        "runtime_version": "evaluation-runtime/REPLACE_WITH_PINNED_VERSION",
+        "image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "lockfile_digest": "8888888888888888888888888888888888888888888888888888888888888888",
+        "skill_schema_digests": [],
+        "mcp_schema_digests": [
+          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        ],
+        "tool_schema_digests": [
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ],
+        "pack_generator": "repository-context-pack/REPLACE_WITH_PINNED_VERSION",
+        "memory_snapshot_digest": null,
+        "fixture_digest": "9999999999999999999999999999999999999999999999999999999999999999",
+        "external_response_fixture_digest": null,
+        "unreplayable_inputs": [],
+        "replay_constraints": [
+          {
+            "pin": "repository_context_pack_digest",
+            "reason": "The template does not retain the registered Pack resource envelope; replace it with a retained immutable resource before execution."
+          },
+          {
+            "pin": "rag_index_digest",
+            "reason": "The RAG index is not built or retained by this template."
+          },
+          {
+            "pin": "embedding_model_digest",
+            "reason": "The embedding model weights, tokenizer, and configuration are not pinned by the current ReplayPins schema."
+          },
+          {
+            "pin": "retrieval_config_digest",
+            "reason": "The RAG query, chunking, and ranking configuration is not pinned by the current ReplayPins schema."
+          }
+        ]
+      },
+      "cache": {
+        "key_digest": "863ce81216d352903b98fdd22cd42f38045bfa58fd90e58eb65f833254fd225d",
+        "key_material": {
+          "request_digests": [
+            "38c0f74dc1a7fbd77b0d7e301864470e1c64f46f0bbebb18c5716e8e91081365"
+          ],
+          "pins_digest": "428703718f798722382ffabd88c795955c75c4ac6a9a6bf05382745b59b7d2d6",
+          "warmup": "cold",
+          "reuse": "disabled",
+          "repetition_conditions": [
+            {
+              "warmup": "cold",
+              "reuse": "disabled",
+              "cache_snapshot_digest": null
+            }
+          ]
+        },
+        "warmup": "cold",
+        "reuse": "disabled",
+        "repetition_conditions": [
+          {
+            "warmup": "cold",
+            "reuse": "disabled",
+            "cache_snapshot_digest": null
+          }
+        ]
+      },
+      "side_effects": {
+        "mode": "read_only",
+        "response_fixture_ref": null,
+        "external_calls": "none",
+        "mutation_replay": "forbidden"
+      },
+      "retention_references": []
+    }
+  ]
+}

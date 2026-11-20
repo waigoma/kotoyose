@@ -1,0 +1,49 @@
+mcps:
+  memory_gateway:
+    server:
+      type: http
+      url: http://127.0.0.1:8101/mcp/
+      headers:
+        Authorization: Bearer <memory-gateway-token>
+
+prompt_files:
+  orchestrator-review-judge:
+    path: tests/fixtures/review-judge.md
+
+models:
+  orchestrator-pm:
+    permission_mode: bypassPermissions
+    tools: []
+    deny: &filesystem_deny ['Bash(*)', 'Write(*)', 'Edit(*)']
+  orchestrator-decomposer:
+    tools: []
+    deny: *filesystem_deny
+  orchestrator-coding:
+    bare: false
+    setting_sources: []
+    require_isolation: true
+    deny: &isolated_deny [CronCreate, RemoteTrigger]
+    agents: &research_agents
+      researcher:
+        description: Inspect source material.
+        prompt: Summarize relevant findings.
+        model: haiku
+    mcp_servers:
+      orchestrator:
+        type: http
+        url: https://mcp.example.com/mcp/
+        headers:
+          Authorization: Bearer <orchestrator-mcp-token>
+  orchestrator-task-agent:
+    bare: false
+    setting_sources: []
+    require_isolation: true
+    deny: *isolated_deny
+    agents: *research_agents
+  orchestrator-reviewer-quality-max:
+    permission_mode: plan
+    deny: *filesystem_deny
+  orchestrator-review-judge:
+    permission_mode: plan
+    deny: *filesystem_deny
+    prompt_file_refs: [orchestrator-review-judge]

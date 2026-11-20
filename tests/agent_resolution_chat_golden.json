@@ -1,0 +1,326 @@
+{
+  "assistant-briefing": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-sonnet-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "assistant-chat": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-opus-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "assistant-classify": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-haiku-4-5-20251001",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "assistant-classify-subscription": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "claude-sonnet-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "assistant-cron": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-sonnet-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "assistant-triage": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-sonnet-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "example-client-chat": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-sonnet-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "example-client-test": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-sonnet-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "kotoyose-oneshot": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "light-combo",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "orchestrator-assistant-subscription": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "claude-sonnet-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "orchestrator-codex-subscription": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gpt-6.1-sol",
+    "model_provider": null,
+    "provider": "codex",
+    "subscription_only": false
+  },
+  "orchestrator-coding": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gpt-6-luna",
+    "model_provider": null,
+    "provider": "codex",
+    "subscription_only": false
+  },
+  "orchestrator-coding-grok": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "grok-4.7",
+    "model_provider": null,
+    "provider": "cursor",
+    "subscription_only": false
+  },
+  "orchestrator-coding-sol": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gpt-6.1-terra",
+    "model_provider": null,
+    "provider": "codex",
+    "subscription_only": false
+  },
+  "orchestrator-coding-sonnet": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gcli/grok-4.7",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "orchestrator-decomposer": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-sonnet-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "orchestrator-pm": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-sonnet-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "orchestrator-review": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-sonnet-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "orchestrator-review-judge": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-sonnet-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "orchestrator-review-read": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gpt-6.1-terra",
+    "model_provider": null,
+    "provider": "codex",
+    "subscription_only": false
+  },
+  "orchestrator-review-terra": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gpt-6.1-terra",
+    "model_provider": null,
+    "provider": "codex",
+    "subscription_only": false
+  },
+  "orchestrator-reviewer-bugs-max": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gpt-6.1-sol",
+    "model_provider": null,
+    "provider": "codex",
+    "subscription_only": false
+  },
+  "orchestrator-reviewer-bugs-std": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gpt-6-luna",
+    "model_provider": null,
+    "provider": "codex",
+    "subscription_only": false
+  },
+  "orchestrator-reviewer-quality-max": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gpt-6.1-sol",
+    "model_provider": null,
+    "provider": "codex",
+    "subscription_only": false
+  },
+  "orchestrator-reviewer-quality-std": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gpt-6-luna",
+    "model_provider": null,
+    "provider": "codex",
+    "subscription_only": false
+  },
+  "orchestrator-reviewer-tests-max": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gpt-6.1-sol",
+    "model_provider": null,
+    "provider": "codex",
+    "subscription_only": false
+  },
+  "orchestrator-reviewer-tests-std": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gpt-6-luna",
+    "model_provider": null,
+    "provider": "codex",
+    "subscription_only": false
+  },
+  "orchestrator-sidecar-consult": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gpt-6.1-sol",
+    "model_provider": null,
+    "provider": "codex",
+    "subscription_only": false
+  },
+  "orchestrator-sidecar-prepare": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-sonnet-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "orchestrator-sidecar-research": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gpt-6-luna",
+    "model_provider": null,
+    "provider": "codex",
+    "subscription_only": false
+  },
+  "orchestrator-sidecar-review": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-sonnet-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "orchestrator-sidecar-risk": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-sonnet-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "orchestrator-structurer": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gpt-6-luna",
+    "model_provider": null,
+    "provider": "codex",
+    "subscription_only": false
+  },
+  "orchestrator-task-agent": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-sonnet-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "ow-assistant-chat": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "cc/claude-sonnet-5-5",
+    "model_provider": null,
+    "provider": "claude",
+    "subscription_only": false
+  },
+  "ow-assistant-chat-gpt": {
+    "anthropic_auth_token_env": null,
+    "anthropic_base_url": null,
+    "execution": "direct",
+    "model": "gpt-6.1-sol",
+    "model_provider": null,
+    "provider": "codex",
+    "subscription_only": false
+  }
+}

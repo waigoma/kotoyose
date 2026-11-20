@@ -1,0 +1,11 @@
+# One exact fixture path and synthetic IPv4 address per line.
+tests/test_codex_egress.py 10.0.0.1
+tests/test_codex_egress.py 100.64.0.1
+tests/test_codex_egress.py 172.16.0.1
+tests/test_codex_egress.py 192.168.0.1
+tests/test_codex_subscription.py 192.168.1.1
+tests/test_container_claude.py 10.0.0.5
+tests/test_container_claude.py 10.1.2.3
+tests/test_container_claude.py 10.9.8.7
+tests/test_native_codex.py 10.0.0.1
+tests/test_native_codex.py 192.168.0.1

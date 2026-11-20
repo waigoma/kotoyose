@@ -1,0 +1,286 @@
+connections:
+  claude-oauth:
+    provider: claude
+    kind: subscription
+    data_policy: no_training
+    secret: claude-oauth
+  codex-chatgpt:
+    provider: codex
+    kind: subscription
+    data_policy: no_training
+    auth_file: /opt/fixture/.codex/auth.json
+  codex-host:
+    provider: codex
+    kind: subscription
+    data_policy: no_training
+  cursor-api-key:
+    provider: cursor
+    kind: api_key
+    data_policy: no_training
+    secret: env:CURSOR_API_KEY
+routes:
+  claude-haiku:
+    driver: claude.agent-sdk
+    model: cc/claude-haiku-4-5-20251001
+    connection: claude-oauth
+  claude-opus:
+    driver: claude.agent-sdk
+    model: cc/claude-opus-5-5
+    connection: claude-oauth
+  claude-sonnet:
+    driver: claude.agent-sdk
+    model: cc/claude-sonnet-5-5
+    connection: claude-oauth
+  assistant-classify-subscription:
+    driver: claude.agent-sdk
+    model: claude-sonnet-5
+    connection: claude-oauth
+  orchestrator-assistant-subscription:
+    driver: claude.agent-sdk
+    model: claude-sonnet-5-5
+    connection: claude-oauth
+  claude-grok:
+    driver: claude.agent-sdk
+    model: gcli/grok-4.7
+    connection: claude-oauth
+  claude-light-combo:
+    driver: claude.agent-sdk
+    model: light-combo
+    connection: claude-oauth
+  orchestrator-coding:
+    driver: codex.app-server
+    model: gpt-6-luna
+    connection: codex-chatgpt
+  codex-gpt-6-luna:
+    driver: codex.app-server
+    model: gpt-6-luna
+    connection: codex-host
+  orchestrator-codex-subscription:
+    driver: codex.app-server
+    model: gpt-6.1-sol
+    connection: codex-chatgpt
+  codex-sol:
+    driver: codex.app-server
+    model: gpt-6.1-sol
+    connection: codex-host
+  codex-gpt-6.1-terra:
+    driver: codex.app-server
+    model: gpt-6.1-terra
+    connection: codex-chatgpt
+  cursor-grok-coding:
+    driver: cursor.sdk
+    model: grok-4.7
+    connection: cursor-api-key
+models:
+  example-client-chat:
+    route: claude-sonnet
+    agent:
+      place: isolated
+      surface: write
+  example-client-test:
+    route: claude-sonnet
+    agent:
+      place: isolated
+      surface: write
+  kotoyose-oneshot:
+    route: claude-light-combo
+    agent:
+      place: isolated
+      surface: write
+  ow-assistant-chat:
+    route: claude-sonnet
+    agent:
+      place: isolated
+      surface: write
+  ow-assistant-chat-gpt:
+    route: codex-sol
+    agent:
+      place: host
+      surface: write
+  assistant-briefing:
+    route: claude-sonnet
+    agent:
+      place: isolated
+      surface: write
+  assistant-chat:
+    route: claude-opus
+    agent:
+      place: isolated
+      surface: write
+  assistant-classify:
+    route: claude-haiku
+    agent:
+      place: isolated
+      surface: write
+  assistant-classify-subscription:
+    route: assistant-classify-subscription
+    agent:
+      place: isolated
+      surface: write
+  assistant-cron:
+    route: claude-sonnet
+    agent:
+      place: isolated
+      surface: write
+  assistant-triage:
+    route: claude-sonnet
+    agent:
+      place: isolated
+      surface: write
+  orchestrator-codex-subscription:
+    effort: xhigh
+    route: orchestrator-codex-subscription
+    agent:
+      place: isolated
+      surface: exec
+  orchestrator-coding:
+    execution_environment: isolated
+    effort: max
+    codex:
+      sandbox: danger-full-access
+      timeout: 1800
+    route: orchestrator-coding
+    agent:
+      place: isolated
+      surface: write
+  orchestrator-coding-grok:
+    route: cursor-grok-coding
+    agent:
+      place: host
+      surface: write
+  orchestrator-coding-sol:
+    execution_environment: isolated
+    effort: high
+    codex:
+      sandbox: danger-full-access
+      timeout: 1800
+    route: codex-gpt-6.1-terra
+    agent:
+      place: isolated
+      surface: write
+  orchestrator-coding-sonnet:
+    route: claude-grok
+    agent:
+      place: isolated
+      surface: write
+  orchestrator-decomposer:
+    route: claude-sonnet
+    agent:
+      place: isolated
+      surface: write
+  orchestrator-assistant-subscription:
+    route: orchestrator-assistant-subscription
+    agent:
+      place: isolated
+      surface: write
+  orchestrator-pm:
+    route: claude-sonnet
+    agent:
+      place: isolated
+      surface: write
+  orchestrator-review:
+    route: claude-sonnet
+    agent:
+      place: isolated
+      surface: write
+  orchestrator-review-judge:
+    route: claude-sonnet
+    agent:
+      place: isolated
+      surface: write
+  orchestrator-review-read:
+    effort: high
+    route: codex-gpt-6.1-terra
+    agent:
+      place: isolated
+      surface: read
+  orchestrator-review-terra:
+    effort: high
+    codex:
+      sandbox: read-only
+      timeout: 1800
+    route: codex-gpt-6.1-terra
+    agent:
+      place: isolated
+      surface: exec
+  orchestrator-reviewer-bugs-max:
+    route: codex-sol
+    agent:
+      place: host
+      surface: write
+  orchestrator-reviewer-bugs-std:
+    route: codex-gpt-6-luna
+    agent:
+      place: host
+      surface: write
+  orchestrator-reviewer-quality-max:
+    route: codex-sol
+    agent:
+      place: host
+      surface: write
+  orchestrator-reviewer-quality-std:
+    route: codex-gpt-6-luna
+    agent:
+      place: host
+      surface: write
+  orchestrator-reviewer-tests-max:
+    route: codex-sol
+    agent:
+      place: host
+      surface: write
+  orchestrator-reviewer-tests-std:
+    route: codex-gpt-6-luna
+    agent:
+      place: host
+      surface: write
+  orchestrator-sidecar-consult:
+    route: codex-sol
+    agent:
+      place: host
+      surface: write
+  orchestrator-sidecar-prepare:
+    route: claude-sonnet
+    agent:
+      place: isolated
+      surface: write
+  orchestrator-sidecar-research:
+    route: codex-gpt-6-luna
+    agent:
+      place: host
+      surface: write
+  orchestrator-sidecar-review:
+    route: claude-sonnet
+    agent:
+      place: isolated
+      surface: write
+  orchestrator-sidecar-risk:
+    route: claude-sonnet
+    agent:
+      place: isolated
+      surface: write
+  orchestrator-structurer:
+    route: codex-gpt-6-luna
+    agent:
+      place: host
+      surface: write
+  orchestrator-task-agent:
+    route: claude-sonnet
+    agent:
+      place: isolated
+      surface: write
+clients:
+  taskhub:
+    workspace_roots:
+      - /opt/fixture/.task-hub/native-workspaces
+      - /opt/fixture/.task-hub-pm-workspaces
+    models:
+      - "*"
+    places:
+      - isolated
+      - host
+    max_surface: write
+    max_run_seconds: 14340
+    max_memory_bytes: 10737418240
+    max_processes: 1024
+    max_cpus: 6
+    max_concurrent_runs: 16

@@ -1,0 +1,20 @@
+{
+  "schema_version": "1",
+  "caller_ids": ["sample-client-key"],
+  "models": {
+    "example-client-test": {
+      "input_token_budget": 100000,
+      "max_output_tokens": 8192,
+      "response_tool_name_suffix": "_ide"
+    }
+  },
+  "limits": {
+    "max_executions": 4,
+    "ttl_seconds": 300,
+    "stream_timeout_seconds": 300,
+    "max_input_bytes": 1048576,
+    "max_output_bytes": 8388608,
+    "max_tool_result_bytes": 65536,
+    "max_rounds": 5
+  }
+}

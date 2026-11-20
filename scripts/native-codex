@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+"""作業ディレクトリに依存せず Codex jail の launcher を起動する。"""
+
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from kotoyose.codex_provider_jail import main
+
+if __name__ == "__main__":
+    main()

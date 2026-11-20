@@ -1,0 +1,334 @@
+{
+  "schema_version": "1",
+  "suite_id": "phase3-skill-generation-evaluation-template",
+  "dataset_revision": "fedcba9876543210fedcba9876543210fedcba98",
+  "cases": [
+    {
+      "case_id": "phase3.skill-generation.case-001.before_generation",
+      "task_definition": {
+        "name": "phase3-skill-generation-evaluation",
+        "dataset_case_ref": "dataset:phase3-skill-generation:case-001",
+        "evaluation_variant": "before_generation",
+        "goal": "Resolve the same repository task with an unchanged Tool surface and Grant, then emit verification and provenance results.",
+        "template_notice": "Clone this paired case across every required failure-classification stratum before adoption."
+      },
+      "acceptance": {
+        "exit_code": null,
+        "required_artifacts": [
+          "evaluation-result.json"
+        ],
+        "artifact_digests": {},
+        "required_json_fields": {
+          "evaluation-result.json": [
+            "verification_status",
+            "skill_resource_ref",
+            "tool_surface_digest",
+            "grant_digest",
+            "provenance_audit"
+          ]
+        }
+      },
+      "expected_failure_classification": "repair_effective",
+      "requests": [
+        {
+          "execution": {
+            "schema_version": "1",
+            "idempotency_key": "phase3-skill-generation-case-001-before",
+            "caller_run_ref": "run:phase3-skill-generation-evaluation",
+            "workspace_ref": "workspace:phase3-skill-evaluation:0",
+            "execution_grant_ref": "grant:phase3-skill-generation-evaluation",
+            "artifact_spec_ref": null,
+            "budgets_ref": "budget:phase3-skill-generation-evaluation",
+            "requirements": {
+              "isolation": "sandbox",
+              "capabilities": [
+                "repository_context_pack"
+              ],
+              "worker_requirements": {
+                "os": "linux",
+                "applications": [],
+                "gpu": "none",
+                "workspace_locality": "local",
+                "native": "forbidden"
+              }
+            },
+            "preferences": {},
+            "kind": "agent",
+            "agent_definition_ref": "agent-definition:phase3-skill-generation-evaluation",
+            "runtime_profile": "runtime-profile:phase3-evaluation",
+            "inputs": [
+              {
+                "kind": "instructions",
+                "provenance": "trusted",
+                "content_ref": "input:phase3-skill-evaluation-instructions"
+              },
+              {
+                "kind": "task_request",
+                "provenance": "trusted",
+                "content_ref": "input:phase3-skill-dataset-case-001"
+              },
+              {
+                "kind": "repository_context",
+                "provenance": "project",
+                "content_ref": "pack:phase3-skill-dataset-case-001"
+              }
+            ],
+            "tool_refs": [
+              "builtin:sandbox-exec@1"
+            ],
+            "skill_refs": [],
+            "mcp_refs": [],
+            "approval_bindings": [],
+            "client_key": null
+          }
+        }
+      ],
+      "pins": {
+        "repository_revision": "fedcba9876543210fedcba9876543210fedcba98",
+        "untracked_inputs_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "task_definition_digest": "fbce58bc1a545648b709d5d9d815774eb71b54771099759c0fa3fe9e1c8800b5",
+        "acceptance_digest": "5b352af504986bc3e04157b5a3a0a9826a7c761de091a60860e7af399d6924bc",
+        "provider": "evaluation-provider",
+        "provider_state": "resolved",
+        "model": "evaluation-model-2026-09",
+        "model_state": "resolved",
+        "prompt_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "profile_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+        "scope_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+        "agent_definition_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+        "preset_resolution_digest": "5555555555555555555555555555555555555555555555555555555555555555",
+        "runtime_policy_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+        "cli_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+        "runtime_version": "evaluation-runtime/REPLACE_WITH_PINNED_VERSION",
+        "image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "lockfile_digest": "8888888888888888888888888888888888888888888888888888888888888888",
+        "skill_schema_digests": [],
+        "mcp_schema_digests": [],
+        "tool_schema_digests": [
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ],
+        "pack_generator": "repository-context-pack/REPLACE_WITH_PINNED_VERSION",
+        "memory_snapshot_digest": null,
+        "fixture_digest": "9999999999999999999999999999999999999999999999999999999999999999",
+        "external_response_fixture_digest": null,
+        "unreplayable_inputs": [],
+        "replay_constraints": [
+          {
+            "pin": "repository_context_pack_digest",
+            "reason": "The template does not retain the registered Pack resource envelope; replace it with a retained immutable resource before execution."
+          },
+          {
+            "pin": "skill_generation_input_digest",
+            "reason": "The generation prompt, source examples, and generator configuration are not retained by this evaluation template."
+          }
+        ]
+      },
+      "cache": {
+        "key_digest": "938d85038ab0ed2d6d1014f0a6b0b3800854f62ce71d0e62bb31afb70ac72e05",
+        "key_material": {
+          "request_digests": [
+            "c8db2a3ef7faaad41147c79843472624f0b027317ab7cab8b896b78e9ea996dc"
+          ],
+          "pins_digest": "b6f6c486a712ee457c1daeaaa3d0d5368ae4cd96ad622688acdc649a88c11c08",
+          "warmup": "cold",
+          "reuse": "disabled",
+          "repetition_conditions": [
+            {
+              "warmup": "cold",
+              "reuse": "disabled",
+              "cache_snapshot_digest": null
+            }
+          ]
+        },
+        "warmup": "cold",
+        "reuse": "disabled",
+        "repetition_conditions": [
+          {
+            "warmup": "cold",
+            "reuse": "disabled",
+            "cache_snapshot_digest": null
+          }
+        ]
+      },
+      "side_effects": {
+        "mode": "read_only",
+        "response_fixture_ref": null,
+        "external_calls": "none",
+        "mutation_replay": "forbidden"
+      },
+      "retention_references": []
+    },
+    {
+      "case_id": "phase3.skill-generation.case-001.after_generation",
+      "task_definition": {
+        "name": "phase3-skill-generation-evaluation",
+        "dataset_case_ref": "dataset:phase3-skill-generation:case-001",
+        "evaluation_variant": "after_generation",
+        "goal": "Resolve the same repository task with an unchanged Tool surface and Grant, then emit verification and provenance results.",
+        "template_notice": "Clone this paired case across every required failure-classification stratum before adoption."
+      },
+      "acceptance": {
+        "exit_code": null,
+        "required_artifacts": [
+          "evaluation-result.json"
+        ],
+        "artifact_digests": {},
+        "required_json_fields": {
+          "evaluation-result.json": [
+            "verification_status",
+            "skill_resource_ref",
+            "tool_surface_digest",
+            "grant_digest",
+            "provenance_audit"
+          ]
+        }
+      },
+      "expected_failure_classification": "repair_effective",
+      "requests": [
+        {
+          "execution": {
+            "schema_version": "1",
+            "idempotency_key": "phase3-skill-generation-case-001-after",
+            "caller_run_ref": "run:phase3-skill-generation-evaluation",
+            "workspace_ref": "workspace:phase3-skill-evaluation:0",
+            "execution_grant_ref": "grant:phase3-skill-generation-evaluation",
+            "artifact_spec_ref": null,
+            "budgets_ref": "budget:phase3-skill-generation-evaluation",
+            "requirements": {
+              "isolation": "sandbox",
+              "capabilities": [
+                "repository_context_pack",
+                "skill_resources"
+              ],
+              "worker_requirements": {
+                "os": "linux",
+                "applications": [],
+                "gpu": "none",
+                "workspace_locality": "local",
+                "native": "forbidden"
+              }
+            },
+            "preferences": {},
+            "kind": "agent",
+            "agent_definition_ref": "agent-definition:phase3-skill-generation-evaluation",
+            "runtime_profile": "runtime-profile:phase3-evaluation",
+            "inputs": [
+              {
+                "kind": "instructions",
+                "provenance": "trusted",
+                "content_ref": "input:phase3-skill-evaluation-instructions"
+              },
+              {
+                "kind": "task_request",
+                "provenance": "trusted",
+                "content_ref": "input:phase3-skill-dataset-case-001"
+              },
+              {
+                "kind": "repository_context",
+                "provenance": "project",
+                "content_ref": "pack:phase3-skill-dataset-case-001"
+              }
+            ],
+            "tool_refs": [
+              "builtin:sandbox-exec@1"
+            ],
+            "skill_refs": [
+              "skill:generated-evaluation@sha256:REPLACE_WITH_RESOURCE_DIGEST"
+            ],
+            "mcp_refs": [],
+            "approval_bindings": [],
+            "client_key": null
+          }
+        }
+      ],
+      "pins": {
+        "repository_revision": "fedcba9876543210fedcba9876543210fedcba98",
+        "untracked_inputs_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "task_definition_digest": "e3233be45d1d60f3b6a81d80f279ff9b1f2b377a09a154d64007cdc1fe5eb5f0",
+        "acceptance_digest": "5b352af504986bc3e04157b5a3a0a9826a7c761de091a60860e7af399d6924bc",
+        "provider": "evaluation-provider",
+        "provider_state": "resolved",
+        "model": "evaluation-model-2026-09",
+        "model_state": "resolved",
+        "prompt_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "profile_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+        "scope_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+        "agent_definition_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+        "preset_resolution_digest": "5555555555555555555555555555555555555555555555555555555555555555",
+        "runtime_policy_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+        "cli_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+        "runtime_version": "evaluation-runtime/REPLACE_WITH_PINNED_VERSION",
+        "image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "lockfile_digest": "8888888888888888888888888888888888888888888888888888888888888888",
+        "skill_schema_digests": [
+          "159083c8c2445e700b36cd5bfd43d8df383bcf879c965ee0ffee554684d4701a"
+        ],
+        "mcp_schema_digests": [],
+        "tool_schema_digests": [
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ],
+        "pack_generator": "repository-context-pack/REPLACE_WITH_PINNED_VERSION",
+        "memory_snapshot_digest": null,
+        "fixture_digest": "9999999999999999999999999999999999999999999999999999999999999999",
+        "external_response_fixture_digest": null,
+        "unreplayable_inputs": [],
+        "replay_constraints": [
+          {
+            "pin": "repository_context_pack_digest",
+            "reason": "The template does not retain the registered Pack resource envelope; replace it with a retained immutable resource before execution."
+          },
+          {
+            "pin": "skill_generation_input_digest",
+            "reason": "The generation prompt, source examples, and generator configuration are not retained by this evaluation template."
+          },
+          {
+            "pin": "generated_skill_content_digest",
+            "reason": "The generated Skill content has not been registered and retained as an immutable SkillResource."
+          },
+          {
+            "pin": "generated_skill_source_revision",
+            "reason": "The generated Skill source revision has not been resolved to a commit SHA."
+          },
+          {
+            "pin": "generated_skill_config_digest",
+            "reason": "The Skill generator configuration has not been pinned by the current ReplayPins schema."
+          }
+        ]
+      },
+      "cache": {
+        "key_digest": "ac0327c843139ff78d1fac243b221fa65ab1fe159317ceda363485f2866c82ce",
+        "key_material": {
+          "request_digests": [
+            "1a3058eca00f16a8d694463baf7c71a3b1dbcb9d19cd9a6fc22658b9ed5d68b7"
+          ],
+          "pins_digest": "61d6af8edaca0c702a036e763ba6292dc3cafa8d3fb3b68d8c58439a6ec3d0c1",
+          "warmup": "cold",
+          "reuse": "disabled",
+          "repetition_conditions": [
+            {
+              "warmup": "cold",
+              "reuse": "disabled",
+              "cache_snapshot_digest": null
+            }
+          ]
+        },
+        "warmup": "cold",
+        "reuse": "disabled",
+        "repetition_conditions": [
+          {
+            "warmup": "cold",
+            "reuse": "disabled",
+            "cache_snapshot_digest": null
+          }
+        ]
+      },
+      "side_effects": {
+        "mode": "read_only",
+        "response_fixture_ref": null,
+        "external_calls": "none",
+        "mutation_replay": "forbidden"
+      },
+      "retention_references": []
+    }
+  ]
+}

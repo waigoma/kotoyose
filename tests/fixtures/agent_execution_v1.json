@@ -1,0 +1,2249 @@
+{
+  "creates": [
+    {
+      "value": {
+        "execution": {
+          "schema_version": "agent_execution_v1",
+          "kind": "agent",
+          "idempotency_key": "key:1",
+          "caller_run_ref": "run:1",
+          "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+          "work": {
+            "work_kind": "coding",
+            "role": null,
+            "automatic": true,
+            "workspace_ref": "workspace:1",
+            "agent_definition_ref": "agent:1",
+            "artifact_spec_ref": null,
+            "policy_ref": "policy:1",
+            "scope_grant_ref": "scope:1",
+            "resource_refs": [],
+            "model": "model:1",
+            "runtime_profile": null,
+            "required_authentication_mode": "chatgpt_subscription",
+            "expected_authentication_binding_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+            "required_provider": "codex",
+            "required_billing_mode": "subscription",
+            "inputs": [
+              {
+                "kind": "instructions",
+                "provenance": "trusted",
+                "content_ref": "input:1",
+                "expected_revocation_epoch": null
+              }
+            ],
+            "tool_refs": [],
+            "skill_refs": [],
+            "mcp_refs": [],
+            "requirements": {
+              "isolation": "sandbox",
+              "capabilities": [],
+              "worker_requirements": {
+                "os": null,
+                "applications": [],
+                "gpu": "none",
+                "workspace_locality": "any",
+                "native": "forbidden"
+              }
+            },
+            "result_contract": {
+              "format": "text",
+              "json_schema": null
+            },
+            "approval_bindings": [],
+            "continuation_mode": "fresh",
+            "client_key": null
+          },
+          "money": {
+            "mode": "fixed_units",
+            "basis": "subscription_execution_units_v1",
+            "allocation_units": "1.250000000001",
+            "run_units_ceiling": "4"
+          },
+          "time": {
+            "run_hard_ms": 120000,
+            "grace_ms": 1000
+          },
+          "resources": {
+            "max_turns": 10,
+            "max_output_bytes": 1000
+          },
+          "recovery": {
+            "provider_wait": "enabled",
+            "fault_retry_limit": 1,
+            "fault_retries_used": 0
+          },
+          "predecessor": null,
+          "authority_ceilings": [],
+          "initial_authorization": {
+            "decision": "allow",
+            "revision": 1,
+            "activation_nonce": "nonce:1",
+            "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+            "caller_run_ref": "run:1",
+            "issued_at": "2026-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "expires_at": "2026-11-01T00:01:00Z",
+            "allowed_active_ms": 60000,
+            "stop_limit": "run_seconds",
+            "charge": {
+              "charge_ref": "charge:1",
+              "reservation_ref": "reservation:1",
+              "allocation_units": "1.250000000001"
+            },
+            "authority_ceiling_at": null,
+            "approval": null,
+            "settled_receipt_cursor": 0
+          }
+        }
+      },
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "81fbb06c476b0e0c4e6cd830c3f8089c755c9b13b7a043f42690a968bd1edfa3"
+    },
+    {
+      "value": {
+        "execution": {
+          "schema_version": "agent_execution_v1",
+          "kind": "agent",
+          "idempotency_key": "key:role",
+          "caller_run_ref": "run:1",
+          "work_digest": "65666567fd69605ddf3b629ac3b06726dc27410149aa9a6fdf4ab3435c6a7b19",
+          "work": {
+            "work_kind": "role",
+            "role": "pm",
+            "automatic": true,
+            "workspace_ref": "workspace:1",
+            "agent_definition_ref": "agent:1",
+            "artifact_spec_ref": null,
+            "policy_ref": "policy:1",
+            "scope_grant_ref": "scope:1",
+            "resource_refs": [],
+            "model": "model:1",
+            "runtime_profile": null,
+            "required_authentication_mode": "chatgpt_subscription",
+            "expected_authentication_binding_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+            "required_provider": "codex",
+            "required_billing_mode": "subscription",
+            "inputs": [
+              {
+                "kind": "instructions",
+                "provenance": "trusted",
+                "content_ref": "input:1",
+                "expected_revocation_epoch": null
+              }
+            ],
+            "tool_refs": [],
+            "skill_refs": [],
+            "mcp_refs": [],
+            "requirements": {
+              "isolation": "sandbox",
+              "capabilities": [],
+              "worker_requirements": {
+                "os": null,
+                "applications": [],
+                "gpu": "none",
+                "workspace_locality": "any",
+                "native": "forbidden"
+              }
+            },
+            "result_contract": {
+              "format": "text",
+              "json_schema": null
+            },
+            "approval_bindings": [],
+            "continuation_mode": "fresh",
+            "client_key": null
+          },
+          "money": {
+            "mode": "unbudgeted"
+          },
+          "time": {
+            "run_hard_ms": 120000,
+            "grace_ms": 1000
+          },
+          "resources": {
+            "max_turns": 10,
+            "max_output_bytes": 1000
+          },
+          "recovery": {
+            "provider_wait": "enabled",
+            "fault_retry_limit": 1,
+            "fault_retries_used": 0
+          },
+          "predecessor": null,
+          "authority_ceilings": [],
+          "initial_authorization": {
+            "decision": "allow",
+            "revision": 1,
+            "activation_nonce": "nonce:1",
+            "work_digest": "65666567fd69605ddf3b629ac3b06726dc27410149aa9a6fdf4ab3435c6a7b19",
+            "caller_run_ref": "run:1",
+            "issued_at": "2026-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "expires_at": "2026-11-01T00:01:00Z",
+            "allowed_active_ms": 60000,
+            "stop_limit": "run_seconds",
+            "charge": null,
+            "authority_ceiling_at": null,
+            "approval": null,
+            "settled_receipt_cursor": 0
+          }
+        }
+      },
+      "work_digest": "65666567fd69605ddf3b629ac3b06726dc27410149aa9a6fdf4ab3435c6a7b19",
+      "request_digest": "52cd01ba8efd7bb3b716b4e61cda3359ede2095662b3ead9f9927c0eb2c3b903"
+    },
+    {
+      "value": {
+        "execution": {
+          "schema_version": "agent_execution_v1",
+          "kind": "agent",
+          "idempotency_key": "key:successor",
+          "caller_run_ref": "run:1",
+          "work_digest": "439dfdf5f9501f4c10055846110285c0a3809e17186c55ca09f138598992156e",
+          "work": {
+            "work_kind": "coding",
+            "role": null,
+            "automatic": true,
+            "workspace_ref": "workspace:1",
+            "agent_definition_ref": "agent:1",
+            "artifact_spec_ref": null,
+            "policy_ref": "policy:1",
+            "scope_grant_ref": "scope:1",
+            "resource_refs": [],
+            "model": "model:1",
+            "runtime_profile": null,
+            "required_authentication_mode": "chatgpt_subscription",
+            "expected_authentication_binding_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+            "required_provider": "codex",
+            "required_billing_mode": "subscription",
+            "inputs": [
+              {
+                "kind": "instructions",
+                "provenance": "trusted",
+                "content_ref": "input:1",
+                "expected_revocation_epoch": null
+              }
+            ],
+            "tool_refs": [],
+            "skill_refs": [],
+            "mcp_refs": [],
+            "requirements": {
+              "isolation": "sandbox",
+              "capabilities": [],
+              "worker_requirements": {
+                "os": null,
+                "applications": [],
+                "gpu": "none",
+                "workspace_locality": "any",
+                "native": "forbidden"
+              }
+            },
+            "result_contract": {
+              "format": "text",
+              "json_schema": null
+            },
+            "approval_bindings": [],
+            "continuation_mode": "safe_resume",
+            "client_key": null
+          },
+          "money": {
+            "mode": "fixed_units",
+            "basis": "subscription_execution_units_v1",
+            "allocation_units": "1.250000000001",
+            "run_units_ceiling": "4"
+          },
+          "time": {
+            "run_hard_ms": 120000,
+            "grace_ms": 1000
+          },
+          "resources": {
+            "max_turns": 10,
+            "max_output_bytes": 1000
+          },
+          "recovery": {
+            "provider_wait": "enabled",
+            "fault_retry_limit": 1,
+            "fault_retries_used": 0
+          },
+          "predecessor": {
+            "idempotency_key": "key:prior",
+            "execution_id": "execution:prior",
+            "relation": "condition_change"
+          },
+          "authority_ceilings": [],
+          "initial_authorization": {
+            "decision": "allow",
+            "revision": 1,
+            "activation_nonce": "nonce:1",
+            "work_digest": "439dfdf5f9501f4c10055846110285c0a3809e17186c55ca09f138598992156e",
+            "caller_run_ref": "run:1",
+            "issued_at": "2026-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "expires_at": "2026-11-01T00:01:00Z",
+            "allowed_active_ms": 60000,
+            "stop_limit": "run_seconds",
+            "charge": {
+              "charge_ref": "charge:1",
+              "reservation_ref": "reservation:1",
+              "allocation_units": "1.250000000001"
+            },
+            "authority_ceiling_at": null,
+            "approval": null,
+            "settled_receipt_cursor": 0
+          }
+        }
+      },
+      "work_digest": "439dfdf5f9501f4c10055846110285c0a3809e17186c55ca09f138598992156e",
+      "request_digest": "7e25ba660f352290c4643fa797d85af63be1a860e7788a8aec64bf3294b5a4ca"
+    }
+  ],
+  "acks": [
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34"
+    }
+  ],
+  "snapshots": [
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "queued",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "initial",
+        "charge_ref": "charge:1",
+        "authority_required": true,
+        "authorization_revision": 1
+      },
+      "pause": null,
+      "provider_limit": null,
+      "next_probe_at": null,
+      "fault_retries_used": 0,
+      "cancel_requested": false,
+      "admission_closed": false,
+      "usage": {
+        "state": "not_started",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": false,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": null,
+        "finished_at": null
+      },
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "terminal": null,
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": null
+    },
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "running",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "initial",
+        "charge_ref": "charge:1",
+        "authority_required": false,
+        "authorization_revision": 1
+      },
+      "pause": null,
+      "provider_limit": null,
+      "next_probe_at": null,
+      "fault_retries_used": 0,
+      "cancel_requested": false,
+      "admission_closed": false,
+      "usage": {
+        "state": "running",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": false,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": "2026-11-01T00:00:00Z",
+        "finished_at": null
+      },
+      "stop_confirmation": "unconfirmed",
+      "side_effect_resolution": "unresolved",
+      "terminal": null,
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": "workspace:generation:1"
+    },
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "waiting_provider",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "initial",
+        "charge_ref": "charge:1",
+        "authority_required": true,
+        "authorization_revision": 1
+      },
+      "pause": null,
+      "provider_limit": {
+        "provider": "codex",
+        "limit_window": "five_hour",
+        "reset_at": "2026-11-01T00:00:00Z",
+        "detected_at": "2026-11-01T00:00:00Z",
+        "resume": "native",
+        "unavailable_reason": null
+      },
+      "next_probe_at": "2026-11-01T00:00:00Z",
+      "fault_retries_used": 0,
+      "cancel_requested": false,
+      "admission_closed": false,
+      "usage": {
+        "state": "not_started",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": false,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": null,
+        "finished_at": null
+      },
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "terminal": null,
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": "workspace:generation:1"
+    },
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "waiting_provider",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "initial",
+        "charge_ref": "charge:1",
+        "authority_required": true,
+        "authorization_revision": 1
+      },
+      "pause": null,
+      "provider_limit": {
+        "provider": "codex",
+        "limit_window": "five_hour",
+        "reset_at": null,
+        "detected_at": "2026-11-01T00:00:00Z",
+        "resume": "native",
+        "unavailable_reason": null
+      },
+      "next_probe_at": null,
+      "fault_retries_used": 0,
+      "cancel_requested": false,
+      "admission_closed": false,
+      "usage": {
+        "state": "not_started",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": false,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": null,
+        "finished_at": null
+      },
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "terminal": null,
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": "workspace:generation:1"
+    },
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "resuming",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "provider_resume",
+        "charge_ref": "charge:1",
+        "authority_required": true,
+        "authorization_revision": 1
+      },
+      "pause": null,
+      "provider_limit": null,
+      "next_probe_at": null,
+      "fault_retries_used": 0,
+      "cancel_requested": false,
+      "admission_closed": false,
+      "usage": {
+        "state": "not_started",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": false,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": null,
+        "finished_at": null
+      },
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "terminal": null,
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": "workspace:generation:1"
+    },
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "retrying",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "fault_retry",
+        "charge_ref": "charge:1",
+        "authority_required": true,
+        "authorization_revision": 1
+      },
+      "pause": null,
+      "provider_limit": null,
+      "next_probe_at": null,
+      "fault_retries_used": 1,
+      "cancel_requested": false,
+      "admission_closed": false,
+      "usage": {
+        "state": "not_started",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": false,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": null,
+        "finished_at": null
+      },
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "terminal": null,
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": "workspace:generation:1"
+    },
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "queued",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "initial",
+        "charge_ref": "charge:1",
+        "authority_required": true,
+        "authorization_revision": 1
+      },
+      "pause": {
+        "kind": "approval_required",
+        "call_id": "call:1",
+        "subject_digest": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "provider_limit": null,
+      "next_probe_at": null,
+      "fault_retries_used": 0,
+      "cancel_requested": false,
+      "admission_closed": false,
+      "usage": {
+        "state": "not_started",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": false,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": null,
+        "finished_at": null
+      },
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "terminal": null,
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": "workspace:generation:1"
+    },
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "terminal",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "initial",
+        "charge_ref": "charge:1",
+        "authority_required": true,
+        "authorization_revision": 1
+      },
+      "pause": null,
+      "provider_limit": null,
+      "next_probe_at": null,
+      "fault_retries_used": 0,
+      "cancel_requested": false,
+      "admission_closed": true,
+      "usage": {
+        "state": "ended",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": true,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": null,
+        "finished_at": "2026-11-01T00:00:00Z"
+      },
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "terminal": {
+        "kind": "succeeded"
+      },
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": "workspace:generation:1"
+    },
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "terminal",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "initial",
+        "charge_ref": "charge:1",
+        "authority_required": true,
+        "authorization_revision": 1
+      },
+      "pause": null,
+      "provider_limit": null,
+      "next_probe_at": null,
+      "fault_retries_used": 0,
+      "cancel_requested": false,
+      "admission_closed": true,
+      "usage": {
+        "state": "ended",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": true,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": null,
+        "finished_at": "2026-11-01T00:00:00Z"
+      },
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "terminal": {
+        "kind": "cancelled"
+      },
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": "workspace:generation:1"
+    },
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "terminal",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "initial",
+        "charge_ref": "charge:1",
+        "authority_required": true,
+        "authorization_revision": 1
+      },
+      "pause": null,
+      "provider_limit": null,
+      "next_probe_at": null,
+      "fault_retries_used": 0,
+      "cancel_requested": false,
+      "admission_closed": true,
+      "usage": {
+        "state": "ended",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": true,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": null,
+        "finished_at": "2026-11-01T00:00:00Z"
+      },
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "terminal": {
+        "kind": "cost_limit",
+        "limit": "run_budget"
+      },
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": "workspace:generation:1"
+    },
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "terminal",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "initial",
+        "charge_ref": "charge:1",
+        "authority_required": true,
+        "authorization_revision": 1
+      },
+      "pause": null,
+      "provider_limit": null,
+      "next_probe_at": null,
+      "fault_retries_used": 0,
+      "cancel_requested": false,
+      "admission_closed": true,
+      "usage": {
+        "state": "ended",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": true,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": null,
+        "finished_at": "2026-11-01T00:00:00Z"
+      },
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "terminal": {
+        "kind": "time_limit",
+        "limit": "run_seconds"
+      },
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": "workspace:generation:1"
+    },
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "terminal",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "initial",
+        "charge_ref": "charge:1",
+        "authority_required": true,
+        "authorization_revision": 1
+      },
+      "pause": null,
+      "provider_limit": null,
+      "next_probe_at": null,
+      "fault_retries_used": 0,
+      "cancel_requested": false,
+      "admission_closed": true,
+      "usage": {
+        "state": "ended",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": true,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": null,
+        "finished_at": "2026-11-01T00:00:00Z"
+      },
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "terminal": {
+        "kind": "execution_fault",
+        "cause": "agent_failure",
+        "code": null
+      },
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": "workspace:generation:1"
+    },
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "terminal",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "initial",
+        "charge_ref": "charge:1",
+        "authority_required": true,
+        "authorization_revision": 1
+      },
+      "pause": null,
+      "provider_limit": null,
+      "next_probe_at": null,
+      "fault_retries_used": 0,
+      "cancel_requested": false,
+      "admission_closed": true,
+      "usage": {
+        "state": "ended",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": true,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": null,
+        "finished_at": "2026-11-01T00:00:00Z"
+      },
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "terminal": {
+        "kind": "authority_denied",
+        "cause": "archived"
+      },
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": "workspace:generation:1"
+    },
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "terminal",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "initial",
+        "charge_ref": "charge:1",
+        "authority_required": true,
+        "authorization_revision": 1
+      },
+      "pause": null,
+      "provider_limit": null,
+      "next_probe_at": null,
+      "fault_retries_used": 0,
+      "cancel_requested": false,
+      "admission_closed": true,
+      "usage": {
+        "state": "ended",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": true,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": null,
+        "finished_at": "2026-11-01T00:00:00Z"
+      },
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "terminal": {
+        "kind": "resume_unavailable",
+        "cause": "no_session",
+        "handoff_refs": [],
+        "workspace_ref": "workspace:1",
+        "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1"
+      },
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": "workspace:generation:1"
+    },
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "terminal",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "initial",
+        "charge_ref": "charge:1",
+        "authority_required": true,
+        "authorization_revision": 1
+      },
+      "pause": null,
+      "provider_limit": null,
+      "next_probe_at": null,
+      "fault_retries_used": 0,
+      "cancel_requested": true,
+      "admission_closed": true,
+      "usage": {
+        "state": "unknown",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": false,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": null,
+        "finished_at": null
+      },
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "terminal": {
+        "kind": "cancelled"
+      },
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": "workspace:generation:1"
+    },
+    {
+      "schema_version": "agent_execution_v1",
+      "execution_id": "execution:1",
+      "idempotency_key": "key:1",
+      "caller_run_ref": "run:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+      "sequence": 1,
+      "state": "terminal",
+      "state_revision": 1,
+      "activation": {
+        "nonce": "nonce:1",
+        "ordinal": 1,
+        "reason": "initial",
+        "charge_ref": "charge:1",
+        "authority_required": true,
+        "authorization_revision": 1
+      },
+      "pause": null,
+      "provider_limit": null,
+      "next_probe_at": null,
+      "fault_retries_used": 0,
+      "cancel_requested": false,
+      "admission_closed": true,
+      "usage": {
+        "state": "ended",
+        "active_ms": 0,
+        "turns": 0,
+        "output_bytes": 0,
+        "units": null,
+        "complete": true,
+        "observed_at": "2026-11-01T00:00:00Z",
+        "started_at": null,
+        "finished_at": "2026-11-01T00:00:00Z"
+      },
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "terminal": {
+        "kind": "resume_unavailable",
+        "cause": "predecessor_mismatch",
+        "handoff_refs": [],
+        "workspace_ref": "workspace:1",
+        "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1"
+      },
+      "receipts": [],
+      "next_receipt_cursor": 0,
+      "final_receipt_cursor": 0,
+      "receipts_complete": false,
+      "artifacts": [],
+      "workspace_ref": "workspace:generation:1"
+    }
+  ],
+  "allows": [
+    {
+      "decision": "allow",
+      "revision": 1,
+      "activation_nonce": "nonce:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "caller_run_ref": "run:1",
+      "issued_at": "2026-11-01T00:00:00Z",
+      "not_before": "2026-11-01T00:00:00Z",
+      "expires_at": "2026-11-01T00:01:00Z",
+      "allowed_active_ms": 60000,
+      "stop_limit": "run_seconds",
+      "charge": {
+        "charge_ref": "charge:1",
+        "reservation_ref": "reservation:1",
+        "allocation_units": "1.250000000001"
+      },
+      "authority_ceiling_at": null,
+      "approval": null,
+      "settled_receipt_cursor": 0
+    },
+    {
+      "decision": "allow",
+      "revision": 2,
+      "activation_nonce": "nonce:2",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "caller_run_ref": "run:1",
+      "issued_at": "2026-11-01T00:00:00Z",
+      "not_before": "2026-11-01T00:00:00Z",
+      "expires_at": "2026-11-01T00:01:00Z",
+      "allowed_active_ms": 60000,
+      "stop_limit": "run_seconds",
+      "charge": {
+        "charge_ref": "charge:1",
+        "reservation_ref": "reservation:1",
+        "allocation_units": "1.250000000001"
+      },
+      "authority_ceiling_at": null,
+      "approval": null,
+      "settled_receipt_cursor": 0
+    },
+    {
+      "decision": "allow",
+      "revision": 1,
+      "activation_nonce": "nonce:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "caller_run_ref": "run:1",
+      "issued_at": "2026-11-01T00:00:00Z",
+      "not_before": "2026-11-01T00:00:00Z",
+      "expires_at": "2026-11-01T00:01:00Z",
+      "allowed_active_ms": 60000,
+      "stop_limit": "run_seconds",
+      "charge": {
+        "charge_ref": "charge:1",
+        "reservation_ref": "reservation:1",
+        "allocation_units": "1.250000000001"
+      },
+      "authority_ceiling_at": null,
+      "approval": {
+        "call_id": "call:1",
+        "subject_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "decision": "approved",
+        "decision_ref": "decision:1"
+      },
+      "settled_receipt_cursor": 0
+    },
+    {
+      "decision": "allow",
+      "revision": 1,
+      "activation_nonce": "nonce:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "caller_run_ref": "run:1",
+      "issued_at": "2026-11-01T00:00:00Z",
+      "not_before": "2026-11-01T00:00:00Z",
+      "expires_at": "2026-11-01T00:01:00Z",
+      "allowed_active_ms": 60000,
+      "stop_limit": "run_seconds",
+      "charge": {
+        "charge_ref": "charge:1",
+        "reservation_ref": "reservation:1",
+        "allocation_units": "1.250000000001"
+      },
+      "authority_ceiling_at": null,
+      "approval": {
+        "call_id": "call:1",
+        "subject_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "decision": "denied",
+        "decision_ref": "decision:2"
+      },
+      "settled_receipt_cursor": 0
+    },
+    {
+      "decision": "allow",
+      "revision": 1,
+      "activation_nonce": "nonce:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "caller_run_ref": "run:1",
+      "issued_at": "2026-11-01T00:00:00Z",
+      "not_before": "2026-11-01T00:00:00Z",
+      "expires_at": "2026-11-01T00:01:00Z",
+      "allowed_active_ms": 60000,
+      "stop_limit": "run_seconds",
+      "charge": null,
+      "authority_ceiling_at": null,
+      "approval": null,
+      "settled_receipt_cursor": 0
+    }
+  ],
+  "denies": [
+    {
+      "decision": "deny",
+      "revision": 2,
+      "activation_nonce": "nonce:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "caller_run_ref": "run:1",
+      "reason": {
+        "kind": "cost_limit",
+        "limit": "run_budget"
+      },
+      "settled_receipt_cursor": 1
+    },
+    {
+      "decision": "deny",
+      "revision": 2,
+      "activation_nonce": "nonce:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "caller_run_ref": "run:1",
+      "reason": {
+        "kind": "time_limit",
+        "limit": "task_seconds"
+      },
+      "settled_receipt_cursor": 1
+    },
+    {
+      "decision": "deny",
+      "revision": 2,
+      "activation_nonce": "nonce:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "caller_run_ref": "run:1",
+      "reason": {
+        "kind": "authority_denied",
+        "cause": "archived"
+      },
+      "settled_receipt_cursor": 1
+    },
+    {
+      "decision": "deny",
+      "revision": 2,
+      "activation_nonce": "nonce:1",
+      "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+      "caller_run_ref": "run:1",
+      "reason": {
+        "kind": "cancelled"
+      },
+      "settled_receipt_cursor": 1
+    }
+  ],
+  "receipts": [
+    {
+      "cursor": 1,
+      "receipt_id": "receipt:1",
+      "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "charge_ref": "charge:1",
+      "reservation_ref": "reservation:1",
+      "allocation_units": "1.250000000001",
+      "activation_nonces": [
+        "nonce:1",
+        "nonce:2"
+      ],
+      "outcome": "executed",
+      "units": "1.250000000001",
+      "active_ms": 1200,
+      "turns": 1,
+      "output_bytes": 25,
+      "execution_confirmed": true,
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "finished_at": "2026-11-01T00:00:00Z"
+    },
+    {
+      "cursor": 1,
+      "receipt_id": "receipt:2",
+      "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "charge_ref": "charge:1",
+      "reservation_ref": "reservation:1",
+      "allocation_units": "1.250000000001",
+      "activation_nonces": [
+        "nonce:1",
+        "nonce:2"
+      ],
+      "outcome": "provider_zero_turn",
+      "units": "0",
+      "active_ms": 1200,
+      "turns": 0,
+      "output_bytes": 25,
+      "execution_confirmed": false,
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "finished_at": "2026-11-01T00:00:00Z"
+    },
+    {
+      "cursor": 1,
+      "receipt_id": "receipt:3",
+      "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "charge_ref": "charge:1",
+      "reservation_ref": "reservation:1",
+      "allocation_units": "1.250000000001",
+      "activation_nonces": [
+        "nonce:1",
+        "nonce:2"
+      ],
+      "outcome": "not_started_closed",
+      "units": "0",
+      "active_ms": 1200,
+      "turns": 0,
+      "output_bytes": 25,
+      "execution_confirmed": false,
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "finished_at": "2026-11-01T00:00:00Z"
+    },
+    {
+      "cursor": 1,
+      "receipt_id": "receipt:4",
+      "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "charge_ref": null,
+      "reservation_ref": null,
+      "allocation_units": null,
+      "activation_nonces": [
+        "nonce:1",
+        "nonce:2"
+      ],
+      "outcome": "executed",
+      "units": null,
+      "active_ms": 1200,
+      "turns": 1,
+      "output_bytes": 25,
+      "execution_confirmed": true,
+      "stop_confirmation": "confirmed",
+      "side_effect_resolution": "resolved",
+      "finished_at": "2026-11-01T00:00:00Z"
+    }
+  ],
+  "actions": [
+    {
+      "action_key": "action:1",
+      "expected_revision": 1
+    }
+  ],
+  "cancels": [
+    {
+      "action_key": "cancel:1",
+      "reason": "owner_abort"
+    },
+    {
+      "action_key": "cancel:2",
+      "reason": "task_cancelled"
+    },
+    {
+      "action_key": "cancel:3",
+      "reason": "authority_withdrawn"
+    }
+  ],
+  "closed": [
+    {
+      "schema_version": "agent_execution_v1",
+      "idempotency_key": "key:1",
+      "outcome": "not_admitted",
+      "admission_closed": true,
+      "execution_id": null,
+      "proof_ref": "proof:1"
+    }
+  ],
+  "errors": [
+    {
+      "error": {
+        "type": "agent_execution_error",
+        "code": "invalid_request",
+        "message": "example",
+        "current": null
+      }
+    },
+    {
+      "error": {
+        "type": "agent_execution_error",
+        "code": "request_conflict",
+        "message": "example",
+        "current": null
+      }
+    },
+    {
+      "error": {
+        "type": "agent_execution_error",
+        "code": "stale_revision",
+        "message": "example",
+        "current": {
+          "schema_version": "agent_execution_v1",
+          "execution_id": "execution:1",
+          "idempotency_key": "key:1",
+          "caller_run_ref": "run:1",
+          "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+          "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+          "sequence": 1,
+          "state": "queued",
+          "state_revision": 1,
+          "activation": {
+            "nonce": "nonce:1",
+            "ordinal": 1,
+            "reason": "initial",
+            "charge_ref": "charge:1",
+            "authority_required": true,
+            "authorization_revision": 1
+          },
+          "pause": null,
+          "provider_limit": null,
+          "next_probe_at": null,
+          "fault_retries_used": 0,
+          "cancel_requested": false,
+          "admission_closed": false,
+          "usage": {
+            "state": "not_started",
+            "active_ms": 0,
+            "turns": 0,
+            "output_bytes": 0,
+            "units": null,
+            "complete": false,
+            "observed_at": "2026-11-01T00:00:00Z",
+            "started_at": null,
+            "finished_at": null
+          },
+          "stop_confirmation": "confirmed",
+          "side_effect_resolution": "resolved",
+          "terminal": null,
+          "receipts": [],
+          "next_receipt_cursor": 0,
+          "final_receipt_cursor": 0,
+          "receipts_complete": false,
+          "artifacts": [],
+          "workspace_ref": null
+        }
+      }
+    },
+    {
+      "error": {
+        "type": "agent_execution_error",
+        "code": "stale_activation",
+        "message": "example",
+        "current": null
+      }
+    },
+    {
+      "error": {
+        "type": "agent_execution_error",
+        "code": "permission_denied",
+        "message": "example",
+        "current": null
+      }
+    },
+    {
+      "error": {
+        "type": "agent_execution_error",
+        "code": "unsupported_capability",
+        "message": "example",
+        "current": null
+      }
+    },
+    {
+      "error": {
+        "type": "agent_execution_error",
+        "code": "not_found",
+        "message": "example",
+        "current": null
+      }
+    },
+    {
+      "error": {
+        "type": "agent_execution_error",
+        "code": "request_conflict",
+        "message": "Execution key was closed by cancel",
+        "current": null
+      }
+    }
+  ],
+  "canonical": [
+    {
+      "value": {
+        "2": null,
+        "10": null
+      },
+      "canonical": "{\"2\":null,\"10\":null}",
+      "digest": "32ce6229c4ffe23c47132793b8af3f92ff2ff0f500470758f51bff15e565ff6c"
+    },
+    {
+      "value": {
+        "2": 4,
+        "10": 2,
+        "b": 1,
+        "a": 3,
+        "01": 5
+      },
+      "canonical": "{\"2\":4,\"10\":2,\"01\":5,\"a\":3,\"b\":1}",
+      "digest": "875336871ae000b37d2979fcc6afe30858d62f65e4aa43eb9886966ee844133a"
+    },
+    {
+      "value": {
+        "": "bmp",
+        "𐀀": "outside",
+        "nested": {
+          "2": "1.250000000001",
+          "10": null,
+          "empty": [],
+          "object": {}
+        }
+      },
+      "canonical": "{\"nested\":{\"2\":\"1.250000000001\",\"10\":null,\"empty\":[],\"object\":{}},\"𐀀\":\"outside\",\"\":\"bmp\"}",
+      "digest": "a031df9056675604d75b8149336afd43e6753f12a0d7a96e842ebe6dd107ca81"
+    },
+    {
+      "value": {
+        "0": "zero",
+        "4294967294": "index",
+        "4294967295": "other",
+        "00": "other",
+        "decimal": "0.000000000001",
+        "s": "\"\\\n"
+      },
+      "canonical": "{\"0\":\"zero\",\"4294967294\":\"index\",\"00\":\"other\",\"4294967295\":\"other\",\"decimal\":\"0.000000000001\",\"s\":\"\\\"\\\\\\n\"}",
+      "digest": "fa0edd8646bddd07441c2a9cb80d7098e59f79c5c146f66373bdd5e384751c1c"
+    }
+  ],
+  "receipt_pages": [
+    {
+      "after_receipt": 0,
+      "snapshot": {
+        "schema_version": "agent_execution_v1",
+        "execution_id": "execution:1",
+        "idempotency_key": "key:1",
+        "caller_run_ref": "run:1",
+        "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+        "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+        "sequence": 1,
+        "state": "waiting_provider",
+        "state_revision": 1,
+        "activation": {
+          "nonce": "nonce:1",
+          "ordinal": 1,
+          "reason": "initial",
+          "charge_ref": "charge:1",
+          "authority_required": true,
+          "authorization_revision": 1
+        },
+        "pause": null,
+        "provider_limit": {
+          "provider": "codex",
+          "limit_window": "five_hour",
+          "reset_at": "2026-11-01T00:00:00Z",
+          "detected_at": "2026-11-01T00:00:00Z",
+          "resume": "native",
+          "unavailable_reason": null
+        },
+        "next_probe_at": "2026-11-01T00:00:00Z",
+        "fault_retries_used": 0,
+        "cancel_requested": false,
+        "admission_closed": false,
+        "usage": {
+          "state": "not_started",
+          "active_ms": 0,
+          "turns": 0,
+          "output_bytes": 0,
+          "units": null,
+          "complete": false,
+          "observed_at": "2026-11-01T00:00:00Z",
+          "started_at": null,
+          "finished_at": null
+        },
+        "stop_confirmation": "confirmed",
+        "side_effect_resolution": "resolved",
+        "terminal": null,
+        "receipts": [
+          {
+            "cursor": 1,
+            "receipt_id": "receipt:1",
+            "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+            "charge_ref": "charge:1",
+            "reservation_ref": "reservation:1",
+            "allocation_units": "1.250000000001",
+            "activation_nonces": [
+              "nonce:1",
+              "nonce:2"
+            ],
+            "outcome": "executed",
+            "units": "1.250000000001",
+            "active_ms": 1200,
+            "turns": 1,
+            "output_bytes": 25,
+            "execution_confirmed": true,
+            "stop_confirmation": "confirmed",
+            "side_effect_resolution": "resolved",
+            "finished_at": "2026-11-01T00:00:00Z"
+          },
+          {
+            "cursor": 2,
+            "receipt_id": "receipt:2",
+            "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+            "charge_ref": "charge:1",
+            "reservation_ref": "reservation:1",
+            "allocation_units": "1.250000000001",
+            "activation_nonces": [
+              "nonce:1",
+              "nonce:2"
+            ],
+            "outcome": "provider_zero_turn",
+            "units": "0",
+            "active_ms": 1200,
+            "turns": 0,
+            "output_bytes": 25,
+            "execution_confirmed": false,
+            "stop_confirmation": "confirmed",
+            "side_effect_resolution": "resolved",
+            "finished_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "next_receipt_cursor": 2,
+        "final_receipt_cursor": 3,
+        "receipts_complete": false,
+        "artifacts": [],
+        "workspace_ref": "workspace:generation:1"
+      }
+    },
+    {
+      "after_receipt": 2,
+      "snapshot": {
+        "schema_version": "agent_execution_v1",
+        "execution_id": "execution:1",
+        "idempotency_key": "key:1",
+        "caller_run_ref": "run:1",
+        "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+        "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+        "sequence": 1,
+        "state": "terminal",
+        "state_revision": 1,
+        "activation": {
+          "nonce": "nonce:1",
+          "ordinal": 1,
+          "reason": "initial",
+          "charge_ref": "charge:1",
+          "authority_required": true,
+          "authorization_revision": 1
+        },
+        "pause": null,
+        "provider_limit": null,
+        "next_probe_at": null,
+        "fault_retries_used": 0,
+        "cancel_requested": false,
+        "admission_closed": true,
+        "usage": {
+          "state": "ended",
+          "active_ms": 0,
+          "turns": 0,
+          "output_bytes": 0,
+          "units": null,
+          "complete": true,
+          "observed_at": "2026-11-01T00:00:00Z",
+          "started_at": null,
+          "finished_at": "2026-11-01T00:00:00Z"
+        },
+        "stop_confirmation": "confirmed",
+        "side_effect_resolution": "resolved",
+        "terminal": {
+          "kind": "succeeded"
+        },
+        "receipts": [
+          {
+            "cursor": 3,
+            "receipt_id": "receipt:3",
+            "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+            "charge_ref": "charge:1",
+            "reservation_ref": "reservation:1",
+            "allocation_units": "1.250000000001",
+            "activation_nonces": [
+              "nonce:1",
+              "nonce:2"
+            ],
+            "outcome": "not_started_closed",
+            "units": "0",
+            "active_ms": 1200,
+            "turns": 0,
+            "output_bytes": 25,
+            "execution_confirmed": false,
+            "stop_confirmation": "confirmed",
+            "side_effect_resolution": "resolved",
+            "finished_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "next_receipt_cursor": 3,
+        "final_receipt_cursor": 3,
+        "receipts_complete": true,
+        "artifacts": [],
+        "workspace_ref": "workspace:generation:1"
+      }
+    },
+    {
+      "after_receipt": 3,
+      "snapshot": {
+        "schema_version": "agent_execution_v1",
+        "execution_id": "execution:1",
+        "idempotency_key": "key:1",
+        "caller_run_ref": "run:1",
+        "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+        "request_digest": "93d58adc69d7251c2f538661e3d66d84f31cf2183cef0d35f60d361c349edf34",
+        "sequence": 1,
+        "state": "terminal",
+        "state_revision": 1,
+        "activation": {
+          "nonce": "nonce:1",
+          "ordinal": 1,
+          "reason": "initial",
+          "charge_ref": "charge:1",
+          "authority_required": true,
+          "authorization_revision": 1
+        },
+        "pause": null,
+        "provider_limit": null,
+        "next_probe_at": null,
+        "fault_retries_used": 0,
+        "cancel_requested": false,
+        "admission_closed": true,
+        "usage": {
+          "state": "ended",
+          "active_ms": 0,
+          "turns": 0,
+          "output_bytes": 0,
+          "units": null,
+          "complete": true,
+          "observed_at": "2026-11-01T00:00:00Z",
+          "started_at": null,
+          "finished_at": "2026-11-01T00:00:00Z"
+        },
+        "stop_confirmation": "confirmed",
+        "side_effect_resolution": "resolved",
+        "terminal": {
+          "kind": "succeeded"
+        },
+        "receipts": [],
+        "next_receipt_cursor": 3,
+        "final_receipt_cursor": 3,
+        "receipts_complete": true,
+        "artifacts": [],
+        "workspace_ref": "workspace:generation:1"
+      }
+    }
+  ],
+  "error_cases": [
+    {
+      "name": "post_after_cancel_closed",
+      "method": "POST",
+      "path": "/v1/executions",
+      "status": 409,
+      "body": {
+        "error": {
+          "type": "agent_execution_error",
+          "code": "request_conflict",
+          "message": "Execution key was closed by cancel",
+          "current": null
+        }
+      }
+    }
+  ],
+  "invalid_creates": [
+    {
+      "name": "slash_key",
+      "value": {
+        "execution": {
+          "schema_version": "agent_execution_v1",
+          "kind": "agent",
+          "idempotency_key": "bad/key",
+          "caller_run_ref": "run:1",
+          "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+          "work": {
+            "work_kind": "coding",
+            "role": null,
+            "automatic": true,
+            "workspace_ref": "workspace:1",
+            "agent_definition_ref": "agent:1",
+            "artifact_spec_ref": null,
+            "policy_ref": "policy:1",
+            "scope_grant_ref": "scope:1",
+            "resource_refs": [],
+            "model": "model:1",
+            "runtime_profile": null,
+            "required_authentication_mode": "chatgpt_subscription",
+            "expected_authentication_binding_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+            "required_provider": "codex",
+            "required_billing_mode": "subscription",
+            "inputs": [
+              {
+                "kind": "instructions",
+                "provenance": "trusted",
+                "content_ref": "input:1",
+                "expected_revocation_epoch": null
+              }
+            ],
+            "tool_refs": [],
+            "skill_refs": [],
+            "mcp_refs": [],
+            "requirements": {
+              "isolation": "sandbox",
+              "capabilities": [],
+              "worker_requirements": {
+                "os": null,
+                "applications": [],
+                "gpu": "none",
+                "workspace_locality": "any",
+                "native": "forbidden"
+              }
+            },
+            "result_contract": {
+              "format": "text",
+              "json_schema": null
+            },
+            "approval_bindings": [],
+            "continuation_mode": "fresh",
+            "client_key": null
+          },
+          "money": {
+            "mode": "fixed_units",
+            "basis": "subscription_execution_units_v1",
+            "allocation_units": "1.250000000001",
+            "run_units_ceiling": "4"
+          },
+          "time": {
+            "run_hard_ms": 120000,
+            "grace_ms": 1000
+          },
+          "resources": {
+            "max_turns": 10,
+            "max_output_bytes": 1000
+          },
+          "recovery": {
+            "provider_wait": "enabled",
+            "fault_retry_limit": 1,
+            "fault_retries_used": 0
+          },
+          "predecessor": null,
+          "authority_ceilings": [],
+          "initial_authorization": {
+            "decision": "allow",
+            "revision": 1,
+            "activation_nonce": "nonce:1",
+            "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+            "caller_run_ref": "run:1",
+            "issued_at": "2026-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "expires_at": "2026-11-01T00:01:00Z",
+            "allowed_active_ms": 60000,
+            "stop_limit": "run_seconds",
+            "charge": {
+              "charge_ref": "charge:1",
+              "reservation_ref": "reservation:1",
+              "allocation_units": "1.250000000001"
+            },
+            "authority_ceiling_at": null,
+            "approval": null,
+            "settled_receipt_cursor": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "slash_predecessor_key",
+      "value": {
+        "execution": {
+          "schema_version": "agent_execution_v1",
+          "kind": "agent",
+          "idempotency_key": "key:1",
+          "caller_run_ref": "run:1",
+          "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+          "work": {
+            "work_kind": "coding",
+            "role": null,
+            "automatic": true,
+            "workspace_ref": "workspace:1",
+            "agent_definition_ref": "agent:1",
+            "artifact_spec_ref": null,
+            "policy_ref": "policy:1",
+            "scope_grant_ref": "scope:1",
+            "resource_refs": [],
+            "model": "model:1",
+            "runtime_profile": null,
+            "required_authentication_mode": "chatgpt_subscription",
+            "expected_authentication_binding_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+            "required_provider": "codex",
+            "required_billing_mode": "subscription",
+            "inputs": [
+              {
+                "kind": "instructions",
+                "provenance": "trusted",
+                "content_ref": "input:1",
+                "expected_revocation_epoch": null
+              }
+            ],
+            "tool_refs": [],
+            "skill_refs": [],
+            "mcp_refs": [],
+            "requirements": {
+              "isolation": "sandbox",
+              "capabilities": [],
+              "worker_requirements": {
+                "os": null,
+                "applications": [],
+                "gpu": "none",
+                "workspace_locality": "any",
+                "native": "forbidden"
+              }
+            },
+            "result_contract": {
+              "format": "text",
+              "json_schema": null
+            },
+            "approval_bindings": [],
+            "continuation_mode": "fresh",
+            "client_key": null
+          },
+          "money": {
+            "mode": "fixed_units",
+            "basis": "subscription_execution_units_v1",
+            "allocation_units": "1.250000000001",
+            "run_units_ceiling": "4"
+          },
+          "time": {
+            "run_hard_ms": 120000,
+            "grace_ms": 1000
+          },
+          "resources": {
+            "max_turns": 10,
+            "max_output_bytes": 1000
+          },
+          "recovery": {
+            "provider_wait": "enabled",
+            "fault_retry_limit": 1,
+            "fault_retries_used": 0
+          },
+          "predecessor": {
+            "idempotency_key": "bad/key",
+            "execution_id": "prior",
+            "relation": "rerun"
+          },
+          "authority_ceilings": [],
+          "initial_authorization": {
+            "decision": "allow",
+            "revision": 1,
+            "activation_nonce": "nonce:1",
+            "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+            "caller_run_ref": "run:1",
+            "issued_at": "2026-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "expires_at": "2026-11-01T00:01:00Z",
+            "allowed_active_ms": 60000,
+            "stop_limit": "run_seconds",
+            "charge": {
+              "charge_ref": "charge:1",
+              "reservation_ref": "reservation:1",
+              "allocation_units": "1.250000000001"
+            },
+            "authority_ceiling_at": null,
+            "approval": null,
+            "settled_receipt_cursor": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "slash_client_key",
+      "value": {
+        "execution": {
+          "schema_version": "agent_execution_v1",
+          "kind": "agent",
+          "idempotency_key": "key:1",
+          "caller_run_ref": "run:1",
+          "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+          "work": {
+            "work_kind": "coding",
+            "role": null,
+            "automatic": true,
+            "workspace_ref": "workspace:1",
+            "agent_definition_ref": "agent:1",
+            "artifact_spec_ref": null,
+            "policy_ref": "policy:1",
+            "scope_grant_ref": "scope:1",
+            "resource_refs": [],
+            "model": "model:1",
+            "runtime_profile": null,
+            "required_authentication_mode": "chatgpt_subscription",
+            "expected_authentication_binding_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+            "required_provider": "codex",
+            "required_billing_mode": "subscription",
+            "inputs": [
+              {
+                "kind": "instructions",
+                "provenance": "trusted",
+                "content_ref": "input:1",
+                "expected_revocation_epoch": null
+              }
+            ],
+            "tool_refs": [],
+            "skill_refs": [],
+            "mcp_refs": [],
+            "requirements": {
+              "isolation": "sandbox",
+              "capabilities": [],
+              "worker_requirements": {
+                "os": null,
+                "applications": [],
+                "gpu": "none",
+                "workspace_locality": "any",
+                "native": "forbidden"
+              }
+            },
+            "result_contract": {
+              "format": "text",
+              "json_schema": null
+            },
+            "approval_bindings": [],
+            "continuation_mode": "fresh",
+            "client_key": "bad/key"
+          },
+          "money": {
+            "mode": "fixed_units",
+            "basis": "subscription_execution_units_v1",
+            "allocation_units": "1.250000000001",
+            "run_units_ceiling": "4"
+          },
+          "time": {
+            "run_hard_ms": 120000,
+            "grace_ms": 1000
+          },
+          "resources": {
+            "max_turns": 10,
+            "max_output_bytes": 1000
+          },
+          "recovery": {
+            "provider_wait": "enabled",
+            "fault_retry_limit": 1,
+            "fault_retries_used": 0
+          },
+          "predecessor": null,
+          "authority_ceilings": [],
+          "initial_authorization": {
+            "decision": "allow",
+            "revision": 1,
+            "activation_nonce": "nonce:1",
+            "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+            "caller_run_ref": "run:1",
+            "issued_at": "2026-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "expires_at": "2026-11-01T00:01:00Z",
+            "allowed_active_ms": 60000,
+            "stop_limit": "run_seconds",
+            "charge": {
+              "charge_ref": "charge:1",
+              "reservation_ref": "reservation:1",
+              "allocation_units": "1.250000000001"
+            },
+            "authority_ceiling_at": null,
+            "approval": null,
+            "settled_receipt_cursor": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "model_profile_both_null",
+      "value": {
+        "execution": {
+          "schema_version": "agent_execution_v1",
+          "kind": "agent",
+          "idempotency_key": "key:1",
+          "caller_run_ref": "run:1",
+          "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+          "work": {
+            "work_kind": "coding",
+            "role": null,
+            "automatic": true,
+            "workspace_ref": "workspace:1",
+            "agent_definition_ref": "agent:1",
+            "artifact_spec_ref": null,
+            "policy_ref": "policy:1",
+            "scope_grant_ref": "scope:1",
+            "resource_refs": [],
+            "model": null,
+            "runtime_profile": null,
+            "required_authentication_mode": "chatgpt_subscription",
+            "expected_authentication_binding_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+            "required_provider": "codex",
+            "required_billing_mode": "subscription",
+            "inputs": [
+              {
+                "kind": "instructions",
+                "provenance": "trusted",
+                "content_ref": "input:1",
+                "expected_revocation_epoch": null
+              }
+            ],
+            "tool_refs": [],
+            "skill_refs": [],
+            "mcp_refs": [],
+            "requirements": {
+              "isolation": "sandbox",
+              "capabilities": [],
+              "worker_requirements": {
+                "os": null,
+                "applications": [],
+                "gpu": "none",
+                "workspace_locality": "any",
+                "native": "forbidden"
+              }
+            },
+            "result_contract": {
+              "format": "text",
+              "json_schema": null
+            },
+            "approval_bindings": [],
+            "continuation_mode": "fresh",
+            "client_key": null
+          },
+          "money": {
+            "mode": "fixed_units",
+            "basis": "subscription_execution_units_v1",
+            "allocation_units": "1.250000000001",
+            "run_units_ceiling": "4"
+          },
+          "time": {
+            "run_hard_ms": 120000,
+            "grace_ms": 1000
+          },
+          "resources": {
+            "max_turns": 10,
+            "max_output_bytes": 1000
+          },
+          "recovery": {
+            "provider_wait": "enabled",
+            "fault_retry_limit": 1,
+            "fault_retries_used": 0
+          },
+          "predecessor": null,
+          "authority_ceilings": [],
+          "initial_authorization": {
+            "decision": "allow",
+            "revision": 1,
+            "activation_nonce": "nonce:1",
+            "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+            "caller_run_ref": "run:1",
+            "issued_at": "2026-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "expires_at": "2026-11-01T00:01:00Z",
+            "allowed_active_ms": 60000,
+            "stop_limit": "run_seconds",
+            "charge": {
+              "charge_ref": "charge:1",
+              "reservation_ref": "reservation:1",
+              "allocation_units": "1.250000000001"
+            },
+            "authority_ceiling_at": null,
+            "approval": null,
+            "settled_receipt_cursor": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "model_profile_both_set",
+      "value": {
+        "execution": {
+          "schema_version": "agent_execution_v1",
+          "kind": "agent",
+          "idempotency_key": "key:1",
+          "caller_run_ref": "run:1",
+          "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+          "work": {
+            "work_kind": "coding",
+            "role": null,
+            "automatic": true,
+            "workspace_ref": "workspace:1",
+            "agent_definition_ref": "agent:1",
+            "artifact_spec_ref": null,
+            "policy_ref": "policy:1",
+            "scope_grant_ref": "scope:1",
+            "resource_refs": [],
+            "model": "model",
+            "runtime_profile": "profile",
+            "required_authentication_mode": "chatgpt_subscription",
+            "expected_authentication_binding_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+            "required_provider": "codex",
+            "required_billing_mode": "subscription",
+            "inputs": [
+              {
+                "kind": "instructions",
+                "provenance": "trusted",
+                "content_ref": "input:1",
+                "expected_revocation_epoch": null
+              }
+            ],
+            "tool_refs": [],
+            "skill_refs": [],
+            "mcp_refs": [],
+            "requirements": {
+              "isolation": "sandbox",
+              "capabilities": [],
+              "worker_requirements": {
+                "os": null,
+                "applications": [],
+                "gpu": "none",
+                "workspace_locality": "any",
+                "native": "forbidden"
+              }
+            },
+            "result_contract": {
+              "format": "text",
+              "json_schema": null
+            },
+            "approval_bindings": [],
+            "continuation_mode": "fresh",
+            "client_key": null
+          },
+          "money": {
+            "mode": "fixed_units",
+            "basis": "subscription_execution_units_v1",
+            "allocation_units": "1.250000000001",
+            "run_units_ceiling": "4"
+          },
+          "time": {
+            "run_hard_ms": 120000,
+            "grace_ms": 1000
+          },
+          "resources": {
+            "max_turns": 10,
+            "max_output_bytes": 1000
+          },
+          "recovery": {
+            "provider_wait": "enabled",
+            "fault_retry_limit": 1,
+            "fault_retries_used": 0
+          },
+          "predecessor": null,
+          "authority_ceilings": [],
+          "initial_authorization": {
+            "decision": "allow",
+            "revision": 1,
+            "activation_nonce": "nonce:1",
+            "work_digest": "75b5f5262ea213a7bf20d0356145726916b0daace7d20b772b150121495fcff1",
+            "caller_run_ref": "run:1",
+            "issued_at": "2026-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "expires_at": "2026-11-01T00:01:00Z",
+            "allowed_active_ms": 60000,
+            "stop_limit": "run_seconds",
+            "charge": {
+              "charge_ref": "charge:1",
+              "reservation_ref": "reservation:1",
+              "allocation_units": "1.250000000001"
+            },
+            "authority_ceiling_at": null,
+            "approval": null,
+            "settled_receipt_cursor": 0
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": "1",
+  "image_id": "sha256:REPLACE_WITH_THE_BUILT_IMAGE_ID_0000000000000000000000000000000",
+  "agent_compression_mode": "runtime_managed",
+  "worker_capabilities": {
+    "local-docker": {
+      "worker_id": "local-docker",
+      "os": "linux",
+      "applications": [],
+      "gpu": "none",
+      "isolation_modes": [
+        "sandbox"
+      ],
+      "native": false,
+      "workspace_locality": "local",
+      "remote_connection": null,
+      "workspace_bindings": []
+    }
+  }
+}

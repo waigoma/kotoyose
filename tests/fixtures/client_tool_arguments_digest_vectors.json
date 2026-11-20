@@ -1,0 +1,226 @@
+{
+  "schemaVersion": "1",
+  "rule": [
+    "Canonical text follows Python json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).",
+    "Object keys sort by Unicode code point sequence (Python str ordering), not by locale or UTF-16 code unit.",
+    "Numbers must be finite. Integers must satisfy |n| <= 2^53. A float whose value is integral and |v| <= 2^53 is emitted as an integer (1.0 -> 1, -0.0 -> 0).",
+    "Other floats use Python repr(float): shortest round-trip digits; exponent form when decimal exponent < -4 or >= 16; exponent has explicit sign and at least two digits (1e-07, 1.5e+16).",
+    "Strings escape only \\\" \\\\ and control characters U+0000-U+001F (\\n \\r \\t \\b \\f, otherwise \\u00XX lowercase hex). Non-ASCII, U+007F and U+2028 stay raw. Lone surrogates are rejected.",
+    "Digest is sha256 hex of the UTF-8 bytes of the canonical text."
+  ],
+  "valid": [
+    {
+      "name": "empty_object",
+      "arguments": {},
+      "canonical": "{}",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "name": "scalars",
+      "arguments": {
+        "b": true,
+        "a": null,
+        "c": "text",
+        "d": 42
+      },
+      "canonical": "{\"a\":null,\"b\":true,\"c\":\"text\",\"d\":42}",
+      "sha256": "89297db57973d481948564e8dd837d692d415cdd86511b01c66effba62fdec00"
+    },
+    {
+      "name": "nested_sort",
+      "arguments": {
+        "z": {
+          "y": [
+            1,
+            {
+              "x": 2,
+              "a": 3
+            }
+          ],
+          "b": 0
+        },
+        "a": [
+          {
+            "q": 1
+          },
+          {
+            "p": 2
+          }
+        ]
+      },
+      "canonical": "{\"a\":[{\"q\":1},{\"p\":2}],\"z\":{\"b\":0,\"y\":[1,{\"a\":3,\"x\":2}]}}",
+      "sha256": "bd9ab8db9fe38307feab77c3aba4ae98095fb740725ce6929d689231c8422cb9"
+    },
+    {
+      "name": "ascii_case_order",
+      "arguments": {
+        "b": 1,
+        "B": 2,
+        "a": 3,
+        "A": 4,
+        "_": 5,
+        "0": 6
+      },
+      "canonical": "{\"0\":6,\"A\":4,\"B\":2,\"_\":5,\"a\":3,\"b\":1}",
+      "sha256": "635be047c11a6be3ec03039d9e9247b2c386bdb58b3477acb71cc72eed7a0103"
+    },
+    {
+      "name": "japanese_keys",
+      "arguments": {
+        "名前": "太郎",
+        "あ": 1,
+        "ア": 2,
+        "亜": 3,
+        "a": 4
+      },
+      "canonical": "{\"a\":4,\"あ\":1,\"ア\":2,\"亜\":3,\"名前\":\"太郎\"}",
+      "sha256": "709d01924fad7259f8407226c4f4ac41c2c39fee8b24fc6504804dd0afda45ad"
+    },
+    {
+      "name": "astral_keys",
+      "arguments": {
+        "😀": 1,
+        "￿": 2,
+        "𝔸": 3,
+        "ｚ": 4,
+        "z": 5
+      },
+      "canonical": "{\"z\":5,\"ｚ\":4,\"￿\":2,\"𝔸\":3,\"😀\":1}",
+      "sha256": "9ee695c90eba87acd1f179dc3d3bb799fc86709e6dfbe5784d6ac937c6978545"
+    },
+    {
+      "name": "decimals",
+      "arguments": {
+        "half": 0.5,
+        "tenth": 0.1,
+        "sum": 0.30000000000000004,
+        "neg": -2.5,
+        "big": 1.5e+16,
+        "tiny": 1e-07,
+        "mid": 123456.789,
+        "exp16": 1e+16,
+        "exp15": 1000000000000000.0,
+        "small4": 0.0001,
+        "small5": 1e-05
+      },
+      "canonical": "{\"big\":1.5e+16,\"exp15\":1000000000000000,\"exp16\":1e+16,\"half\":0.5,\"mid\":123456.789,\"neg\":-2.5,\"small4\":0.0001,\"small5\":1e-05,\"sum\":0.30000000000000004,\"tenth\":0.1,\"tiny\":1e-07}",
+      "sha256": "7f25e716566bb7d7351036fc40be3569e53fae602b4760adf8f7b132f52fd5fb"
+    },
+    {
+      "name": "integral_floats",
+      "arguments": {
+        "one": 1.0,
+        "zero": 0.0,
+        "negzero": -0.0,
+        "large": 9007199254740992.0,
+        "neglarge": -9007199254740992.0,
+        "int": 7,
+        "negint": -7
+      },
+      "canonical": "{\"int\":7,\"large\":9007199254740992,\"negint\":-7,\"neglarge\":-9007199254740992,\"negzero\":0,\"one\":1,\"zero\":0}",
+      "sha256": "33753a783e74c17b11340585f744392610b4a230e4e50437254dba6f5d2cc2c8"
+    },
+    {
+      "name": "float_beyond_safe",
+      "arguments": {
+        "v": 1.2345678901234567e+19,
+        "w": 1e+21,
+        "x": 1.7976931348623157e+308,
+        "y": 5e-324
+      },
+      "canonical": "{\"v\":1.2345678901234567e+19,\"w\":1e+21,\"x\":1.7976931348623157e+308,\"y\":5e-324}",
+      "sha256": "5e3954be723bec46f73480a0bf0daad6558c524245b733a0ae8ef4ae53d2c9a6"
+    },
+    {
+      "name": "strings",
+      "arguments": {
+        "quote": "a\"b",
+        "backslash": "a\\b",
+        "newline": "a\nb",
+        "tab": "a\tb",
+        "cr": "a\rb",
+        "bs": "a\bb",
+        "ff": "a\fb",
+        "ctrl": "a\u0001b\u001fb",
+        "del": "ab",
+        "slash": "a/b",
+        "u2028": "a b",
+        "emoji": "😀",
+        "nbsp": "a b",
+        "surrogate_pair_text": "𝔸𝔹"
+      },
+      "canonical": "{\"backslash\":\"a\\\\b\",\"bs\":\"a\\bb\",\"cr\":\"a\\rb\",\"ctrl\":\"a\\u0001b\\u001fb\",\"del\":\"ab\",\"emoji\":\"😀\",\"ff\":\"a\\fb\",\"nbsp\":\"a b\",\"newline\":\"a\\nb\",\"quote\":\"a\\\"b\",\"slash\":\"a/b\",\"surrogate_pair_text\":\"𝔸𝔹\",\"tab\":\"a\\tb\",\"u2028\":\"a b\"}",
+      "sha256": "dae1b6c620a35ad8b8f6ef25440a05d0276985a82807e8a2488d887a736f12ce"
+    },
+    {
+      "name": "arrays",
+      "arguments": {
+        "list": [
+          [],
+          [
+            []
+          ],
+          [
+            1,
+            [
+              2,
+              [
+                3
+              ]
+            ]
+          ],
+          [
+            "a",
+            null,
+            false,
+            0.25
+          ]
+        ]
+      },
+      "canonical": "{\"list\":[[],[[]],[1,[2,[3]]],[\"a\",null,false,0.25]]}",
+      "sha256": "cc527f3b866fc09b521046f5e01cadbe709a741f9218da51c116fe440643edd7"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "nan",
+      "reason": "NaN is not finite",
+      "construct": {
+        "python": "float('nan')",
+        "typescript": "Number.NaN"
+      }
+    },
+    {
+      "name": "infinity",
+      "reason": "Infinity is not finite",
+      "construct": {
+        "python": "float('inf')",
+        "typescript": "Number.POSITIVE_INFINITY"
+      }
+    },
+    {
+      "name": "int_above_safe",
+      "reason": "integer 9007199254740993 exceeds 2^53",
+      "construct": {
+        "python": "9007199254740993",
+        "typescript": "JSON.parse loses precision; reject when the parsed number is not a safe integer"
+      }
+    },
+    {
+      "name": "int_below_safe",
+      "reason": "integer -9007199254740993 exceeds 2^53",
+      "construct": {
+        "python": "-9007199254740993",
+        "typescript": "same as above"
+      }
+    },
+    {
+      "name": "lone_surrogate",
+      "reason": "string contains lone surrogate U+D800",
+      "construct": {
+        "python": "'\\ud800'",
+        "typescript": "'\\ud800'"
+      }
+    }
+  ]
+}

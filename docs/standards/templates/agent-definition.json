@@ -1,0 +1,8 @@
+{
+  "schema_version": "1",
+  "kind": "agent_definition",
+  "instructions": "Complete the caller request within the granted tools. Preserve the provenance of repository context, handoff and external data. A caller that grants a client tool supplies its ref on AgentExecution.tool_refs, for example: [\"REPLACE_WITH_REGISTERED_CLIENT_TOOL_REF\"]. Return a concise result without claiming verification you did not perform.",
+  "output_contract": "text",
+  "max_turns": 8,
+  "timeout_policy_ref": "REPLACE_WITH_REGISTERED_TIMEOUT_REF"
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": "1",
+  "image_id": "sha256:f97cd896d8d896dc21211ad9f6fe62ad21050b3c132b7c3a4bd2a46f02269713",
+  "agent_container": {
+    "agent_root": "/opt/agent",
+    "home_root": "/opt/fixture/.local/state/kotoyose/agent-homes"
+  },
+  "drivers": {
+    "claude.agent-sdk": {
+      "cli_binary": "/var/lib/kotoyose-a0-offline/claude"
+    },
+    "codex.app-server": {
+      "cli_binary": "/opt/fixture/programming/kotoyose/.venv/lib/python3.13/site-packages/codex_cli_bin/bin/codex"
+    },
+    "cursor.sdk": {}
+  }
+}

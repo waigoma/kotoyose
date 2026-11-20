@@ -1,0 +1,151 @@
+{
+  "schema_version": "1",
+  "suite_id": "benchmark-manifest-template",
+  "dataset_revision": "0000000000000000000000000000000000000000",
+  "cases": [
+    {
+      "case_id": "research.command.fixture",
+      "task_definition": {
+        "name": "REPLACE_WITH_TASK_DEFINITION",
+        "inputs": "REPLACE_WITH_DATASET_INPUTS"
+      },
+      "acceptance": {
+        "exit_code": 0,
+        "required_artifacts": ["stdout"]
+      },
+      "expected_failure_classification": "success",
+      "requests": [
+        {
+          "execution": {
+            "schema_version": "1",
+            "kind": "command",
+            "idempotency_key": "REPLACE_WITH_SAVED_DISPATCH_KEY_1",
+            "caller_run_ref": "REPLACE_WITH_DURABLE_RUN_REF",
+            "workspace_ref": "REPLACE_WITH_REGISTERED_WORKSPACE_REF",
+            "execution_grant_ref": "REPLACE_WITH_REGISTERED_GRANT_REF",
+            "budgets_ref": "REPLACE_WITH_REGISTERED_BUDGET_REF",
+            "requirements": {
+              "isolation": "sandbox",
+              "capabilities": ["command_execution", "durable_attempts"]
+            },
+            "preferences": {},
+            "command_spec_ref": "REPLACE_WITH_REGISTERED_COMMAND_REF",
+            "argv_ref": "REPLACE_WITH_REGISTERED_ARGV_REF",
+            "cwd_ref": "REPLACE_WITH_REGISTERED_CWD_REF",
+            "env_refs": [],
+            "fixture_refs": [
+              "REPLACE_WITH_REGISTERED_FIXTURE_REF",
+              "REPLACE_WITH_RESPONSE_FIXTURE_REF"
+            ],
+            "timeout_policy_ref": "REPLACE_WITH_REGISTERED_TIMEOUT_REF"
+          }
+        }
+      ],
+      "pins": {
+        "repository_revision": "0000000000000000000000000000000000000000",
+        "untracked_inputs_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "task_definition_digest": "c58034ff0f33506fc3c59d9366783561d2987c7f0d7c5dfc83b750d1fdcc15f1",
+        "acceptance_digest": "f4c7d13538027c623545d77d8fd9f3c59f7eb67b10080f9e3f33d1ca016f6dd9",
+        "provider": null,
+        "provider_state": "not_applicable",
+        "model": null,
+        "model_state": "not_applicable",
+        "prompt_digest": null,
+        "profile_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+        "scope_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+        "agent_definition_digest": null,
+        "preset_resolution_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+        "runtime_policy_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+        "cli_digest": null,
+        "runtime_version": "REPLACE_WITH_RUNTIME_VERSION",
+        "image_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+        "lockfile_digest": "9999999999999999999999999999999999999999999999999999999999999999",
+        "skill_schema_digests": [],
+        "mcp_schema_digests": [],
+        "tool_schema_digests": [],
+        "pack_generator": "REPLACE_WITH_PACK_GENERATOR_VERSION",
+        "memory_snapshot_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "fixture_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "external_response_fixture_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "unreplayable_inputs": [],
+        "replay_constraints": []
+      },
+      "cache": {
+        "key_digest": "1ff71f4800faca49093f0c25631ee712b6c0d778b4eb4a57c7315cb8ae7d5d62",
+        "key_material": {
+          "request_digests": ["f81262d07a8e5554807ecd0df72f5f97f0e12edd7524dae45eb2f07b54523f11"],
+          "pins_digest": "85c92b529c595c65931f93d484237ec9a168c961de5923945e7548ff490a4a91",
+          "warmup": "cold",
+          "reuse": "disabled",
+          "repetition_conditions": [
+            {
+              "warmup": "cold",
+              "reuse": "disabled",
+              "cache_snapshot_digest": null
+            }
+          ]
+        },
+        "warmup": "cold",
+        "reuse": "disabled",
+        "repetition_conditions": [
+          {
+            "warmup": "cold",
+            "reuse": "disabled",
+            "cache_snapshot_digest": null
+          }
+        ]
+      },
+      "side_effects": {
+        "mode": "isolated_mock",
+        "response_fixture_ref": "REPLACE_WITH_RESPONSE_FIXTURE_REF",
+        "external_calls": "fixture_replay",
+        "mutation_replay": "forbidden"
+      },
+      "retention_references": [
+        {
+          "kind": "artifact",
+          "ref": "artifact:REPLACE_WITH_EVIDENCE_REF",
+          "request": {
+            "schema_version": "1",
+            "request_id": "benchmark-retention-artifact-request-1",
+            "expected_version": 0,
+            "expires_at": "2027-09-15T00:00:00Z",
+            "pins": ["benchmark:research.command.fixture"],
+            "proof_ref": "REPLACE_WITH_DATASET_ADOPTION_PROOF_REF",
+            "acknowledged_required_action_ref": null
+          }
+        },
+        {
+          "kind": "workspace",
+          "ref": "workspace:00000000-0000-0000-0000-000000000001:0",
+          "request": {
+            "schema_version": "1",
+            "request_id": "benchmark-retention-workspace-request-1",
+            "expected_version": 0,
+            "workspace_ref": "workspace:00000000-0000-0000-0000-000000000001:0",
+            "expires_at": "2027-09-15T00:00:00Z",
+            "pins": ["benchmark:research.command.fixture"],
+            "proof_ref": "REPLACE_WITH_DATASET_ADOPTION_PROOF_REF",
+            "recovery": {
+              "mode": "discard",
+              "decision_ref": "REPLACE_WITH_REPLAY_RECOVERY_DECISION_REF"
+            },
+            "acknowledged_required_actions": []
+          }
+        },
+        {
+          "kind": "fixture",
+          "ref": "REPLACE_WITH_REGISTERED_FIXTURE_REF",
+          "pin": "benchmark:research.command.fixture",
+          "proof_ref": "REPLACE_WITH_DATASET_ADOPTION_PROOF_REF"
+        },
+        {
+          "kind": "fixture",
+          "ref": "REPLACE_WITH_RESPONSE_FIXTURE_REF",
+          "pin": "benchmark:research.command.fixture",
+          "proof_ref": "REPLACE_WITH_DATASET_ADOPTION_PROOF_REF"
+        }
+      ]
+    }
+  ]
+}

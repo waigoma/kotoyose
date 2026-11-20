@@ -1,0 +1,5 @@
+{
+  "name": "kotoyose-config-bundle",
+  "version": "0.1.0",
+  "description": "kotoyose の config.yml を安全に編集するための規約と仕様表。"
+}

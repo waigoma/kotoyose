@@ -1,0 +1,369 @@
+# Kotoyose 設定サンプル (最小スターター)
+# credential_leak_guard: true  # 実行成果物と Chat 応答に対する認証情報の形状検査
+#
+# このファイルをコピーして config.yml を作成してください (config.yml は gitignore 対象)。
+#   cp config.example.yml config.yml
+# パスは KOTOYOSE_CONFIG 環境変数で変更できます。
+#
+# ここに置くのは provider ごとの最小形と参照機構の実演だけです。
+# キーの網羅的な意味・型・既定値・不変条件は下記を参照してください。
+#   skills/kotoyose-config-bundle/skills/kotoyose-config/references/schema.md
+#   skills/kotoyose-config-bundle/skills/kotoyose-config/references/pitfalls.md
+#
+# 検証 (書き込み後に必ず走らせる):
+#   KOTOYOSE_CONFIG=config.yml .venv/bin/python -c "import kotoyose.config as c; c.get_config()"
+#
+# 相対パス (./skills/... など) はサーバーの作業ディレクトリ = リポジトリ直下から解決されます
+# systemd で起動する場合も同じ WorkingDirectory を指定してください。
+
+# ---------------------------------------------------------------------------
+# 共有リソース — 複数の preset から *_refs で再利用する
+# ---------------------------------------------------------------------------
+
+# skill_refs で参照する。plugin は束ディレクトリ、skill は束の中の skill 名。
+# 束の作り方は skills/README.md を参照。
+skill_definitions:
+  hello-kotoyose:
+    description: skills 配線の動作確認用サンプル
+    plugin: ./skills/example-bundle
+    skill: hello-kotoyose
+    # skills を native 注入できるのは claude / codex のみ。cursor /
+    # antigravity では本文を system prompt へ前置する (frontmatter は除去)。
+    # 前置に使う凝縮版を別に持ちたいときだけ fallback_prompt を指す。
+    # 未指定なら {plugin}/skills/{skill}/SKILL.md がそのまま使われる。
+    # fallback_prompt: ./docs/example-prompt.md
+
+# agent_refs で参照する。参照名がそのまま subagent 名になる。
+agent_definitions:
+  researcher:
+    description: 読み取り専用の調査係。要点のみを簡潔に報告する。
+    prompt: |-
+      あなたは読み取り専用の調査 subagent。指示された調査を実施し、
+      結論と根拠 (ファイルパス・バージョン・URL) を簡潔に報告する。
+      ファイルの作成・変更・削除、状態を変える操作は行わない。
+    # tools を省くと親セッションの全ツール (Bash 含む) を継承するため、
+    # read-only 用途では必ず明示する
+    tools: [Read, Grep, Glob, WebFetch, WebSearch]
+    model: haiku                   # haiku | sonnet | opus | inherit (既定: inherit)
+
+# mcp_refs で参照する。server は inline mcp_servers と同一スキーマ。
+#   type: http / sse -> url 必須
+#   type: stdio      -> command 必須
+mcps:
+  example-mcp:
+    description: HTTP 型 MCP の例 (URL とトークンは自分の環境のものに置き換える)
+    server:
+      type: http
+      url: "http://127.0.0.1:9000/mcp/"
+      headers:
+        Authorization: "Bearer <YOUR_MCP_TOKEN>"
+
+# prompt_file_refs で参照する。本文が system prompt へ append される。
+# 注意: path の実在は検証されない。存在しなければ黙ってスキップされる。
+prompt_files:
+  example-prompt:
+    description: system prompt へ追記する指示書の例
+    path: ./docs/example-prompt.md
+  coding-verification:
+    path: ./docs/example-coding-verification.md
+  coding-git:
+    path: ./docs/example-coding-git.md
+
+# connection は利用する account / endpoint / secret 参照を一箇所にまとめる。
+connections:
+  claude-cli:
+    provider: claude
+    kind: subscription
+    data_policy: no_training
+    # host 実行と `/usage` quota 確認専用。端末で `CLAUDE_CONFIG_DIR=<dir> claude` を起動し `/login` する
+    config_dir: /srv/operator/.local/share/kotoyose/claude-cli
+  claude-token:
+    provider: claude
+    kind: subscription
+    data_policy: no_training
+    # `claude setup-token` で発行した token を Kotoyose secret store (`claude-token`) または `env:VAR` へ保存する
+    secret: claude-token
+    quota_from: claude-cli
+  codex-cli:
+    provider: codex
+    kind: subscription
+    data_policy: no_training
+  cursor-apikey:
+    provider: cursor
+    kind: api_key
+    data_policy: unknown
+    secret: "env:CURSOR_API_KEY"
+
+  # free-endpoint:
+  #   provider: claude
+  #   kind: endpoint
+  #   endpoint: https://example.invalid/v1
+  #   secret: example-free-key
+  #   data_policy: trains
+
+  # agy-home:
+  #   provider: antigravity
+  #   kind: subscription
+  #   data_policy: unknown
+  #   profile: agy
+  #   config_dir: /srv/operator/.local/share/kotoyose/agy-home
+
+  # cursor-cli-home:
+  #   provider: cursor
+  #   kind: subscription
+  #   data_policy: no_training  # アカウント設定で確認済みの場合
+  #   profile: cursor
+  #   config_dir: /srv/operator/.local/share/kotoyose/cursor-home
+
+  # grok-cli-home:
+  #   provider: grok
+  #   kind: subscription
+  #   data_policy: unknown
+  #   profile: grok
+  #   config_dir: /srv/operator/.local/share/kotoyose/grok-home
+
+# route は chat と agent の接続先を共通に定義する。
+routes:
+  claude-sonnet:
+    driver: claude.agent-sdk
+    model: claude-sonnet-5
+    connection: claude-token
+  codex-default:
+    driver: codex.app-server
+    model: gpt-5.1-codex
+    connection: codex-cli
+
+  # free-chat:
+  #   driver: claude.agent-sdk
+  #   model: example-model
+  #   connection: free-endpoint
+
+  # agy-print:
+  #   driver: cli.print
+  #   profile: agy
+  #   model: gemini-4-hydrogen-high
+  #   connection: agy-home
+
+  # cursor-cli:
+  #   driver: cli.print
+  #   profile: cursor
+  #   model: auto
+  #   connection: cursor-cli-home
+
+  # grok-cli:
+  #   driver: cli.print
+  #   profile: grok
+  #   model: grok-build-0.1
+  #   connection: grok-cli-home
+
+# cli.print の route と参照先の subscription connection に同じ profile を指定する。
+# CLI の実行ファイルを上書きする場合は execution.json の
+# drivers["cli.print"].profile_binaries にプロファイル ID とパスを設定する。
+# 例: {"drivers": {"cli.print": {"profile_binaries": {"agy": "/opt/kotoyose/bin/agy"}}}}
+
+# ---------------------------------------------------------------------------
+# models — キーがそのまま /v1/models で返るモデル名になる
+# execution の既定は direct。Native chat を使う Claude alias だけ native を指定する。
+# ---------------------------------------------------------------------------
+models:
+  # grok-cli-review:
+  #   route: grok-cli
+  #   agent:
+  #     place: host
+  #     surface: read
+
+  # cursor-cli-review:
+  #   route: cursor-cli
+  #   agent:
+  #     place: host
+  #     surface: read
+
+  # free-chat:
+  #   route: free-chat
+  #   tools: []
+
+  # --- claude: 最小構成 -----------------------------------------------------
+  kotoyose-chat:
+    route: claude-sonnet
+    cwd: ~/kotoyose-workspace
+    bare: true
+    permission_mode: bypassPermissions
+    deny:
+      - "Bash(rm -rf*)"
+      - "Bash(curl*)"
+
+  # --- claude: 共有リソースの参照実演 ---------------------------------------
+  # *_refs は記載順に合成され、preset 内の inline 設定が最後に勝つ。
+  kotoyose-with-refs:
+    provider: claude
+    model: claude-sonnet-5
+    cwd: ~/kotoyose-workspace
+    bare: true
+    skill_refs: [hello-kotoyose]    # plugins と skills を同時に組み立てる
+    agent_refs: [researcher]       # 参照名 = subagent 名
+    mcp_refs: [example-mcp]
+    prompt_file_refs: [example-prompt]
+
+  # --- claude: 一発分類 preset の例 (assistant-client) -------------------------
+  # assistant-client が捕捉した一言ごとに 1 回だけ叩く
+  # プリセット。会話でもコーディングでもなく「JSON 一発仕分け」なので、
+  # 何往復もする対話用の重いモデルは過剰 — haiku で足りるモデル層は低くてよい。
+  #
+  # bare: true なので Skill ツール自体が生成されず、CLAUDE.md / MCP / skills /
+  # agents の自動検出もされない。deny に "Skill" を足さないこと —
+  # bare: true では元々不要な上に、deny に Skill を入れると preset 全体で
+  # plugin skill が全滅する既知の罠がある (docs/ROADMAP.md Phase 14 参照)。
+  #
+  # memory_enabled: false — 分類は会話ではないので memory hook (旧仕様の
+  # round-trip 用キー) 側の記憶に混ぜてはいけない。
+  #
+  # 参考: 呼び出し側 (assistant-client) が /v1/chat/completions の system role で
+  # 毎回送ってくる文面そのもの。
+  # 変更するときは両者を同期させること。「判断に迷った場合は必ず work を選ぶ」は
+  # 業務情報が私物の memory store へ漏れ込まないための安全側デフォルト。
+  #
+  #   あなたは投げ込まれた一言を仕分ける分類器です。JSON のみを出力してください。
+  #
+  #   kind:
+  #     event      — 起きた出来事の記述
+  #     learning   — 学んだこと・知識
+  #     want       — やりたいこと・作りたいもの
+  #     watch      — 価格や株価など、条件が整うまで見張りたいもの
+  #     delegation — 他者に渡した仕事
+  #
+  #   scope:
+  #     private — 私生活
+  #     work    — 業務に関わるもの。判断に迷った場合は必ず work を選ぶこと
+  #
+  #   出力形式:
+  #   {"kind": "...", "scope": "...", "confidence": 0.0-1.0, "summary": "80 字以内"}
+  #
+  # 既知のギャップ (2026-07-30 Task 11 で判明): このハーネスの /v1/chat/completions は
+  # request.messages の role="system" を実際には一切使わない。build_options() の
+  # system_prompt は preset.prompt_file_refs だけから組み立てられ (config.py
+  # _build_system_prompt)、chat.py は role=="user" のメッセージしか SDK へ渡さない。
+  # そのため上記 SYSTEM_PROMPT を assistant-client が毎回 system role で送っても、
+  # モデルは Claude Code 既定の system prompt (無指定) を受け取るだけで分類器として
+  # 振る舞わない (JSON を返さず雑談してしまう)。assistant-client 側は classify() が
+  # JSON parse に失敗した捕捉を status='needs_review' に落とすため実害はないが、
+  # 分類自体は機能しない。恒久対処は次のいずれか:
+  #   (a) chat.py 側で role="system" のメッセージを system_prompt の append に
+  #       反映する (kotoyose コード変更、要レビュー)
+  #   (b) この preset に prompt_file_refs で同内容のプロンプトファイルを追加する
+  #       (assistant-client の SYSTEM_PROMPT と二重管理になる欠点はあるが今すぐ効く)
+  # cwd は実在するワークスペースを指すこと。
+  assistant-classify:
+    provider: claude
+    model: haiku
+    cwd: ~/kotoyose/assistant-workspace
+    bare: true
+    tools: []                      # Bash も含め built-in tool 一切不要 (JSON 一発仕分けのみ)
+    deny: []                       # ← ここに "Skill" を足さない (上記コメント参照)
+    permission_mode: bypassPermissions
+    memory_enabled: false
+
+  # --- codex ---------------------------------------------------------------
+  # ローカルの Codex を SDK 経由で呼ぶ。認証は `codex login` と共有 (~/.codex/auth.json)。
+  codex-coding:
+    provider: codex
+    model: gpt-5.1-codex
+    cwd: ~/kotoyose-workspace
+    allow_cwd_override: true
+    cwd_allowed_roots: [~/kotoyose-workspace]   # allow_cwd_override とセットで必須
+    codex:
+      sandbox: workspace-write
+      # 省略時は SDK が固定した互換 CLI。別 version を意図して試す場合だけ指定する
+      # codex_bin: ~/.local/bin/codex
+
+  # --- cursor --------------------------------------------------------------
+  # SDK 移行済み (2026-07-14)。CLI 時代のキー (output_format / stream_partial_output /
+  # force / command / args / resume_flag) は黙って無視されるので書かないこと。
+  cursor-coding:
+    provider: cursor
+    model: gpt-5.1
+    cwd: ~/kotoyose-workspace
+    allow_cwd_override: true
+    cwd_allowed_roots: [~/kotoyose-workspace]
+    # 共通 effort は Cursor の model parameter id=effort へ変換されます。
+    # model ごとの有効値は Admin UI が Cursor SDK catalog から取得します。
+    # low / medium / high / xhigh 以外を指定した場合も転送はしますが、Cursor 側に
+    # 拒否される可能性があるため cursor.effort_outside_fallback を warning に出します。
+    # effort: high
+    cursor:
+      # ModelSelection.params へそのまま渡す provider 固有 parameter。
+      # 例: 対応 model では fast: "true"、Router では optimize_for: intelligence。
+      # 有効な key/value は account/model ごとに異なるため catalog を正本にしてください。
+      model_params: {}
+    # 必要に応じて coding 用の指示書も適用する。
+    # prompt_file_refs: [coding-verification, coding-git]
+
+  # --- antigravity ---------------------------------------------------------
+  # `agy` CLI を subprocess で呼ぶ。plain text 出力のため streaming では
+  # 最終応答を 1 chunk として返す。
+  antigravity-coding:
+    provider: antigravity
+    model: "Gemini 3.5 Flash (High)"
+    cwd: ~/kotoyose-workspace
+    allow_cwd_override: true
+    cwd_allowed_roots: [~/kotoyose-workspace]
+    antigravity:
+      print_timeout: 5m0s
+      dangerously_skip_permissions: false
+      sandbox: false
+
+# ---------------------------------------------------------------------------
+# settings — provider 認証。Admin UI の Settings 画面が書き込む
+# 環境変数より settings が優先される (resolve_setting)
+# ---------------------------------------------------------------------------
+# Set the acknowledgement in the console alias editor so Kotoyose computes the digest.
+# training_acks:
+#   - alias: free-chat
+#     digest: "<generated SHA-256 digest>"
+#     reasons: [trains]
+#     capabilities: [attachments]
+#     acknowledged_by: owner
+#     at: "2026-11-18T10:00:00Z"
+#     note: "Public repository only"
+
+settings:
+  anthropic_auth_token: null       # ANTHROPIC_AUTH_TOKEN より優先
+  anthropic_base_url: null
+
+# ---------------------------------------------------------------------------
+# clients — API キーに結び付ける Client と権限境界 (ADR-0011)
+# Console の Endpoint 画面 (/admin/clients) からも作成・編集できる。
+# ---------------------------------------------------------------------------
+# clients:
+#   # ワークスペース実行クライアント
+#   orchestrator:
+#     models: [orchestrator-coding, orchestrator-review]  # 許可する alias (または ["*"])
+#     places: [isolated]                        # host / isolated (UI 表記: Host / Jail)
+#     max_surface: write                        # none / read / exec / write
+#     workspace_roots:
+#       - /var/lib/orchestrator/workspaces          # 絶対パス。空なら chat 専用
+#     max_run_seconds: 1800
+#     max_memory_bytes: 6442450944
+#     max_processes: 1024
+#     max_cpus: 2
+#     max_concurrent_runs: 4
+#
+#   # ワークスペースを持たないチャット専用クライアント
+#   chat-app:
+#     models: [kotoyose-chat]
+#     places: [isolated]
+#     max_surface: none
+#     workspace_roots: []                       # 空 = chat only
+
+# ---------------------------------------------------------------------------
+# agent_container — ネット隔離 container で Agent CLI を動かす場合の参考形 (未接続)
+# 実際に読まれるのは NativeExecutionConfig (KOTOYOSE_EXECUTION_CONFIG の JSON) で、
+# この YAML には置かない。下は field 名と既定値の対応だけを示す。
+#   agent_container:
+#     agent_root: /opt/agent              # CLI binary と egress_relay.py を置く dir
+#     home_root: /var/lib/kotoyose/agent-home  # Run ごとの HOME を作る dir
+#     workspace_memory_bytes: 6442450944  # 6 GiB
+#     cpus: 2
+#     pids_limit: 2048
+#     min_free_disk_bytes: 21474836480    # 20 GiB
+#     max_containers: 2
+#     egress_socket_root: /run/kotoyose        # 48 byte 以内 (UNIX socket 上限 108 byte)

@@ -1,0 +1,22 @@
+{
+  "execution": {
+    "schema_version": "1",
+    "kind": "command",
+    "idempotency_key": "REPLACE_WITH_SAVED_DISPATCH_KEY",
+    "caller_run_ref": "REPLACE_WITH_DURABLE_RUN_REF",
+    "workspace_ref": "REPLACE_WITH_REGISTERED_WORKSPACE_REF",
+    "execution_grant_ref": "REPLACE_WITH_REGISTERED_GRANT_REF",
+    "budgets_ref": "REPLACE_WITH_REGISTERED_BUDGET_REF",
+    "requirements": {
+      "isolation": "sandbox",
+      "capabilities": ["command_execution", "durable_attempts", "dispatch_idempotency", "confirmed_cancel"]
+    },
+    "preferences": {},
+    "command_spec_ref": "REPLACE_WITH_REGISTERED_COMMAND_REF",
+    "argv_ref": "REPLACE_WITH_REGISTERED_ARGV_REF",
+    "cwd_ref": "REPLACE_WITH_REGISTERED_CWD_REF",
+    "env_refs": [],
+    "fixture_refs": [],
+    "timeout_policy_ref": "REPLACE_WITH_REGISTERED_TIMEOUT_REF"
+  }
+}
