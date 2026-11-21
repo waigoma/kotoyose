@@ -858,6 +858,7 @@ def _make_isolated_setup(
     *,
     with_agent_container: bool = True,
     with_coding_cell: bool = True,
+    driver: str = "cli.print",
 ):
     login_home = tmp_path / "agy-login-home"
     login_home.mkdir(parents=True, exist_ok=True)
@@ -880,7 +881,7 @@ def _make_isolated_setup(
         },
         routes={
             "agy-print": {
-                "driver": "cli.print",
+                "driver": driver,
                 "model": "gemini-4-hydrogen-high",
                 "connection": "agy-home-1",
                 "profile": "agy",
@@ -890,6 +891,7 @@ def _make_isolated_setup(
             "agy-iso": {
                 "route": "agy-print",
                 "agent": {"place": "isolated", "surface": "write"},
+                **({"tools": ["Edit"], "deny": ["Bash"]} if driver == "cli.acp" else {}),
             },
             "agy-host": {
                 "route": "agy-print",
@@ -1148,3 +1150,15 @@ async def test_training_policy_refuses_and_admits_print_cli_execution(tmp_path, 
     with pytest.raises(ExecutionError) as stale:
         await admission.resolve("caller-a", caller, request)
     assert stale.value.reason_code == "data_policy_restricted"
+
+
+async def test_acp_isolated_admission_pins_protocol_and_alias_policy(tmp_path, monkeypatch):
+    admission, _, _, image_id, request, _ = _make_isolated_setup(tmp_path, monkeypatch, driver="cli.acp")
+    plan = await admission.resolve("caller-a", get_client("caller-a"), request)
+    assert plan["backend"] == "print_cli"
+    assert plan["acp"] is True
+    assert plan["profile_digest"] == AGY_PROFILE.profile_digest(acp=True)
+    assert plan["acp_tools"] == ["Edit"]
+    assert plan["acp_deny"] == ["Bash"]
+    assert plan["image_id"] == image_id
+    assert plan["execution_environment"] == "isolated"

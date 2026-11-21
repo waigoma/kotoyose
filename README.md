@@ -91,6 +91,8 @@ flowchart LR
 
 実際に使えるかは、契約しているプラン、OS、導入した CLI の版によります。
 
+Claude Code と Codex は SDK に CLI が同梱されているため、個別の導入は不要です。コンソールの Providers から Cursor、Antigravity、Grok Build の Linux x86_64 版を導入できます。
+
 ## 大事な注意
 
 - 各 AI サービスの利用規約を守る責任は利用者にあります。

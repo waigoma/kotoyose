@@ -138,25 +138,28 @@ routes:
   #   model: example-model
   #   connection: free-endpoint
 
-  # agy-print:
-  #   driver: cli.print
+  # agy-acp:
+  #   driver: cli.acp
   #   profile: agy
   #   model: gemini-4-hydrogen-high
   #   connection: agy-home
 
   # cursor-cli:
-  #   driver: cli.print
+  #   driver: cli.acp
   #   profile: cursor
   #   model: auto
   #   connection: cursor-cli-home
 
   # grok-cli:
-  #   driver: cli.print
+  #   driver: cli.acp
   #   profile: grok
   #   model: grok-build-0.1
   #   connection: grok-cli-home
 
-# cli.print の route と参照先の subscription connection に同じ profile を指定する。
+# cli.acp / cli.print の route と参照先の subscription connection に同じ profile を指定する。
+# cli.print は ACP 非対応 CLI のフォールバックとして、route で明示指定する。
+# 両 driver は execution.json の CLI 設定を共用する。
+# isolated では drivers["cli.print"].cells.coding.image_id も設定する。
 # CLI の実行ファイルを上書きする場合は execution.json の
 # drivers["cli.print"].profile_binaries にプロファイル ID とパスを設定する。
 # 例: {"drivers": {"cli.print": {"profile_binaries": {"agy": "/opt/kotoyose/bin/agy"}}}}
@@ -166,6 +169,19 @@ routes:
 # execution の既定は direct。Native chat を使う Claude alias だけ native を指定する。
 # ---------------------------------------------------------------------------
 models:
+  # agy-chat:
+  #   route: agy-acp
+  #   cwd: ~/kotoyose-workspace
+  #   agent:
+  #     place: host
+  #     surface: read
+  #
+  # agy-coding:
+  #   route: agy-acp
+  #   agent:
+  #     place: isolated
+  #     surface: write
+
   # grok-cli-review:
   #   route: grok-cli
   #   agent:

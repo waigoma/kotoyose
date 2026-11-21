@@ -288,3 +288,66 @@ async def test_print_cli_chat_does_not_wait_for_helpers_holding_stderr(print_cha
     else:
         pytest.fail("helper process outlived the turn")
 
+
+
+async def test_acp_route_reuses_live_session_across_http_completion_modes(print_chat, tmp_path, monkeypatch):
+    cfg = print_chat.config
+    cfg.routes["print"].driver = "cli.acp"
+    cfg.routes["print"].model = "model-x"
+    alias_cwd = tmp_path / "alias-cwd"
+    alias_cwd.mkdir()
+    cfg.models["print-chat"].cwd = str(alias_cwd)
+    cfg.models["print-chat"].tools = ["Read"]
+    print_chat.lookup.return_value = None
+    monkeypatch.setattr("kotoyose.chat_session.sessions", session.sessions)
+    # Host chat runs in a private temporary cwd (like cli.print chat), never the alias cwd.
+    chat_dirs = []
+
+    class _ChatDir:
+        def __init__(self, prefix):
+            self.path = tmp_path / f"{prefix}{len(chat_dirs)}"
+
+        def __enter__(self):
+            self.path.mkdir()
+            chat_dirs.append(self.path)
+            return str(self.path)
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("kotoyose.runtime.acp.tempfile.TemporaryDirectory", lambda prefix: _ChatDir(prefix))
+    monkeypatch.setattr("kotoyose.chat_session.session_cache_identities", session.session_cache_identities)
+
+    binary = Path(print_chat.settings.drivers["cli.print"].profile_binaries["cursor"])
+    fixture = Path(__file__).with_name("fixtures") / "fake_acp_agent.py"
+    binary.write_text(f"#!{sys.executable}\n" + f"""
+import runpy, sys
+assert sys.argv[1:] == ["acp"]
+runpy.run_path({str(fixture)!r}, run_name="__main__")
+""")
+    try:
+        async with client() as http:
+            first = await http.post("/v1/chat/completions", json={"model": "print-chat", "messages": MESSAGES})
+            assert first.status_code == 200, first.text
+            assert first.json()["choices"][0]["message"]["content"] == "hello world"
+            assert first.json()["usage"]["prompt_tokens"] == 10
+            assert first.headers["x-session-event"] == "created"
+            follow_up = [{"role": "user", "content": "next"}]
+            second = await http.post("/v1/chat/completions", json={
+                "model": "print-chat", "messages": follow_up, "stream": True,
+            })
+            assert second.status_code == 200, second.text
+            assert second.headers["x-session-event"] == "cache_hit"
+            assert "world" in second.text
+    finally:
+        for active_session in session.sessions.values():
+            await active_session.disconnect()
+
+    assert len(chat_dirs) == 1 and chat_dirs[0].name.startswith("kotoyose-acp-chat-")
+    assert not (alias_cwd / "acp-requests.jsonl").exists()
+    calls = [json.loads(line) for line in (chat_dirs[0] / "acp-requests.jsonl").read_text().splitlines()]
+    assert [call["method"] for call in calls if "method" in call] == [
+        "initialize", "session/new", "session/set_config_option", "session/prompt", "session/prompt",
+    ]
+    prompts = [call["params"]["prompt"] for call in calls if call.get("method") == "session/prompt"]
+    assert prompts[-1] == [{"type": "text", "text": "next"}]

@@ -47,7 +47,7 @@
 | chat / Codex | 同上 → `runtime/codex.py` | host。Codex SDK の app-server | `CODEX_HOME` (alias の `codex_home`) の auth.json を CLI 自身が読む | Codex 自身の sandbox (`codex.sandbox`、`runtime/codex.py:589-606`) | Codex sandbox 次第 | `env={"CODEX_HOME": ...}` だけ指定 (`runtime/codex.py:418`)。他の継承は未確認 |
 | chat / Cursor | 同上 → `runtime/cursor.py` | host。Cursor SDK の local agent (`runtime/cursor.py:405`) | API key を secret / env から (`runtime/cursor.py:379-383`) | Cursor 側の `sandbox_options` (`runtime/cursor.py:645`) | 未確認 | 未確認 |
 | chat / Gemini | 同上 → `runtime/gemini.py` | host の subprocess | CLI 自身の home | 制限なし | 制限なし | `env` 指定なしで `os.environ` を継承 (`runtime/gemini.py:90-93`) |
-| chat / agy | 同上 → `runtime/antigravity.py` | host の subprocess | connection の login home を `HOME` に (`runtime/antigravity.py:577-590`) | 制限なし (agy の permission 次第) | 制限なし | allowlist (PATH・LANG・TERM) + HOME (`print_cli_profiles.py:380`) |
+| chat / agy over ACP | `cli.acp` (`profile: agy`) → `runtime/acp.py` | host の subprocess | connection の login home を `HOME` に | ACP の permission policy | host の network | allowlist + HOME |
 | chat / native | `execution: native` の alias。`routes/chat.py:212` → `compatibility_http.py:84` | execution の Attempt と同じ (下の bwrap 行) | 同下 | 同下 | 同下 | 同下 |
 | execution / legacy | `agent.place: host` で print 以外 (`agent_route.py:206-217`) → `legacy_agent.py:52` → 子 `legacy_agent_runner.py` → chat と同じ `runtime/*` | host の子 process | chat と同じ | 作業場が cwd。閉じ込めなし | `network: unrestricted` と自己申告 (`legacy_runtime.py:54`) | `env={**os.environ, ...}` で丸ごと継承 (`legacy_agent.py:77`) |
 | execution / Claude jail | `agent.place: isolated`, surface `none` (`agent_spec.py:194-199`) → `native_claude.py:222` | bwrap (`provider_jail.py:44-131`)。systemd scope は使わない | `CLAUDE_CODE_OAUTH_TOKEN` 等 1 つを env で (`native_claude.py:813-816`, `provider_jail.py:133-170`) | root は空 tmpfs、`/usr` `/bin` `/lib` を ro、HOME は tmpfs。作業場なし | **host の network を共有** (`--share-net`, `provider_jail.py:79`) | allowlist (PATH・HOME・LANG・credential・base URL) を `execve` で渡す (`provider_jail.py:156-170,186`) |
@@ -302,7 +302,8 @@ class Place(Protocol):
 |---|---|---|---|
 | chat の Claude (`runtime/claude.py`)、jail の Claude (`native_claude.py`)、container の Claude (`container_claude.py`) | `claude.agent-sdk` | `ClaudeSDKClient` + runner の launcher。allow.tools は `tools` / `allowed_tools`、MCP は in-process 中継 | `deny` 文字列・`bypassPermissions`・3 つの起動経路 |
 | chat の Codex (`runtime/codex.py`)、Codex jail (`native_codex.py`)、container (`container_codex.py`) | `codex.app-server` | app-server RPC。jail では Codex 自身の sandbox は使わない (container が境界、今の `external_sandbox` と同じ)。host では allow none なので sandbox は read-only に固定 | `codex.sandbox`・`execution_environment`・bwrap の rootfs (§9 問い 1) |
-| cli.print (`print_cli_agent.py`, `container_print.py`)、chat の agy (`runtime/antigravity.py`) | `cli.print:<profile>` | profile のまま | chat 用の agy runtime |
+| cli.print (`print_cli_agent.py`, `container_print.py`) | `cli.print:<profile>` | profile のまま | — |
+| chat の agy (`runtime/acp.py`) | `cli.acp` | `profile: agy` で ACP を使用 | — |
 | chat の Gemini (`runtime/gemini.py`) | `cli.print:gemini` (新しい profile) | `gemini -p` の profile を足す。版と出力形は実測で決める (未確認) | `runtime/gemini.py` |
 | chat の Cursor (`runtime/cursor.py`) | `cursor.sdk` か `cli.print:cursor-agent` | §9 問い 7 | どちらかが消える |
 | `antigravity.sdk` (`runtime/antigravity_sdk.py`) | endpoint adapter か廃止 | API key / Vertex の endpoint なので、CLI ではなく endpoint の扱い | — |
@@ -335,7 +336,7 @@ class Place(Protocol):
 | `orchestrator-review`・`orchestrator-review-judge`・`orchestrator-sidecar-prepare`・`orchestrator-sidecar-review`・`orchestrator-sidecar-risk` | execution / claude.agent-sdk | 今の execution の閉じ込めどおり | jail + read (review は作業場を読むだけ) |
 | `orchestrator-coding`・`orchestrator-review-terra` | execution / codex.app-server (codex-chatgpt) | coding の Docker / 読み取りの部屋 | jail + write / jail + read |
 | `agy-coding` | execution / cli.print | Docker + CONNECT の許可先 | jail + write (今の形そのまま) |
-| `agy-hydrogen` | chat / antigravity.agy | host、全 tool | host + none |
+| `agy-hydrogen` | chat / `cli.acp` (ACP、`profile: agy`) | host、ACP の permission policy (alias の tools は空) | host + none |
 
 ### 5.3 壊れるものと直し方
 
@@ -389,7 +390,7 @@ class Place(Protocol):
 | S2 | host で起こす子 process を全部 clean env の launcher 経由にする (Claude chat の `cli_path`、Gemini、Codex chat、legacy runner) | `os.environ` の継承 (`legacy_agent.py:77`、SDK の合成) | 子の env を dump する試験。各 provider の smoke | 中 (proxy・PATH・node の場所など、隠れた依存が出る) |
 | S3 | runner と `JailPlace` を入れ、execution の container 経路 (Claude coding、Codex read/coding、print jail) を 1 つの launcher に寄せる。挙動は変えない | `container_claude.py`・`container_codex.py`・`container_print.py` の起動部分の重複 | 既存の container 試験、orchestrator の coding と review の縦断 | 高 (orchestrator の本線) |
 | S4 | 新しい設定の形 (§3.1) と変換 script。chat を runner の `HostPlace` に載せ、会話の alias を host + none に。jail の chat (`assistant-cron`・`orchestrator-task-agent`) と MCP 中継も同じ段で出す | alias の `execution`・`execution_environment`・`native`・`agent`・`permission_mode`・`deny`・`tools`・`bare`・`setting_sources`・`require_isolation`・`allow_cwd_override`・`cwd_allowed_roots`、`session.py` の provider 別起動 | S0 の差分が §5.2 の表どおり。アシスタントの会話・cron・PM・task-agent を 1 回ずつ。`X-Session-Event` の `created` が切り替え時の 1 回だけ | 高 (アシスタントの挙動が変わる。§9 問い 11 を先に決める) |
-| S5 | legacy を消す。Gemini は `cli.print` の profile に、agy の chat は `cli.print` に、Cursor は問い 7 の結論に | `legacy_agent.py`・`legacy_agent_runner.py`・`legacy_runtime.py`・`LegacyRuntimeProfile`・`runtime/gemini.py`・`runtime/antigravity.py` (chat 用)・`agent_spec.py` の `_HOST_LEGACY` | Gemini・agy・Cursor の chat と execution の smoke | 中 |
+| S5 | legacy を消す。Gemini は `cli.print` の profile に、agy の chat は `cli.acp` に、Cursor は問い 7 の結論に | `legacy_agent.py`・`legacy_agent_runner.py`・`legacy_runtime.py`・`LegacyRuntimeProfile`・`runtime/gemini.py`・`agent_spec.py` の `_HOST_LEGACY` | Gemini・agy・Cursor の chat と execution の smoke | 中 |
 | S6 | bwrap の provider jail を消す。Claude の surface none と Codex の exec を `JailPlace` (または host + none) に移す | `provider_jail.py`・`codex_provider_jail.py`・`codex_provider_scope.py`・`codex_rootfs*.py`・`scripts/native-claude`・`scripts/native-codex`・`native_worker.py` (sandbox_exec を残すなら Docker の worker だけにする) | orchestrator が Codex exec / Claude none を使っているかを先に調べる。使っていれば縦断 | 高 |
 | S7 | Codex のサブスクを `config_dir` + 素通しに、`codex-host` と `codex-chatgpt` を 1 つに (ADR-0004)。問い 4 の結論で Claude の setup-token も素通しに | `codex_egress.py` の注入、`codex_subscription.py` の auth.json 読み、`auth_file` 欄 | 許可先をログイン更新まで含めて実測 (agy と同じやり方)。jail で 1 日動かして更新が通ること | 中 |
 | S8 | 名前を揃える。`/v1/models` の `agent` 欄、console、snapshot の欄名。DB の CHECK を作り直す (ADR-0008) | `isolation`・`backend`・`sandbox` などの公開語彙 | 古い CHECK から始める DB 試験 | 低 |

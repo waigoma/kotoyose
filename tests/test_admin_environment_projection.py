@@ -70,7 +70,7 @@ def _seed(admin_client, *, environment=_OMITTED, provider="codex", sandbox="read
     }
     if runtime_provider is not None:
         driver = {"claude": "claude.agent-sdk", "codex": "codex.app-server", "cursor": "cursor.sdk",
-                  "antigravity": "antigravity.agy"}[runtime_provider]
+                  "antigravity": "antigravity.sdk"}[runtime_provider]
         connection = {"provider": runtime_provider, "kind": "subscription", "data_policy": "no_training"}
         if runtime_provider == "claude":
             connection["secret"] = "claude-oauth"  # Claude の subscription は setup-token の secret が必須

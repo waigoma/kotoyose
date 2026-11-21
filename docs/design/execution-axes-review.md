@@ -34,7 +34,6 @@
 - **Claude container の upstream は固定ではありません (§3.7)。** 任意の base URL を `allow_private=True` で受けます (`container_claude.py:132`)。§3.5 の「私設アドレスはどの値でも許さない」をそのまま入れると、LAN の endpoint が壊れます。
 - **`/v1/conversations` の `agent_models` は policy があるときだけ効きます (§2.4)。** caller の無い key と旧 bearer は素通りです (`routes/conversations.py:69-73`)。
 - **旧 token の利用数は再起動で 0 に戻ります (§5.4)。** memory だけの計数です (`api_key_store.py:119-129`)。配備直後の 0 は根拠になりません。
-- **chat の agy は login home が無いと実 `~` を HOME にします (§2.2)。** `runtime/antigravity.py:590` です。
 
 ## 3. 危険な点 (重い順)
 

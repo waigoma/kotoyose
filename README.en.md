@@ -89,6 +89,8 @@ flowchart LR
 
 What actually works depends on your plan, your OS and the CLI version you install.
 
+Claude Code and Codex use the binaries bundled with their SDKs. You can install the Linux x86_64 builds of Cursor, Antigravity, and Grok Build from the console’s Providers page.
+
 ## Important
 
 - You are responsible for complying with each AI service's terms of service.

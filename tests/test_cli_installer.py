@@ -1,5 +1,5 @@
-import base64
 from dataclasses import replace
+from contextlib import contextmanager
 import hashlib
 import io
 import shutil
@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from kotoyose import cli_installer
-from kotoyose.cli_install_spec import CliInstallSpec, NpmPlatformBinary, install_path
+from kotoyose.cli_install_spec import CliArtifact, CliInstallSpec, install_path
 from kotoyose.print_cli_profiles import get_print_cli_profile, resolve_print_cli_binary
 
 
@@ -33,12 +33,26 @@ def _tar(entries):
     return output.getvalue()
 
 
+def _fake_http(monkeypatch, request):
+    @contextmanager
+    def stream(method, url, **kwargs):
+        assert method == "GET"
+        assert kwargs["trust_env"] is False
+        body = request(url)
+        response = httpx.Response(
+            200, request=httpx.Request(method, url), stream=httpx.ByteStream(body),
+        )
+        yield response
+
+    monkeypatch.setattr(cli_installer.httpx, "stream", stream)
+
+
 @pytest.fixture
 def distribution(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    monkeypatch.setattr(cli_installer, "_platform_key", lambda: "linux-x64")
+    monkeypatch.setattr(cli_installer.install_spec, "platform_key", lambda: "linux-x64")
 
-    def prepare(*, version="1.2.3", compression=None, member="package/bin/fake", extra=()):
+    def prepare(*, version="1.2.3", layout="member", member="package/bin/fake", extra=()):
         binary = f"""#!{sys.executable}
 import os
 from pathlib import Path
@@ -49,34 +63,36 @@ assert list(Path(os.environ["HOME"]).iterdir()) == []
 assert not Path({str(tmp_path / "kotoyose/tools/fixture/1.2.3")!r}).exists()
 print("fixture {version} (build)")
 """.encode()
-        if compression == "brotli":
-            binary = subprocess.run(
-                ["node", "-e", "process.stdout.write(require('node:zlib').brotliCompressSync(require('node:fs').readFileSync(0)))"],
-                input=binary, capture_output=True, check=True, timeout=5,
-            ).stdout
+        if layout == "directory":
+            binary = binary.replace(b'print("fixture', b'assert (Path(__file__).parent.parent / "package.json").is_file()\nprint("fixture')
         data = _tar([
             (member, binary),
             ("package/package.json", b'{"scripts":{"postinstall":"touch script-ran"}}'),
             *extra,
         ])
-        integrity = "sha512-" + base64.b64encode(hashlib.sha512(data).digest()).decode()
-        spec = CliInstallSpec("1.2.3", (NpmPlatformBinary("linux-x64", "@sample/binary-linux-x64", integrity),),
-                              "package/bin/fake", compression)
+        url = "https://vendor.invalid/{version}/{os}/{arch}.tar.gz"
+        artifact = CliArtifact(
+            "linux-x64", "linux", "x64", (url,), "sha512:" + hashlib.sha512(data).hexdigest(),
+            format="tar.gz",
+            **({"directory": "package", "entrypoint": "bin/fake"} if layout == "directory"
+               else {"member": "package/bin/fake"}),
+        )
+        spec = CliInstallSpec("1.2.3", (artifact,))
         profile = replace(get_print_cli_profile("grok"), id="fixture", binary="fake", install=spec)
 
         def download(url):
-            assert url == "https://registry.npmjs.org/@sample/binary-linux-x64/-/binary-linux-x64-1.2.3.tgz"
+            assert url == "https://vendor.invalid/1.2.3/linux/x64.tar.gz"
             return data
 
-        monkeypatch.setattr(cli_installer, "_download", download)
+        _fake_http(monkeypatch, download)
         return profile
 
     return prepare
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="brotli decompression runs the system node")
-def test_brotli_publish_version_manifest_and_override(distribution, monkeypatch, tmp_path):
-    profile = distribution(compression="brotli")
+@pytest.mark.parametrize("layout", ["member", "directory"])
+def test_publish_version_manifest_and_override(distribution, monkeypatch, tmp_path, layout):
+    profile = distribution(layout=layout)
     assert resolve_print_cli_binary(profile) is None
     run = subprocess.run
     commands = []
@@ -88,16 +104,20 @@ def test_brotli_publish_version_manifest_and_override(distribution, monkeypatch,
 
     monkeypatch.setattr(cli_installer.subprocess, "run", record_command)
     status = cli_installer.install_tool(profile)
-    assert len(commands) == 2
-    assert commands[0][0] == shutil.which("node") and commands[0][1] == "-e"
-    assert Path(commands[1][0]).name == "fake"
-    assert commands[1][1:] == ["--version"]
+    assert len(commands) == 1
+    assert Path(commands[0][0]).name == "fake"
+    assert commands[0][1:] == ["--version"]
     path = Path(status.path)
     assert status.installed
     assert status.binary_version == "fixture 1.2.3 (build)"
     assert cli_installer.tool_status(profile) == status
     assert stat.S_IMODE(path.stat().st_mode) == 0o755
-    assert {item.name for item in path.parent.iterdir()} == {"fake", "manifest.json"}
+    release = install_path(profile.id, profile.install.version, profile.binary).parent
+    if layout == "directory":
+        assert path == release / "bin/fake"
+        assert {item.name for item in release.iterdir()} == {"bin", "package.json", "manifest.json"}
+    else:
+        assert {item.name for item in release.iterdir()} == {"fake", "manifest.json"}
     assert resolve_print_cli_binary(profile) == path
     assert not list(tmp_path.rglob("script-ran"))
     settings = SimpleNamespace(drivers={"cli.print": {"profile_binaries": {"fixture": "/override"}}})
@@ -106,7 +126,7 @@ def test_brotli_publish_version_manifest_and_override(distribution, monkeypatch,
     def unexpected_download(_):
         pytest.fail("The installed version must be reused")
 
-    monkeypatch.setattr(cli_installer, "_download", unexpected_download)
+    _fake_http(monkeypatch, unexpected_download)
     assert cli_installer.install_tool(profile) == status
 
 
@@ -114,31 +134,41 @@ def test_brotli_publish_version_manifest_and_override(distribution, monkeypatch,
     ({"extra": (("package/../../escape", b"x"),)}, "Unsafe"),
     ({"extra": (("/escape", b"x"),)}, "Unsafe"),
     ({"member": "package/other", "extra": (("package/bin/fake", "../other"),)}, "Unsafe"),
+    ({"extra": (("package/escape", "../../outside"),)}, "Unsafe"),
     ({"version": "11.2.3"}, "unexpected version"),
+    ({"version": "1.2.3-rc"}, "unexpected version"),
 ])
-def test_invalid_distribution_leaves_no_release(distribution, kwargs, message):
-    profile = distribution(**kwargs)
+@pytest.mark.parametrize("layout", ["member", "directory"])
+def test_invalid_distribution_leaves_no_release(distribution, kwargs, message, layout):
+    profile = distribution(layout=layout, **kwargs)
     with pytest.raises(cli_installer.CliInstallError, match=message):
         cli_installer.install_tool(profile)
     assert not install_path(profile.id, profile.install.version, profile.binary).parent.exists()
 
 
-def test_sri_mismatch_prevents_extraction(distribution, monkeypatch):
-    profile = distribution()
-    monkeypatch.setattr(cli_installer, "_download", lambda _: b"bad")
+@pytest.mark.parametrize("layout", ["member", "directory"])
+def test_digest_mismatch_prevents_extraction(distribution, monkeypatch, layout):
+    profile = distribution(layout=layout)
+
+    def unexpected_extract(*args, **kwargs):
+        pytest.fail("An unverified artifact must never be extracted")
+
+    _fake_http(monkeypatch, lambda _: b"bad")
+    monkeypatch.setattr(cli_installer, "_extract", unexpected_extract)
     with pytest.raises(cli_installer.CliInstallError, match="integrity mismatch"):
         cli_installer.install_tool(profile)
     assert resolve_print_cli_binary(profile) is None
+    assert not install_path(profile.id, profile.install.version, profile.binary).parent.exists()
 
 
 @pytest.fixture
 def direct_distribution(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    monkeypatch.setattr(cli_installer, "_platform_key", lambda: "linux-x64")
+    monkeypatch.setattr(cli_installer.install_spec, "platform_key", lambda: "linux-x64")
     profile = get_print_cli_profile("grok")
     binary = f"#!{sys.executable}\nprint('grok 1.0.89')\n".encode()
-    entry = replace(profile.install.direct_binaries[0], sha256=hashlib.sha256(binary).hexdigest())
-    return replace(profile, install=replace(profile.install, direct_binaries=(entry,))), binary
+    entry = replace(profile.install.artifacts[0], digest="sha256:" + hashlib.sha256(binary).hexdigest())
+    return replace(profile, install=replace(profile.install, artifacts=(entry,))), binary
 
 
 @pytest.mark.parametrize("primary_fails", [False, True])
@@ -148,14 +178,14 @@ def test_direct_binary_install_without_node(direct_distribution, monkeypatch, pr
     fallback = "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-1.0.89-linux-x86_64"
     requests = []
 
-    def download(url, *, max_size):
+    def download(url):
         requests.append(url)
-        assert 207850592 <= max_size <= 256 * 1024**2
+        assert 207850592 <= cli_installer._MAX_DOWNLOAD <= 256 * 1024**2
         if url == primary and primary_fails:
             raise httpx.ConnectError("primary unavailable")
         return binary
 
-    monkeypatch.setattr(cli_installer, "_download", download)
+    _fake_http(monkeypatch, download)
     monkeypatch.setattr(cli_installer.shutil, "which", lambda _: None)
     status = cli_installer.install_tool(profile)
 
@@ -172,21 +202,21 @@ def test_direct_binary_hash_mismatch_prevents_execution(direct_distribution, mon
     def unexpected_run(*args, **kwargs):
         pytest.fail("An unverified binary must never run")
 
-    monkeypatch.setattr(cli_installer, "_download", lambda url, *, max_size: binary + b"# corrupted\n")
+    _fake_http(monkeypatch, lambda _: binary + b"# corrupted\n")
     monkeypatch.setattr(cli_installer.subprocess, "run", unexpected_run)
     with pytest.raises(cli_installer.CliInstallError, match="integrity mismatch"):
         cli_installer.install_tool(profile)
     assert not install_path(profile.id, profile.install.version, profile.binary).parent.exists()
 
 
-def test_direct_binary_reuses_existing_npm_install(distribution, monkeypatch):
+def test_raw_artifact_reuses_existing_member_install(distribution, monkeypatch):
     profile = distribution()
     status = cli_installer.install_tool(profile)
 
     def unexpected_download(*args, **kwargs):
         pytest.fail("The installed version must be reused across distribution methods")
 
-    monkeypatch.setattr(cli_installer, "_download", unexpected_download)
+    _fake_http(monkeypatch, unexpected_download)
     direct = replace(get_print_cli_profile("grok").install, version=profile.install.version)
     assert cli_installer.install_tool(replace(profile, install=direct)) == status
 
@@ -198,8 +228,8 @@ def test_unpinned_platform_does_not_download(tmp_path, monkeypatch, platform):
     def unexpected_download(*args, **kwargs):
         pytest.fail("Unpinned distributions must never be downloaded")
 
-    monkeypatch.setattr(cli_installer, "_download", unexpected_download)
-    monkeypatch.setattr(cli_installer, "_platform_key", lambda: platform)
+    _fake_http(monkeypatch, unexpected_download)
+    monkeypatch.setattr(cli_installer.install_spec, "platform_key", lambda: platform)
     with pytest.raises(cli_installer.CliInstallError, match="not available for this platform"):
         cli_installer.install_tool(get_print_cli_profile("grok"))
 
@@ -217,34 +247,3 @@ def test_old_managed_version_in_use(distribution):
             process.terminate()
     assert old.is_file()
     assert resolve_print_cli_binary(profile) is None
-
-
-
-@pytest.mark.skipif(shutil.which("node") is None, reason="brotli decompression runs the system node")
-def test_brotli_finds_node_outside_system_dirs(distribution, monkeypatch, tmp_path):
-    """node outside /bin:/usr/bin (nvm, user installs, CI tool caches) is still used (CI failure 2026-11-21)."""
-    profile = distribution(compression="brotli")
-    bindir = tmp_path / "elsewhere"
-    bindir.mkdir()
-    (bindir / "node").symlink_to(shutil.which("node"))
-    monkeypatch.setenv("PATH", str(bindir))
-    run = subprocess.run
-    commands = []
-
-    def record_command(argv, **kwargs):
-        commands.append(argv)
-        return run(argv, **kwargs)
-
-    monkeypatch.setattr(cli_installer.subprocess, "run", record_command)
-    status = cli_installer.install_tool(profile)
-    assert status.installed
-    assert commands[0][0] == str(bindir / "node")
-
-
-@pytest.mark.skipif(shutil.which("node") is None, reason="brotli decompression runs the system node")
-def test_brotli_without_node_reports_a_clear_error(distribution, monkeypatch):
-    profile = distribution(compression="brotli")
-    monkeypatch.setattr(cli_installer.shutil, "which", lambda name: None)
-    with pytest.raises(cli_installer.CliInstallError, match="needs Node.js"):
-        cli_installer.install_tool(profile)
-    assert not install_path(profile.id, profile.install.version, profile.binary).parent.exists()

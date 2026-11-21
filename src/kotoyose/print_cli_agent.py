@@ -150,6 +150,9 @@ class PrintCliJob:
     attempt_id: str = "print-cli"
     connection_id: str = ""
     api_key_secret: str | None = None
+    acp: bool = False
+    acp_tools: tuple[str, ...] | None = None
+    acp_deny: tuple[str, ...] = ()
 
 
 def classify_print_cli_outcome(
@@ -410,6 +413,7 @@ class PrintCliWorker:
         stop = "confirmed"
         provider_limit = None
         session_id = None
+        acp = None
         deadline = asyncio.get_running_loop().time() + job.timeout_seconds
 
         try:
@@ -439,12 +443,6 @@ class PrintCliWorker:
             if job.validate_start is not None:
                 await job.validate_start()
 
-            full_prompt = compose_print_cli_prompt(
-                job.instructions,
-                job.prompt,
-                output_contract=job.output_contract,
-                output_schema=job.output_schema,
-            )
             # Keep --print-timeout strictly below Kotoyose's own hard deadline.
             print_timeout_seconds = max(0.1, remaining_now * 0.85)
 
@@ -459,23 +457,35 @@ class PrintCliWorker:
                     except SecretStoreError as exc:
                         raise AgentStartRejected("authentication_failed", "cli.print API key is unavailable", 401) from exc
                     env[profile.api_key_env] = secret
-                settings_path = profile.write_settings_file(job.surface, Path(settings_dir))
-                argv = profile.render_argv(
-                    model=job.model,
-                    prompt=full_prompt,
-                    timeout_seconds=print_timeout_seconds,
-                    surface=job.surface,
-                    settings_path=settings_path,
-                    add_dirs=job.add_dirs,
-                )
-                stream_limit = max(_STREAM_READER_MIN_LIMIT, job.output_limit_bytes * 6 + 65536)
+                if job.acp:
+                    from .acp_client import LINE_LIMIT
+
+                    if profile.acp is None:
+                        raise AgentStartRejected("unsupported_capability", "Profile does not declare ACP", 422)
+                    argv = profile.acp.arguments(job.model)
+                    env.update(profile.acp.env)
+                    stream_limit = LINE_LIMIT
+                else:
+                    settings_path = profile.write_settings_file(job.surface, Path(settings_dir))
+                    argv = profile.render_argv(
+                        model=job.model,
+                        prompt=compose_print_cli_prompt(
+                            job.instructions, job.prompt,
+                            output_contract=job.output_contract, output_schema=job.output_schema,
+                        ),
+                        timeout_seconds=print_timeout_seconds,
+                        surface=job.surface,
+                        settings_path=settings_path,
+                        add_dirs=job.add_dirs,
+                    )
+                    stream_limit = max(_STREAM_READER_MIN_LIMIT, job.output_limit_bytes * 6 + 65536)
                 spawn = asyncio.create_task(
                     asyncio.create_subprocess_exec(
                         str(job.cli_binary),
                         *argv,
                         cwd=job.workspace,
                         start_new_session=True,
-                        stdin=asyncio.subprocess.DEVNULL,
+                        stdin=asyncio.subprocess.PIPE if job.acp else asyncio.subprocess.DEVNULL,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         limit=stream_limit,
@@ -487,6 +497,11 @@ class PrintCliWorker:
                 assert process.stdout is not None
                 assert process.stderr is not None
                 stderr_task = asyncio.create_task(read_stderr_tail(process.stderr, max_bytes=32768))
+
+                if job.acp:
+                    from .acp_execution import AcpExecution
+
+                    acp = AcpExecution(process, job, profile, on_event, cwd=str(job.workspace))
 
                 async def run_stream() -> tuple[str, str]:
                     nonlocal content, output_bytes, turns, usage, provider_limit, session_id
@@ -506,6 +521,11 @@ class PrintCliWorker:
                     )
                     reaper = asyncio.create_task(_reap_session_after_exit(process))
                     try:
+                        if acp is not None:
+                            status_out, reason_out, content = await acp.run()
+                            output_bytes = len(content)
+                            turns = 1
+                            return status_out, reason_out
                         outcome, line_overflow = await read_print_cli_stdout_events(
                             process.stdout,
                             profile,
@@ -591,12 +611,25 @@ class PrintCliWorker:
                         break
                 if not spawn.cancelled() and spawn.exception() is None:
                     process = spawn.result()
+            if acp is not None:
+                pending = tasks[0] if tasks and not tasks[0].done() else None
+                if pending is not None or status == "timeout":
+                    await acp.client.cancel(pending)
+                content = content or bytes(acp.turn.content)
+                output_bytes = len(content)
+                usage = acp.turn.usage
+                session_id = acp.client.session_id
             for task in tasks:
                 task.cancel()
             if stderr_task is not None and not stderr_task.done():
                 stderr_task.cancel()
             if process is not None:
-                cleanup = asyncio.create_task(_shutdown(process, job.grace_seconds))
+                if acp is not None:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    shutdown = acp.client.close(grace_seconds=job.grace_seconds)
+                else:
+                    shutdown = _shutdown(process, job.grace_seconds)
+                cleanup = asyncio.create_task(shutdown)
                 while not cleanup.done():
                     try:
                         await asyncio.shield(cleanup)

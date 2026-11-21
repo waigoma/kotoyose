@@ -508,12 +508,12 @@ async def test_probe_claude_connection_uses_minimal_env_temp_cwd_and_never_opens
     secret_marker = cfg_dir / ".credentials.json"
     secret_marker.write_text('{"should_never_be_opened": true}', encoding="utf-8")
 
-    bin_dir = tmp_path / "bin"
+    sdk = tmp_path / "fake-sdk"
     log_path = tmp_path / "cli-calls.jsonl"
-    _write_fake_claude(bin_dir, mode="ok", log_path=log_path)
+    _write_fake_claude(sdk / "_bundled", mode="ok", log_path=log_path)
+    monkeypatch.setattr("kotoyose.claude_cli.find_spec", lambda _: SimpleNamespace(origin=sdk / "__init__.py"))
 
     # Pollute inherited env with secrets + token vars to verify probe isolates them
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("LANG", "C.UTF-8")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "should-not-leak")

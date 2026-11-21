@@ -71,6 +71,7 @@ from ..models import (
     ErrorDetail,
     ErrorResponse,
 )
+from ..runtime.acp import acp_binding
 from ..runtime.base import RuntimeTurnError
 from ..session import (
     SDKConnectionError,
@@ -160,6 +161,8 @@ async def stream_conversation_events(conversation_key: str, request: Request, af
         "OpenAI 互換の `content` parts (`text` / `image_url`) を受理します。"
         "Claude / Codex / Cursor provider で利用でき、Codex / Cursor は base64 data URL "
         "のみ対応します。\n\n"
+        "**cli.acp:** 設定済みの login home を使い、会話キーごとにセッションを再利用します。"
+        "画像・添付は非対応です。\n\n"
         "**cli.print:** 設定済みの login home を使い、各ターンで messages の履歴を送ります。"
         "画像・添付とセッション再開は非対応です。\n\n"
         "**応答ヘッダ:**\n"
@@ -274,8 +277,9 @@ async def _chat_completions(req, request, response, x_conversation_key):
         return _invalid_request_error(str(exc), request_id)
     provider = preset.provider
 
-    if provider == "print_cli" and "attachments" in request_capabilities(req):
-        return _invalid_request_error("cli.print does not support images or attachments", request_id)
+    if provider in {"print_cli", "cli_acp"} and "attachments" in request_capabilities(req):
+        driver = "cli.acp" if provider == "cli_acp" else "cli.print"
+        return _invalid_request_error(f"{driver} does not support images or attachments", request_id)
 
     # Provider 接続前に受付 policy を適用し、設定ミスを silent ignore しない。
     try:
@@ -334,16 +338,22 @@ async def _chat_completions(req, request, response, x_conversation_key):
                 ).model_dump(),
             )
 
+    resolve_identity = _cache_identity
+    if decision.restricted:
+        resolve_identity = functools.partial(_cache_identity, training_binding=training_binding(cfg, req.model))
+    elif provider == "cli_acp":
+        resolve_identity = functools.partial(
+            _cache_identity, acp_scope=acp_binding(cfg, preset, req.cwd),
+            execution_environment=preset.execution_environment,
+        )
+
     try:
         prepared = prepare_chat_request(
             req,
             request.headers,
             preset,
             RequestPreparationPorts(
-                resolve_session_identity=(
-                    functools.partial(_cache_identity, training_binding=training_binding(cfg, req.model))
-                    if decision.restricted else _cache_identity
-                ),
+                resolve_session_identity=resolve_identity,
                 is_cache_hit=is_session_cache_hit,
             ),
             conversation_key=x_conversation_key,
@@ -386,7 +396,7 @@ async def _chat_completions(req, request, response, x_conversation_key):
         # preset だけに接続設定の解決値を渡す。
         if preset.required_request_headers:
             client_kwargs["request_headers"] = dict(request.headers)
-        if provider == "print_cli":
+        if provider in {"print_cli", "cli_acp"}:
             client_kwargs["execution_settings"] = getattr(
                 getattr(request.app.state, "execution_service", None), "config", None,
             )
@@ -497,7 +507,7 @@ async def _chat_completions(req, request, response, x_conversation_key):
         await record_turn_failure(record_failed, interaction_id, e)
         if lookup_key is None:
             await _safe_disconnect_client(client)
-        if provider == "print_cli" and isinstance(e, RuntimeTurnError):
+        if provider in {"print_cli", "cli_acp"} and isinstance(e, RuntimeTurnError):
             code = str(e.terminal_reason or "provider_error")
             status = {
                 "authentication_failed": 401,

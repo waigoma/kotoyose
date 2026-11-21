@@ -4,7 +4,12 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PROVIDERS = ("claude", "codex", "cursor", "antigravity")
+PROVIDER_ADAPTERS = {
+    "claude": "claude",
+    "codex": "codex",
+    "cursor": "cursor",
+    "antigravity": "antigravity_sdk",
+}
 
 
 def test_provider_list_agrees_with_runtime_adapters():
@@ -14,7 +19,7 @@ def test_provider_list_agrees_with_runtime_adapters():
     )
     assert literal, "ModelPreset.provider の Literal が見つかりません"
     declared = set(re.findall(r'"([^"]+)"', literal.group(1)))
-    assert declared == set(PROVIDERS), "テスト側の PROVIDERS が古びています"
+    assert declared == PROVIDER_ADAPTERS.keys(), "テスト側の PROVIDER_ADAPTERS が古びています"
 
     # runtime adapter modules
     adapters = {
@@ -22,4 +27,5 @@ def test_provider_list_agrees_with_runtime_adapters():
         for path in (ROOT / "src/kotoyose/runtime").glob("*.py")
         if path.stem not in {"__init__", "base", "translation"}
     }
-    assert declared <= adapters, f"adapter が無い Provider: {declared - adapters}"
+    missing = {provider for provider, adapter in PROVIDER_ADAPTERS.items() if adapter not in adapters}
+    assert not missing, f"adapter が無い Provider: {missing}"

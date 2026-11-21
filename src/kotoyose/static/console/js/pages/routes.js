@@ -10,6 +10,10 @@ import { createDirtyTracker, createSettingsDisclosure, openPeek } from "../peek.
 const NEW = "new";
 const modelCache = new Map();
 
+function isProfileDriver(driver) {
+  return driver === "cli.print" || driver === "cli.acp";
+}
+
 export function routeHash(name) {
   return `#/routes/${encodeURIComponent(name)}`;
 }
@@ -34,7 +38,7 @@ export function routeBody(base, values) {
   delete body.credential;
   delete body.endpoint;
   delete body.pool;
-  if (values.driver !== "cli.print") delete body.profile;
+  if (!isProfileDriver(values.driver)) delete body.profile;
   else if (values.profile) body.profile = values.profile;
   if (values.subscriptionOnly) body.subscription_only = true;
   else delete body.subscription_only;
@@ -231,8 +235,8 @@ function routeForm(config, name, route, refresh, tracker, { onError = null } = {
 
   const showProvider = () => {
     const conn = connections[connectionSelect.value];
-    const profile = driverSelect.value === "cli.print" ? printCliProfile(conn) : null;
-    const provider = driverSelect.value === "cli.print"
+    const profile = isProfileDriver(driverSelect.value) ? printCliProfile(conn) : null;
+    const provider = isProfileDriver(driverSelect.value)
       ? (profile ? conn.provider : null)
       : ((config.catalog && config.catalog.drivers) || {})[driverSelect.value]?.provider;
     providerHint.textContent = profile ? `profile: ${profile}` : provider ? `provider: ${provider}` : "";
@@ -264,7 +268,7 @@ function routeForm(config, name, route, refresh, tracker, { onError = null } = {
   driverSelect.addEventListener("change", () => {
     const provider = showProvider();
     const selectedConn = connections[connectionSelect.value];
-    if (driverSelect.value === "cli.print" && !printCliProfile(selectedConn)) {
+    if (isProfileDriver(driverSelect.value) && !printCliProfile(selectedConn)) {
       const match = connectionIds.find((connId) => printCliProfile(connections[connId]));
       if (match) connectionSelect.value = match;
     } else if (provider && (!selectedConn || selectedConn.provider !== provider)) {

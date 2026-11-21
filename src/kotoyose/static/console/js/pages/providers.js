@@ -503,6 +503,10 @@ function connectionRow(conn, selected, filterState) {
   el("span", { class: "connection-chevron", "aria-hidden": "true" }, "›"));
 }
 
+function driverInstall(machine, driver) {
+  return machine?.drivers?.[driver === "cli.acp" ? "cli.print" : driver] || null;
+}
+
 function driverChip(driver, catalogEntry, install, routes, machineOk, selected, filterState) {
   // Level-2 list item: status, driver id, the places it can run, and how many routes use it.
   const places = catalogEntry?.places ? Object.keys(catalogEntry.places).sort() : [];
@@ -593,7 +597,7 @@ function providerSection(entry, config, machine, machineOk, {
         [...drivers].map(([driver, routes]) => driverChip(
           driver,
           config.catalog?.drivers?.[driver],
-          machine?.drivers?.[driver],
+          driverInstall(machine, driver),
           routes,
           machineOk,
           driver === selectedDriver,
@@ -1869,7 +1873,7 @@ function openDriverPeek(drivers, selected, config, machine, machineError, filter
     return;
   }
   const catalogEntry = ((config.catalog && config.catalog.drivers) || {})[selected];
-  const install = ((machine && machine.drivers) || {})[selected] || null;
+  const install = driverInstall(machine, selected);
   const routes = routesForDriver(config, selected);
   const subtitleParts = [];
   if (catalogEntry && catalogEntry.provider) subtitleParts.push(`provider: ${catalogEntry.provider}`);
@@ -1908,7 +1912,7 @@ function groupByProvider(connections, drivers, tools, config, setSecretNames) {
   for (const tool of tools) entryFor(tool.provider).tools.push(tool);
   for (const driver of drivers) {
     const routes = routesForDriver(config, driver);
-    if (driver === "cli.print") {
+    if (driver === "cli.print" || driver === "cli.acp") {
       const providersByConnection = new Map(connections.map((conn) => [conn.id, conn.provider]));
       for (const route of routes) {
         const entry = entries.get(providersByConnection.get(route.route.connection));

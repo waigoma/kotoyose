@@ -77,7 +77,7 @@ def test_route_validation_and_unreferenced_preset_behavior():
         HarnessConfig(defaults={"route": "missing"})
     default_config = HarnessConfig(
         connections={"host": Connection(provider="antigravity", kind="subscription", data_policy="no_training")},
-        routes={"daily": {"driver": "antigravity.agy", "model": "gemini-4-hydrogen-high", "connection": "host"}},
+        routes={"daily": {"driver": "antigravity.sdk", "model": "gemini-4-hydrogen-high", "connection": "host"}},
         models={"daily-alias": {"route": "daily"}},
     )
     assert default_config.preset_for("daily-alias").provider == "antigravity"
@@ -1734,8 +1734,9 @@ def test_provider_and_nested_configs_round_trip_from_yaml(tmp_path):
             cursor:
               runtime: local
             antigravity:
-              command: agy
-              print_timeout: 30s
+              sdk:
+                vertex: true
+                timeout_seconds: 30
     """)
     yaml_file = tmp_path / "config.yml"
     yaml_file.write_text(yaml_content)
@@ -1745,8 +1746,7 @@ def test_provider_and_nested_configs_round_trip_from_yaml(tmp_path):
     assert preset.provider == "codex"
     assert preset.codex["sandbox"] == "workspace-write"
     assert preset.cursor["runtime"] == "local"
-    assert preset.antigravity["command"] == "agy"
-    assert preset.antigravity["print_timeout"] == "30s"
+    assert preset.antigravity["sdk"] == {"vertex": True, "timeout_seconds": 30}
 
 
 @pytest.mark.parametrize("provider", ["codex", "cursor", "antigravity"])

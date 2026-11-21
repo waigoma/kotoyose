@@ -72,6 +72,23 @@ _USAGE_KEYS = {
 }
 
 
+# Grok の ACP は使用量を session/prompt の結果の `_meta.usage` に置く (1.0.89 で実測)。
+# costUsdTicks は 1e-10 USD 単位。同じ prompt の `-p` の total_cost_usd と単価で一致を確かめた。
+_USD_TICKS = 10**10
+
+
+def parse_grok_acp_usage(result: dict[str, Any]) -> dict[str, int | float]:
+    from .acp_turn import acp_usage
+
+    meta = result.get("_meta")
+    usage = meta.get("usage") if isinstance(meta, dict) else None
+    found: dict[str, int | float] = dict(acp_usage(usage))
+    ticks = usage.get("costUsdTicks") if isinstance(usage, dict) else None
+    if type(ticks) is int and 0 <= ticks < 2**63:
+        found["cost"] = ticks / _USD_TICKS
+    return found
+
+
 def parse_grok_error(stderr: str) -> dict[str, str | int | bool]:
     for status, pattern in _ERROR_PATTERNS:
         if re.search(pattern, _ANSI.sub("", stderr), re.IGNORECASE):

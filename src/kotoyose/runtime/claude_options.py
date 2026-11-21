@@ -14,6 +14,8 @@ from claude_agent_sdk.types import (
     ToolsPreset,
 )
 
+from ..claude_cli import bundled_claude_cli
+
 if TYPE_CHECKING:
     from ..config import AgentPreset, HarnessConfig, ModelPreset
 
@@ -121,6 +123,7 @@ def build_claude_options(
         else preset.tools
     )
     options = ClaudeAgentOptions(
+        cli_path=bundled_claude_cli(),
         tools=effective_tools,
         setting_sources=effective_sources,
         model=preset.model,

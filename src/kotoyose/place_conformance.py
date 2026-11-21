@@ -44,14 +44,6 @@ ADAPTER_PLACE_MATRIX: dict[str, AdapterPlaceCapabilities] = {
         jail_network_none=True,
         jail_readonly_root=True,
     ),
-    "antigravity.agy": AdapterPlaceCapabilities(
-        driver="antigravity.agy",
-        places=frozenset({"jail"}),
-        can_disable_host_tools=False,
-        scrubs_process_env=True,
-        jail_network_none=True,
-        jail_readonly_root=True,
-    ),
     "cursor.sdk": AdapterPlaceCapabilities(
         driver="cursor.sdk",
         places=frozenset(),

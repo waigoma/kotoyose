@@ -266,6 +266,7 @@ class _FakeAgentContainer:
         self.specs: list[AgentContainerSpec] = []
         self.removed: list[tuple[str, int]] = []
         self.exec_envs: list[dict[str, str]] = []
+        self.acp_processes: dict[str, asyncio.subprocess.Process] = {}
 
     async def create(self, spec: AgentContainerSpec) -> str:
         self.specs.append(spec)
@@ -302,7 +303,8 @@ class _FakeAgentContainer:
             "KOTOYOSE_TEST_ORIG_HOME": env["HOME"],
             "KOTOYOSE_TEST_EGRESS_SOCK_EXISTS": "1" if Path(host_sock).exists() else "0",
         }
-        return await asyncio.create_subprocess_exec(
+        is_acp = remapped_cli_args == ["acp"]
+        process = await asyncio.create_subprocess_exec(
             sys.executable,
             host_relay,
             host_sock,
@@ -311,13 +313,20 @@ class _FakeAgentContainer:
             *remapped_cli_args,
             cwd=spec.workspace,
             env=proc_env,
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE if is_acp else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=limit,
         )
 
+        if is_acp:
+            self.acp_processes[job_id] = process
+        return process
+
     async def remove(self, job_id: str, grace_seconds: int = 0) -> str:
+        if (process := self.acp_processes.get(job_id)) is not None and process.returncode is None:
+            process.terminate()
+            await asyncio.wait_for(process.wait(), 3)
         self.removed.append((job_id, grace_seconds))
         return "confirmed"
 
@@ -516,3 +525,58 @@ async def test_semaphore_shared_across_host_and_isolated_runs(tmp_path: Path) ->
         cancel1.set()
         cancel2.set()
         await asyncio.gather(t1, t2, return_exceptions=True)
+
+
+@pytest.mark.parametrize("scenario, status", [("normal", "succeeded"), ("cancel", "cancelled")])
+async def test_acp_in_existing_jail_uses_stdio_and_removes_container(tmp_path, scenario, status):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "login-home"
+    home.mkdir()
+    fixture = Path(__file__).with_name("fixtures") / "fake_acp_agent.py"
+    binary = _write_fake_cli(tmp_path / "bin" / "agy", f"""
+        import os, runpy, sys
+        assert sys.argv[1:] == ["acp"]
+        assert os.environ["HOME"] == "/home/agent"
+        assert os.environ["KOTOYOSE_TEST_EGRESS_SOCK_EXISTS"] == "1"
+        sys.argv = [{str(fixture)!r}, {scenario!r}]
+        runpy.run_path(sys.argv[0], run_name="__main__")
+    """)
+    fake = _FakeAgentContainer()
+    worker = PrintCliWorker(container_runtime=(fake, _make_ac_config(tmp_path), "sha256:" + "c" * 64))
+    events = []
+    started = []
+    cancel = asyncio.Event()
+
+    async def on_start(pid, *, container_identity):
+        started.append((pid, container_identity))
+
+    async def on_event(kind, payload):
+        events.append((kind, payload))
+        if scenario == "cancel" and payload.get("kind") == "text":
+            cancel.set()
+
+    job = PrintCliJob(
+        profile_id="agy", cli_binary=binary, model="model-x", workspace=workspace, login_home=home,
+        surface="write", instructions="Instructions", prompt="Do the task", output_contract="text",
+        timeout_seconds=5, grace_seconds=0.2, output_limit_bytes=32768, memory_bytes=128 * 1024**2,
+        pids_limit=32, cpus=1, execution_environment="isolated", acp=True,
+        acp_tools=("Read", "Bash"), acp_deny=("Bash",),
+    )
+    result = await worker.execute(job, cancel, on_process_started=on_start, on_event=on_event)
+    assert result.status == status
+    assert result.stop_confirmation == "confirmed"
+    assert len(started) == len(fake.removed) == 1
+    assert not fake.specs[0].egress_dir.exists()
+    assert home.exists()
+    requests = [json.loads(line) for line in (workspace / "acp-requests.jsonl").read_text().splitlines()]
+    assert requests[1]["params"] == {"cwd": "/workspace", "mcpServers": []}
+    if status == "cancelled":
+        assert requests[-1]["method"] == "session/cancel"
+        assert result.content == b"hello "
+    else:
+        assert result.content == b"hello world"
+        assert result.usage["input_tokens"] == 10
+        assert [payload["summary"] for _, payload in events if payload.get("kind") == "permission"] == [
+            "allowed", "denied",
+        ]

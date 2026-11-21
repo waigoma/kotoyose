@@ -39,12 +39,15 @@ class QuotaParser(Protocol):
 ParserFactory = Callable[[], PrintCliStreamParser]
 StderrClassifier = Callable[[str], dict[str, str | int | bool]]
 ModelsParser = Callable[[bytes], list[dict[str, Any]]]
+# ACP の session/prompt の結果から、標準の usage 以外に置かれた使用量を取り出す。
+AcpUsageParser = Callable[[dict[str, Any]], dict[str, int | float]]
 
 _parsers: dict[str, ParserFactory] = {}
 _stderr: dict[str, StderrClassifier] = {}
 _models: dict[str, ModelsParser] = {}
 _quota: dict[str, QuotaParser] = {}
 _login: dict[str, LoginFlow] = {}
+_acp_usage: dict[str, AcpUsageParser] = {}
 
 _Hook = TypeVar("_Hook")
 
@@ -69,6 +72,14 @@ def register_models_parser(name: str, hook: ModelsParser) -> None:
 
 def register_quota_parser(name: str, hook: QuotaParser) -> None:
     _register_hook(_quota, name, hook)
+
+
+def register_acp_usage_parser(name: str, hook: AcpUsageParser) -> None:
+    _register_hook(_acp_usage, name, hook)
+
+
+def get_acp_usage_parser(name: str) -> AcpUsageParser:
+    return _acp_usage[name]
 
 
 def register_login_flow(name: str, hook: LoginFlow) -> None:
@@ -105,12 +116,15 @@ def _register_builtins() -> None:
 
     from .print_cli_cursor import CursorStreamJsonParser, parse_cursor_error, parse_cursor_models
 
-    from .print_cli_grok import GrokStreamingJsonParser, parse_grok_billing, parse_grok_error, parse_grok_models
+    from .print_cli_grok import (
+        GrokStreamingJsonParser, parse_grok_acp_usage, parse_grok_billing, parse_grok_error, parse_grok_models,
+    )
 
     register_parser("grok_streaming_json_v1", GrokStreamingJsonParser)
     register_stderr_classifier("grok_error_v1", parse_grok_error)
     register_models_parser("grok_models_v1", parse_grok_models)
     register_quota_parser("grok_billing_v1", parse_grok_billing)
+    register_acp_usage_parser("grok_acp_meta_v1", parse_grok_acp_usage)
     register_parser("cursor_stream_json_v1", CursorStreamJsonParser)
     register_stderr_classifier("cursor_error_v1", parse_cursor_error)
     register_models_parser("cursor_models_v1", parse_cursor_models)

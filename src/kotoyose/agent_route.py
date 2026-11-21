@@ -27,7 +27,8 @@ def _install_for(settings, route):
     drivers = getattr(settings, "drivers", None)
     if drivers is None:
         raise ValueError("agent execution requires drivers")
-    found = drivers.get(route.driver)
+    # The jail materials and binary overrides are shared by both CLI transports.
+    found = drivers.get("cli.print" if route.driver == "cli.acp" else route.driver)
     if found is None:
         raise ValueError(f"driver {route.driver} is not installed on this machine")
     return found if isinstance(found, DriverInstall) else DriverInstall.model_validate(found)
@@ -153,7 +154,7 @@ def _resolve_print_cli(
     from .execution_resources import PrintCliRuntimeProfile
 
     if not route.profile:
-        raise ValueError(f"Route '{preset.route}' requires profile for cli.print")
+        raise ValueError(f"Route '{preset.route}' requires profile for {route.driver}")
     cli_profile = get_print_cli_profile(route.profile)
     conn = config.connections.get(route.connection)
     if conn is None:
@@ -166,6 +167,9 @@ def _resolve_print_cli(
 
     return PrintCliRuntimeProfile(
         profile=cli_profile.id,
+        acp=route.driver == "cli.acp",
+        acp_tools=(tuple(preset.tools) if preset.tools is not None else None) if route.driver == "cli.acp" else None,
+        acp_deny=tuple(preset.deny) if route.driver == "cli.acp" else (),
         model=route.model,
         cli_binary=cli_binary,
         connection_id=route.connection,
@@ -233,7 +237,8 @@ def published_agent(alias: str, policy, settings, *, config) -> dict | None:
     if preset.route is None or preset.agent is None:
         return None
     driver = config.routes[preset.route].driver
-    provider = driver_manifest(driver).provider
+    manifest = driver_manifest(driver)
+    provider = "print_cli" if manifest.unmapped_backend == "print_cli" else manifest.provider
     place, surface = preset.agent.place, preset.agent.surface
     return {
         "place": place,

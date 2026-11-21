@@ -66,13 +66,12 @@ def test_place_conformance_matrix_restricts_host_to_claude_sdk() -> None:
     """Only claude.agent-sdk has verified host tool disablement; others require jail."""
     assert HOST_CONFORMANT_DRIVERS == frozenset({"claude.agent-sdk"})
     assert can_claim_host_place("claude.agent-sdk") is True
-    for driver in ("codex.app-server", "cli.print:agy", "antigravity.agy", "cursor.sdk", "unknown"):
+    for driver in ("codex.app-server", "cli.print:agy", "cursor.sdk", "unknown"):
         assert can_claim_host_place(driver) is False
 
     assert ADAPTER_PLACE_MATRIX["claude.agent-sdk"].places == frozenset({"host", "jail"})
     assert ADAPTER_PLACE_MATRIX["codex.app-server"].places == frozenset({"jail"})
     assert ADAPTER_PLACE_MATRIX["cli.print:agy"].places == frozenset({"jail"})
-    assert ADAPTER_PLACE_MATRIX["antigravity.agy"].places == frozenset({"jail"})
     assert ADAPTER_PLACE_MATRIX["cursor.sdk"].places == frozenset()
 
 

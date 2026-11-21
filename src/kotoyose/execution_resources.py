@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -16,6 +15,7 @@ from pydantic import AliasChoices, Field, PrivateAttr, TypeAdapter, field_valida
 import structlog
 
 from . import process_env
+from .claude_cli import bundled_claude_cli
 from .agent_spec import (
     coding_profile_allowed, driver_manifest, egress_limits_allowed,
     unmapped_backend, published_agent_execution, surface_exceeds,
@@ -642,6 +642,10 @@ class PrintCliRuntimeProfile(ContractModel):
     _agent_surface: str | None = PrivateAttr(default=None)
     backend: Literal["print_cli"] = "print_cli"
     provider: Literal["print_cli"] = "print_cli"
+    acp: bool = Field(default=False, exclude_if=lambda value: not value)
+    # None: the alias did not restrict tools (surface and place decide). (): no tools at all.
+    acp_tools: tuple[str, ...] | None = Field(default=None, exclude_if=lambda value: value is None)
+    acp_deny: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
     profile: str = Field(min_length=1)
     model: str = Field(min_length=1)
     cli_binary: Path
@@ -1083,10 +1087,7 @@ class NativeExecutionConfig(ContractModel):
                 raise ValueError("Set drivers.cli.print.profile_binaries.<profile> instead of drivers.cli.print.cli_binary")
             claude = self.drivers.get("claude.agent-sdk")
             if claude is not None and claude.cli_binary is None:
-                # 書かれていなければ、今までどおり起動時に PATH の claude を実体へ解いて固定する。
-                found = shutil.which("claude")
-                if found:
-                    claude.cli_binary = Path(found).resolve()
+                claude.cli_binary = bundled_claude_cli()
         for key, worker in self.worker_capabilities.items():
             if key != worker.worker_id:
                 raise ValueError("Worker registry key must equal worker_id")

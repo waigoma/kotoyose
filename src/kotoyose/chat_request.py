@@ -9,6 +9,7 @@ from .chat_policy import ChatPolicyViolation, validate_image_input
 from .config import ModelPreset
 from .conversation_key import derive_lookup_key
 from .models import ChatCompletionRequest
+from .runtime.acp import AcpPrompt
 from .runtime.base import RuntimePrompt, prompt_audit_text, prompt_image_urls, prompt_text
 
 
@@ -73,10 +74,11 @@ def prepare_chat_request(
         for url in prompt_image_urls(message.runtime_prompt())
     ]
     validate_image_input(preset.provider, image_urls)
-    if preset.provider == "print_cli":
-        prompt = "\n\n".join(
+    if preset.provider in {"print_cli", "cli_acp"}:
+        history = "\n\n".join(
             f"{message.role}: {message.text_content()}" for message in request.messages
         )
+        prompt = AcpPrompt(prompt_text(latest_prompt), history) if preset.provider == "cli_acp" else history
 
     lookup_key = (
         conversation_key

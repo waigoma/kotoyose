@@ -241,7 +241,7 @@ def isolated_s5d_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     reload_config()
 
 
-def _install_path_and_config(
+def _install_fake_sdk_and_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -249,7 +249,10 @@ def _install_path_and_config(
     cfg_dir: Path,
     secret_name: str = "claude-oauth-token",
 ) -> None:
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+    sdk = tmp_path / "fake-sdk"
+    sdk.mkdir()
+    (sdk / "_bundled").symlink_to(bin_dir, target_is_directory=True)
+    monkeypatch.setattr("kotoyose.claude_cli.find_spec", lambda _: SimpleNamespace(origin=sdk / "__init__.py"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("LANG", "C.UTF-8")
     # Pollute env with forbidden credentials that must be stripped from CLI PTY env.
@@ -282,6 +285,45 @@ def _install_path_and_config(
         }
     )
     save_config(cfg)
+
+
+@pytest.mark.asyncio
+async def test_claude_cli_defaults_to_bundle_and_reports_its_version(
+    isolated_s5d_env, monkeypatch: pytest.MonkeyPatch,
+):
+    from kotoyose.execution_resources import NativeExecutionConfig
+
+    tmp_path, _, state_store, _ = isolated_s5d_env
+    sdk = tmp_path / "sdk"
+    bundled = sdk / "_bundled" / "claude"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("#!/bin/sh\nprintf '%s\\n' '2.1.456 (Claude Code)'\n", encoding="utf-8")
+    bundled.chmod(0o755)
+    competing = tmp_path / "claude"
+    competing.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+    competing.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr("kotoyose.claude_cli.find_spec", lambda _: SimpleNamespace(origin=sdk / "__init__.py"))
+    settings = dict(schema_version="1", image_id="sha256:" + "0" * 64)
+    conn = Connection(kind="subscription", provider="claude", data_policy="no_training", secret="env:FAKE")
+    cfg = HarnessConfig(connections={"claude-test": conn})
+
+    execution = NativeExecutionConfig(**settings, drivers={"claude.agent-sdk": {}})
+    assert execution.drivers["claude.agent-sdk"].cli_binary == bundled
+    assert claude_login_mod._resolve_claude_cli(cfg, "claude-test", conn) == bundled
+    state = await probe_claude_connection("claude-test", conn, cli_binary=None, store=state_store)
+    assert state["cli_version"] == "2.1.456 (Claude Code)"
+
+    bundled.unlink()
+    with pytest.raises(ValueError, match="bundled CLI is missing"):
+        NativeExecutionConfig(**settings, drivers={"claude.agent-sdk": {}})
+    with pytest.raises(claude_login_mod.ClaudeLoginNotSupportedError, match="bundled CLI is missing"):
+        claude_login_mod._resolve_claude_cli(cfg, "claude-test", conn)
+    state = await probe_claude_connection("claude-test", conn, cli_binary=None, store=state_store)
+    assert "bundled CLI is missing" in state["last_error"]
+
+    explicit = NativeExecutionConfig(**settings, drivers={"claude.agent-sdk": {"cli_binary": competing}})
+    assert explicit.drivers["claude.agent-sdk"].cli_binary == competing
 
 
 # ── 1. Unit helpers: ANSI stripping, URL extraction, code validation, 4KB buffer ─
@@ -344,7 +386,7 @@ def test_claude_login_full_flow_env_no_shell_no_config_open_and_audit_logs(
     bin_dir = tmp_path / "bin"
     log_path = tmp_path / "cli-calls.jsonl"
     _write_fake_claude_cli(bin_dir, log_path=log_path)
-    _install_path_and_config(tmp_path, monkeypatch, bin_dir=bin_dir, cfg_dir=cfg_dir)
+    _install_fake_sdk_and_config(tmp_path, monkeypatch, bin_dir=bin_dir, cfg_dir=cfg_dir)
 
     audit_events: list[tuple[str, dict]] = []
 
@@ -496,7 +538,7 @@ def test_claude_login_bad_code_cancel_and_expiry_kills_process(
     bin_dir = tmp_path / "bin"
     pid_path = tmp_path / "cli.pid"
     _write_fake_claude_cli(bin_dir, pid_path=pid_path)
-    _install_path_and_config(tmp_path, monkeypatch, bin_dir=bin_dir, cfg_dir=cfg_dir)
+    _install_fake_sdk_and_config(tmp_path, monkeypatch, bin_dir=bin_dir, cfg_dir=cfg_dir)
 
     audit_events: list[tuple[str, dict]] = []
 
@@ -570,7 +612,7 @@ def test_claude_setup_token_stores_secret_cleans_tempdir_and_never_leaks(
     bin_dir = tmp_path / "bin"
     log_path = tmp_path / "setup-calls.jsonl"
     _write_fake_claude_cli(bin_dir, log_path=log_path)
-    _install_path_and_config(tmp_path, monkeypatch, bin_dir=bin_dir, cfg_dir=cfg_dir)
+    _install_fake_sdk_and_config(tmp_path, monkeypatch, bin_dir=bin_dir, cfg_dir=cfg_dir)
 
     with (
         patch("kotoyose.app.start_execution_service", new=AsyncMock(return_value=None)),
@@ -657,7 +699,7 @@ def test_claude_setup_token_missing_token_returns_failed(
     cfg_dir.mkdir(parents=True)
     bin_dir = tmp_path / "bin"
     _write_fake_claude_cli(bin_dir, setup_token_prints_token=False)
-    _install_path_and_config(tmp_path, monkeypatch, bin_dir=bin_dir, cfg_dir=cfg_dir)
+    _install_fake_sdk_and_config(tmp_path, monkeypatch, bin_dir=bin_dir, cfg_dir=cfg_dir)
 
     with (
         patch("kotoyose.app.start_execution_service", new=AsyncMock(return_value=None)),
@@ -790,7 +832,7 @@ def test_claude_login_app_shutdown_kills_active_pty_process(
     bin_dir = tmp_path / "bin"
     pid_path = tmp_path / "shutdown-cli.pid"
     _write_fake_claude_cli(bin_dir, pid_path=pid_path)
-    _install_path_and_config(tmp_path, monkeypatch, bin_dir=bin_dir, cfg_dir=cfg_dir)
+    _install_fake_sdk_and_config(tmp_path, monkeypatch, bin_dir=bin_dir, cfg_dir=cfg_dir)
 
     with (
         patch("kotoyose.app.start_execution_service", new=AsyncMock(return_value=None)),

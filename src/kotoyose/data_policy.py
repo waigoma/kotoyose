@@ -35,7 +35,7 @@ def training_digest(config, alias: str, capabilities) -> str:
     }
     if route.profile is not None:
         from .print_cli_profiles import get_print_cli_profile
-        shape["profile_digest"] = get_print_cli_profile(route.profile).profile_digest()
+        shape["profile_digest"] = get_print_cli_profile(route.profile).profile_digest(acp=route.driver == "cli.acp")
     return hashlib.sha256(json.dumps(shape, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 

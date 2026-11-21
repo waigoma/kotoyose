@@ -1516,7 +1516,7 @@ const config = {{
   catalog: {{
     drivers: {{
       'claude.agent-sdk': {{ provider: 'claude', places: {{ isolated: ['read', 'write'] }} }},
-      'antigravity.agy': {{ provider: 'antigravity', places: {{ host: ['read', 'write'] }} }},
+      'antigravity.sdk': {{ provider: 'antigravity', places: {{ host: [] }} }},
     }},
   }},
   connections: {{}},
@@ -2900,12 +2900,19 @@ def test_managed_cli_admin_routes_require_owner_and_csrf(monkeypatch, tmp_path):
     assert client.get("/admin/tools").status_code == 401
     assert client.post(endpoint, headers=headers).status_code == 401
     tools = client.get("/admin/tools", auth=AUTH).json()["tools"]
-    assert tools == [{
-        "profile": "grok", "provider": "grok", "version": "1.0.89", "installed": False,
-        "binary_version": None, "path": None,
-    }]
+    assert {tool["profile"]: tool for tool in tools} == {
+        profile: {
+            "profile": profile, "provider": provider, "version": version, "installed": False,
+            "binary_version": None, "path": None,
+        }
+        for profile, provider, version in (
+            ("grok", "grok", "1.0.89"),
+            ("agy", "antigravity", "1.5.13"),
+            ("cursor", "cursor", "2026.11.19-f005e9d"),
+        )
+    }
     assert client.post(endpoint, auth=AUTH).status_code == 403
-    assert client.post("/admin/tools/cursor/install", auth=AUTH, headers=headers).status_code == 404
+    assert client.post("/admin/tools/unknown/install", auth=AUTH, headers=headers).status_code == 404
 
     session = create_admin_session(AUTH[0])
     cookie_client = TestClient(app, cookies={ADMIN_SESSION_COOKIE: session.session_id})
@@ -2946,7 +2953,7 @@ const config = {{
 const routes = [
   {{ connection: 'org', driver: 'sdk.default' }},
   {{ connection: 'missing', driver: 'sdk.default' }},
-  {{ driver: 'antigravity.agy' }},
+  {{ driver: 'antigravity.sdk' }},
   {{ connection: 'custom', driver: 'sdk.default' }},
   {{ driver: 'unknown.driver' }},
 ];

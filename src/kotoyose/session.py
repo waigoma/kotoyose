@@ -37,8 +37,9 @@ from .connections_probe import connection_for_model
 from .db import lookup_runtime_session, lookup_session
 from .logging_setup import log
 from .secret_store import SecretStoreError, use_resolved_secrets
-from .runtime.antigravity import build_antigravity_session
+from .runtime.antigravity_sdk import build_antigravity_sdk_session
 from .registry import registry
+from .runtime.acp import acp_binding, build_acp_session
 from .runtime.print_cli import build_print_cli_session
 from .runtime.base import (
     RuntimePrompt, RuntimeProviderSpec, RuntimeResult, RuntimeSession, prompt_text,
@@ -73,8 +74,9 @@ class SDKConnectionError(Exception):
 # host runtime の provider 表は registry が持つ。組み込み runtime はここで登録する。
 RUNTIME_PROVIDER_REGISTRY: dict[str, RuntimeProviderSpec] = registry.runtime_providers
 for _name, _builder in (
+    ("cli_acp", build_acp_session),
     ("codex", build_codex_session), ("cursor", build_cursor_session),
-    ("antigravity", build_antigravity_session),
+    ("antigravity", build_antigravity_sdk_session),
 ):
     registry.register_builtin_runtime(_name, RuntimeProviderSpec(_builder, _name))
 del _name, _builder
@@ -222,6 +224,7 @@ async def get_or_resume_client(
         codex_sandbox=preset.codex.get("sandbox") if provider == "codex" else None,
         **({"secret_versions": secret_versions} if secret_versions else {}),
         training_binding=binding,
+        acp_scope=acp_binding(config, preset, cwd_override) if provider == "cli_acp" else None,
     )
     identity_mismatch = False
 
@@ -274,6 +277,8 @@ async def get_or_resume_client(
             allow_persisted_resume=not identity_mismatch,
             session_identity=requested_identity[2],
             preloaded_secrets=preloaded_secrets,
+            **({"builder_options": {"config": config, "settings": execution_settings}}
+               if provider == "cli_acp" else {}),
         )
         if lookup_key:
             session_cache_identities[lookup_key] = requested_identity
@@ -371,6 +376,7 @@ def _cache_identity(
     codex_sandbox: object = None,
     secret_versions: Mapping[str, int] | None = None,
     training_binding: str | None = None,
+    acp_scope: str | None = None,
 ) -> tuple[str, str, str]:
     """session cache が安全に再利用できる runtime 設定の同一性を返す。"""
     normalized = {key.lower(): value for key, value in (request_headers or {}).items()}
@@ -379,6 +385,7 @@ def _cache_identity(
             "provider": provider,
             "preset_key": preset_key,
             "runtime_model": runtime_model or "",
+            **({"acp_scope": acp_scope} if acp_scope else {}),
             **({"training_binding": training_binding} if training_binding else {}),
             **({"output_schema": output_schema} if output_schema is not None else {}),
             **({"execution_environment": execution_environment,
@@ -419,6 +426,13 @@ async def _build_registered_runtime_session(
             model=model,
             session_identity=session_identity,
         )
+    if provider == "cli_acp" and lookup_key:
+        # DB lookup の間に同じ会話が初期化されていれば、同じ runtime を使う。
+        cached = sessions.get(lookup_key)
+        if (cached is not None and not getattr(cached, "invalidated", False)
+                and session_cache_identities.get(lookup_key) == (provider, model, session_identity)):
+            _touch(lookup_key)
+            return cached, False
     try:
         secrets_map = (
             preloaded_secrets

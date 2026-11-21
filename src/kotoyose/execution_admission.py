@@ -816,7 +816,9 @@ class ExecutionAdmission:
                 "provider": "print_cli",
                 "model": profile.model,
                 "print_cli_profile": cli_profile.id,
-                "profile_digest": cli_profile.profile_digest(),
+                "profile_digest": cli_profile.profile_digest(acp=profile.acp),
+                **({"acp": True, "acp_tools": list(profile.acp_tools) if profile.acp_tools is not None else None, "acp_deny": list(profile.acp_deny)}
+                   if profile.acp else {}),
                 "cli_binary": str(binary),
                 "cli_digest": binary_digest,
                 "connection_id": profile.connection_id,

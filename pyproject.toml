@@ -2,7 +2,7 @@
 # pip や uv が「このプロジェクトは何に依存しているか」を知るために読む。
 [project]
 name = "kotoyose"
-version = "1.0.1"
+version = "1.1.0"
 license = "Apache-2.0"
 description = "Claude Agent SDK を OpenAI 互換 API でラップする最小実装"
 requires-python = ">=3.11"

@@ -50,8 +50,8 @@ _NATIVE_CALLER = "Native caller isolation requires an explicitly configured nati
 SurfaceName = Literal["none", "read", "exec", "write"]
 PlaceName = Literal["host", "isolated"]
 DriverName = Literal[
-    "claude.agent-sdk", "codex.app-server", "cursor.sdk", "antigravity.agy", "antigravity.sdk",
-    "cli.print",
+    "claude.agent-sdk", "codex.app-server", "cursor.sdk", "antigravity.sdk",
+    "cli.print", "cli.acp",
 ]
 # alias の surface は上限。要求の道具はこの順で下に収まる。
 SURFACE_RANK = {"none": 0, "read": 1, "exec": 2, "write": 3}
@@ -278,13 +278,6 @@ DRIVERS: tuple[DriverManifest, ...] = (
         allows_direct_output_schema=False, surface_selector="none",
     ),
     DriverManifest(
-        driver="antigravity.agy", provider="antigravity", official_interfaces=("agy", "google-login"),
-        places=frozenset({"host"}), explicit_environments=frozenset({"host"}),
-        surfaces=_CLOSED, host=None, credential_modes=frozenset({"shared_host"}),
-        unmapped_backend=None, allows_execution_native=False,
-        allows_direct_output_schema=False, surface_selector="none",
-    ),
-    DriverManifest(
         driver="antigravity.sdk", provider="antigravity", official_interfaces=("api-key", "vertex"),
         places=frozenset({"host"}), explicit_environments=frozenset({"host"}),
         surfaces=_CLOSED, host=None, credential_modes=frozenset({"shared_host"}),
@@ -293,6 +286,13 @@ DRIVERS: tuple[DriverManifest, ...] = (
     ),
     DriverManifest(
         driver="cli.print", provider="print_cli", official_interfaces=("print-cli",),
+        places=frozenset({"host", "isolated"}), explicit_environments=frozenset({"host", "isolated"}),
+        surfaces=_PRINT_CLI_SURFACES, host=_HOST_PRINT_CLI, credential_modes=frozenset({"cli_login_home"}),
+        unmapped_backend="print_cli", allows_execution_native=False,
+        allows_direct_output_schema=False, surface_selector="none",
+    ),
+    DriverManifest(
+        driver="cli.acp", provider="cli_acp", official_interfaces=("acp",),
         places=frozenset({"host", "isolated"}), explicit_environments=frozenset({"host", "isolated"}),
         surfaces=_PRINT_CLI_SURFACES, host=_HOST_PRINT_CLI, credential_modes=frozenset({"cli_login_home"}),
         unmapped_backend="print_cli", allows_execution_native=False,
@@ -335,9 +335,7 @@ def driver_manifest(driver: str) -> DriverManifest:
 
 
 def driver_name_for_provider(provider: str, *, interface: str | None = None) -> str:
-    """古い provider から既定の driver 名を返す。antigravity の sdk だけ interface で選ぶ。"""
-    if provider == "antigravity" and interface == "sdk":
-        return "antigravity.sdk"
+    """provider から既定の driver 名を返す。"""
     return _behavior(provider).driver
 
 

@@ -120,3 +120,9 @@ async def test_schema_failure_sse_is_error_not_successful_assistant_content():
     ports.completion.record_completed.assert_not_awaited()
     ports.completion.upsert_session.assert_not_awaited()
     assert chunks[-1] == 'data: [DONE]\n\n'
+
+
+def test_response_usage_reads_cost_from_either_key():
+    assert build_response_usage({"cost": 0.03}, 0, 0).cost_usd == 0.03
+    assert build_response_usage({"cost_usd": 0.5, "cost": 0.03}, 0, 0).cost_usd == 0.5
+    assert build_response_usage({"cost": None}, 0, 0).cost_usd is None

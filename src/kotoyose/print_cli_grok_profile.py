@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .cli_install_spec import CliInstallSpec, DirectPlatformBinary
+from .cli_install_spec import CliArtifact, CliInstallSpec
 
 if TYPE_CHECKING:
     from .print_cli_profiles import PrintCliProfile
@@ -17,23 +17,24 @@ _GROK_BINARY_URLS = (
 
 
 def grok_profile() -> PrintCliProfile:
+    from .acp_spec import AcpSpec
     from .print_cli_profiles import PrintCliLoginSpec, PrintCliProfile, PrintCliQuotaRpc, QuotaErrorPattern, SurfaceCliSpec
 
     return PrintCliProfile(
         id="grok",
+        acp=AcpSpec(("agent", "--no-leader", "--model", "{model}", "stdio"), usage_parser="grok_acp_meta_v1"),
         provider="grok",
         display_name="Grok Build",
         binary="grok",
         min_version=(1, 0, 89),
         install=CliInstallSpec(
             version="1.0.89",
-            method="direct_binary",
-            direct_binaries=(
-                DirectPlatformBinary(
+            artifacts=(
+                CliArtifact(
                     "linux-x64", "linux", "x86_64", _GROK_BINARY_URLS,
-                    "a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f",
+                    "sha256:a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f",
                 ),
-                DirectPlatformBinary("linux-arm64", "linux", "aarch64", _GROK_BINARY_URLS, "unset"),
+                CliArtifact("linux-arm64", "linux", "aarch64", _GROK_BINARY_URLS, "unset"),
             ),
         ),
         argv_template=(

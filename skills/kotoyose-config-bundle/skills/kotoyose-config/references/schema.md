@@ -141,7 +141,7 @@ hook 自体は commit `d1e51c5` で撤去済み。YAML の round-trip 維持の�
 |---|---|---|
 | `codex` | `runtime/codex.py` | `sandbox`, `approval_mode`, `codex_bin`, `config`, `profile`, `model_provider`, `dangerously_bypass_approvals_and_sandbox`, `timeout` |
 | `cursor` | `runtime/cursor.py` | SDK 移行済み。§5 の `_IGNORED_CLI_KEYS` に注意 |
-| `antigravity` | `runtime/antigravity.py` | `print_timeout`, `dangerously_skip_permissions`, `sandbox`, `add_dir(s)`, `project`, `new_project`, `command`, `args`, `timeout` |
+| `antigravity` | `runtime/antigravity_sdk.py` | `sdk` 内の `api_key_env`, `vertex`, `project`, `location`, `timeout_seconds` |
 
 ## 5. サブ定義のスキーマ
 

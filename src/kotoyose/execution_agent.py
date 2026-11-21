@@ -584,7 +584,7 @@ class AgentExecutor:
             cli_profile = get_print_cli_profile(snapshot["print_cli_profile"])
         except (KeyError, TypeError) as exc:
             raise ExecutionError("request_conflict", "Print CLI profile is invalid after admission", 409) from exc
-        if cli_profile.profile_digest() != snapshot.get("profile_digest"):
+        if cli_profile.profile_digest(acp=snapshot.get("acp", False)) != snapshot.get("profile_digest"):
             raise ExecutionError("request_conflict", "Print CLI profile digest changed after admission", 409)
 
         from .execution_resources import resolve_agent_model
@@ -658,6 +658,9 @@ class AgentExecutor:
         output_schema = snapshot.get("agent_result_contract", {}).get("json_schema")
         job = PrintCliJob(
             profile_id=cli_profile.id,
+            acp=snapshot.get("acp", False),
+            acp_tools=tuple(tools) if (tools := snapshot.get("acp_tools")) is not None else None,
+            acp_deny=tuple(snapshot.get("acp_deny", ())),
             cli_binary=binary,
             model=snapshot["model"],
             workspace=Path(snapshot["workspace_path"]),

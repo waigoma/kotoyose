@@ -14,7 +14,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
 
-from .cli_install_spec import CliInstallSpec, install_path, installed_binary_version
+from .acp_spec import AcpSpec
+from .cli_install_spec import CliArtifact, CliInstallSpec, installed_binary_version, managed_install_paths
 
 
 def _freeze_value(value: Any) -> Any:
@@ -209,6 +210,7 @@ class PrintCliProfile:
     login_env: Mapping[str, str] = field(default_factory=dict)
     install: CliInstallSpec | None = None
     quota_rpc: PrintCliQuotaRpc | None = None
+    acp: AcpSpec | None = None
 
     def __post_init__(self) -> None:
         if self.quota_rpc is not None and self.quota_command:
@@ -363,10 +365,10 @@ class PrintCliProfile:
         with resolved_binary.open("rb") as stream:
             return hashlib.file_digest(stream, lambda: digest).hexdigest()
 
-    def profile_digest(self) -> str:
+    def profile_digest(self, *, acp: bool = False) -> str:
         """Return a stable SHA-256 digest of the canonical profile definition."""
         encoded = json.dumps(
-            self.to_canonical_dict(),
+            self.to_canonical_dict() | ({"acp": asdict(self.acp)} if acp and self.acp else {}),
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
@@ -376,9 +378,23 @@ class PrintCliProfile:
 
 AGY_PROFILE = PrintCliProfile(
     id="agy",
+    acp=AcpSpec(("acp",), http_mcp_args=("--process-per-session",)),
     provider="antigravity",
     binary="agy",
     min_version=(1, 5, 9),
+    install=CliInstallSpec(
+        version="1.5.13",
+        artifacts=(
+            CliArtifact(
+                "linux-x64", "linux", "x64",
+                ("https://storage.googleapis.com/antigravity-public/antigravity-cli/"
+                 "{version}-5999302598852608/{os}-{arch}/cli_{os}_{arch}.tar.gz",),
+                "sha512:014b37387703acab1f47cd532c8bb60167a6a3537b0f9891de03f1b1ffa9614307b"
+                "c83c4b2f7551273b0877d722716b0cd9e26782f6b2a50705db4f05e18c68f",
+                format="tar.gz", member="antigravity",
+            ),
+        ),
+    ),
     argv_template=(
         "-p",
         "{prompt}",
@@ -566,8 +582,9 @@ def resolve_print_cli_binary(profile: PrintCliProfile, settings: Any = None) -> 
         if profile.id in binaries:
             return Path(binaries[profile.id])
     if profile.install is not None:
-        path = install_path(profile.id, profile.install.version, profile.binary)
-        return path if installed_binary_version(path) else None
+        release, path = managed_install_paths(profile.id, profile.install, profile.binary)
+        if installed_binary_version(path, release):
+            return path
     found = shutil.which(profile.binary)
     return Path(found).resolve() if found else None
 

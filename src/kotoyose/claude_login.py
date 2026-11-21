@@ -10,13 +10,13 @@ from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import re
-import shutil
 import tempfile
 from typing import Any, Literal
 import uuid
 
 import structlog
 
+from .claude_cli import bundled_claude_cli
 from .cli_login import (
     DEFAULT_START_TIMEOUT_SECONDS,
     DEFAULT_SUBMIT_TIMEOUT_SECONDS,
@@ -113,12 +113,12 @@ def _resolve_claude_cli(
     conn_id: str,
     conn: Connection,
     execution_service: Any = None,
-) -> Path | None:
+) -> Path:
     cli_binary = resolve_connection_cli_binary(cfg, conn_id, conn, execution_service)
-    if cli_binary is not None:
-        return cli_binary
-    found = shutil.which("claude")
-    return Path(found) if found else None
+    try:
+        return cli_binary if cli_binary is not None else bundled_claude_cli()
+    except ValueError as exc:
+        raise ClaudeLoginNotSupportedError(str(exc)) from exc
 
 
 def _build_pty_env(config_dir: Path) -> dict[str, str]:
@@ -219,8 +219,6 @@ async def start_claude_login_session(
     active_cfg = cfg or get_config()
     conn = _validate_claude_connection(active_cfg, conn_id, kind)
     cli_binary = _resolve_claude_cli(active_cfg, conn_id, conn, execution_service)
-    if cli_binary is None:
-        raise ClaudeLoginNotSupportedError("Claude CLI binary is not configured or on PATH")
 
     async with _SESSION_LOCK:
         active_id = _ACTIVE_BY_CONNECTION.get(conn_id)

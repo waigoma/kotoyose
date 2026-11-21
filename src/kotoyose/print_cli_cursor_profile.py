@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .cli_install_spec import CliArtifact, CliInstallSpec
+
 if TYPE_CHECKING:
     from .print_cli_profiles import PrintCliProfile
 
@@ -16,14 +18,27 @@ _AUTH_HOSTS = (
 
 
 def cursor_profile() -> PrintCliProfile:
+    from .acp_spec import AcpSpec
     from .print_cli_profiles import PrintCliLoginSpec, PrintCliProfile, QuotaErrorPattern, SurfaceCliSpec
 
     return PrintCliProfile(
         id="cursor",
+        acp=AcpSpec(("acp",), home_auth_methods=("cursor_login",), env=(("NO_OPEN_BROWSER", "1"),)),
         provider="cursor",
         display_name="Cursor",
         binary="agent",
         min_version=(2026, 11, 13),
+        install=CliInstallSpec(
+            version="2026.11.19-f005e9d",
+            artifacts=(
+                CliArtifact(
+                    "linux-x64", "linux", "x64",
+                    ("https://downloads.cursor.com/lab/{version}/{os}/{arch}/agent-cli-package.tar.gz",),
+                    "sha256:a25986eaf0c9330aeeec599a139711cb9f267c64562d073a72b751edf5161695",
+                    format="tar.gz", directory="dist-package", entrypoint="cursor-agent",
+                ),
+            ),
+        ),
         bundle_root="realpath_parent",
         argv_template=(
             "--print", "--output-format", "stream-json", "--model", "{model}",

@@ -126,6 +126,9 @@ def collect_config_env_names(
             antigravity = getattr(preset, "antigravity", None)
             if isinstance(antigravity, Mapping):
                 _add(antigravity.get("api_key_env"))
+                sdk = antigravity.get("sdk")
+                if isinstance(sdk, Mapping):
+                    _add(sdk.get("api_key_env"))
     if execution_cfg is not None:
         mcp_servers = getattr(execution_cfg, "mcp_servers", None)
         if isinstance(mcp_servers, Mapping):

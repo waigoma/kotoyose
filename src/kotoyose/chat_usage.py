@@ -57,7 +57,8 @@ def build_response_usage(
                 return max(0, int(value))
         return None
 
-    cost = usage.get("cost_usd")
+    # Claude の chat runtime は cost_usd、実行の usage 契約と print CLI / ACP の hook は cost を使う。
+    cost = usage.get("cost_usd", usage.get("cost"))
     cost_usd = (
         float(cost)
         if isinstance(cost, (int, float)) and not isinstance(cost, bool)

@@ -25,13 +25,12 @@ PROFILE = get_print_cli_profile("grok")
 
 def test_grok_install_pins_official_binary():
     install = PROFILE.install
-    assert install.method == "direct_binary"
     assert install.version == "1.0.89"
-    assert install.compression is None
-    x64, arm64 = install.direct_binaries
+    x64, arm64 = install.artifacts
+    assert x64.format == arm64.format == "raw"
     assert (x64.platform, x64.os, x64.arch) == ("linux-x64", "linux", "x86_64")
-    assert x64.sha256 == "a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f"
-    assert (arm64.platform, arm64.os, arm64.arch, arm64.sha256) == ("linux-arm64", "linux", "aarch64", "unset")
+    assert x64.digest == "sha256:a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f"
+    assert (arm64.platform, arm64.os, arm64.arch, arm64.digest) == ("linux-arm64", "linux", "aarch64", "unset")
 
 
 @pytest.mark.parametrize(("surface", "mode"), [("read", "dontAsk"), ("write", "bypassPermissions")])
@@ -459,3 +458,24 @@ async def test_grok_quota_probe_cancellation_stops_helper(tmp_path):
     async with asyncio.timeout(2):
         while not _leader_exited(int((tmp_path / "helper.pid").read_text())):
             await asyncio.sleep(0.01)
+
+
+# session/prompt result measured on grok 1.0.89 (ACP); costUsdTicks is 1e-10 USD.
+_ACP_PROMPT_RESULT = {
+    "stopReason": "end_turn",
+    "_meta": {"modelId": "grok-4.7", "usage": {
+        "inputTokens": 16713, "outputTokens": 28, "totalTokens": 16741, "cachedReadTokens": 2176,
+        "cacheCreationTokens": 0, "reasoningTokens": 27, "costUsdTicks": 303300000,
+    }},
+}
+
+
+def test_grok_acp_usage_parser_reads_meta_usage_and_cost():
+    from kotoyose.acp_turn import acp_usage_parser
+
+    parse = acp_usage_parser(PROFILE)
+    assert parse(_ACP_PROMPT_RESULT) == {
+        "input_tokens": 16713, "output_tokens": 28, "cache_read_tokens": 2176, "cost": 0.03033,
+    }
+    assert parse({"stopReason": "end_turn"}) == {}
+    assert parse({"_meta": {"usage": {"inputTokens": True, "costUsdTicks": -1}}}) == {}

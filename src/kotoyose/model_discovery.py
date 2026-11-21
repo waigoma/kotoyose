@@ -28,7 +28,8 @@ from openai_codex import AsyncCodex, CodexConfig, JsonRpcError
 
 from . import process_env
 from .config import Connection, ModelPreset, _build_auth_env, get_config
-from .connections_probe import codex_home_and_auth_path
+from .claude_cli import bundled_claude_cli
+from .connections_probe import codex_home_and_auth_path, resolve_connection_cli_binary
 from .print_cli_events import _values_from_payload
 from .print_cli_hooks import get_models_parser
 from .print_cli_home import PrintCliHomeBusyError, use_login_home
@@ -37,7 +38,6 @@ from .print_cli_profiles import (
     build_print_cli_env,
     get_print_cli_profile_for_provider,
     list_print_cli_profiles,
-    resolve_print_cli_binary,
 )
 from .secret_store import SecretStoreError, resolve_secret_async
 
@@ -840,7 +840,7 @@ def _claude_cli_model_details(info: Any) -> list[dict[str, Any]]:
     return details
 
 
-async def _discover_claude_subscription_models(conn: Connection) -> dict[str, Any]:
+async def _discover_claude_subscription_models(conn: Connection, binary: Path | None) -> dict[str, Any]:
     """Query the official Claude Code CLI initialize handshake for subscription models."""
     if conn.config_dir is not None:
         if not Path(conn.config_dir).is_dir():
@@ -863,7 +863,12 @@ async def _discover_claude_subscription_models(conn: Connection) -> dict[str, An
             empty_cfg_dir.mkdir(mode=0o700)
             auth_env = _claude_subscription_discovery_env(token=token, config_dir=str(empty_cfg_dir))
 
+        try:
+            cli = binary if binary is not None else bundled_claude_cli()
+        except ValueError as exc:
+            return _bundled_fallback("claude", str(exc))
         options = ClaudeAgentOptions(
+            cli_path=cli,
             cwd=str(work_dir),
             env=auth_env,
             setting_sources=[],
@@ -1105,7 +1110,7 @@ async def _discover_connection_models_uncached(
         if profile is not None:
             return await _discover_print_cli_models(provider, conn, profile, binary)
         if provider == "claude":
-            return await _discover_claude_subscription_models(conn)
+            return await _discover_claude_subscription_models(conn, binary)
         if provider == "codex":
             codex_home, _ = codex_home_and_auth_path(conn)
             # ModelPreset の既定 cwd (~/kotoyose-workspace) は機械に無いことがあり、無いと
@@ -1129,6 +1134,8 @@ async def _discover_connection_models(
     fingerprint = _connection_cache_fingerprint(provider, conn)
     if profile is not None:
         fingerprint += (profile.profile_digest(), binary)
+    elif provider == "claude":
+        fingerprint += (binary,)
     now = time.monotonic()
     cached = _CONNECTION_DISCOVERY_CACHE.get(connection_id)
     if cached is not None and cached.fingerprint == fingerprint and now < cached.expires_at:
@@ -1265,8 +1272,9 @@ async def discover_models(
         if conn.provider.lower() != provider:
             raise ValueError("Connection belongs to another provider")
         profile = cfg.print_cli_profile_for_connection(connection)
-        settings = getattr(execution_service, "config", None)
-        binary = resolve_print_cli_binary(profile, settings) if profile is not None else None
+        binary = None
+        if profile is not None or (provider == "claude" and conn.kind == "subscription"):
+            binary = resolve_connection_cli_binary(cfg, connection, conn, execution_service)
         return await _discover_connection_models(provider, connection, conn, profile, binary)
 
     if provider == "claude":

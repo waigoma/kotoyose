@@ -361,13 +361,15 @@ class AgentRoute(BaseModel):
             raise ValueError("subscription_only requires a Claude driver and endpoint connection")
         if manifest.unmapped_backend == "print_cli":
             if not self.profile or not self.profile.strip():
-                raise ValueError("profile is required for cli.print routes")
+                raise ValueError(f"profile is required for {self.driver} routes")
             try:
-                get_print_cli_profile(self.profile)
+                profile = get_print_cli_profile(self.profile)
             except KeyError as exc:
                 raise ValueError(f"unknown print CLI profile: {self.profile}") from exc
+            if self.driver == "cli.acp" and profile.acp is None:
+                raise ValueError(f"profile '{profile.id}' does not support ACP")
         elif self.profile is not None:
-            raise ValueError("profile is supported only for cli.print routes")
+            raise ValueError("profile is supported only for cli.print or cli.acp routes")
         return self
 
     @field_validator("model", "connection")
@@ -578,7 +580,7 @@ class ModelPreset(BaseModel):
             validate_output_schema(self.output_schema)
         return self
 
-    # provider 固有設定。codex / cursor / antigravity の CLI adapter が参照する。
+    # provider 固有設定。Codex / Cursor / Antigravity の runtime が参照する。
     codex: dict[str, object] = Field(default_factory=dict)
     cursor: dict[str, object] = Field(default_factory=dict)
     antigravity: dict[str, object] = Field(default_factory=dict)
@@ -1313,6 +1315,8 @@ class HarnessConfig(BaseModel):
                 cli_profile = get_print_cli_profile(route.profile)
                 try:
                     validate_print_cli_connection(cli_profile, conn)
+                    if route.driver == "cli.acp" and conn.kind != "subscription":
+                        raise ValueError("cli.acp requires a subscription login home")
                     if self.print_cli_profile_for_connection(route.connection) != cli_profile:
                         raise ValueError(f"set connections.{route.connection}.profile to '{cli_profile.id}'")
                 except ValueError as exc:

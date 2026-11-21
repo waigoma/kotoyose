@@ -63,17 +63,17 @@ runtimes:
     quota: null                # 公式の口が無ければ書かない (ADR-0007: 推測しない)
     models: {command: [models]}
 install:
-  method: direct_binary
   version: 1.0.89
-  direct_binaries:
+  artifacts:
     linux-x64:
       os: linux
       arch: x86_64
       url_templates: &grok_urls
         - 'https://x.ai/cli/grok-{version}-{os}-{arch}'
         - 'https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-{version}-{os}-{arch}'
-      sha256: a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f
-    linux-arm64: {os: linux, arch: aarch64, url_templates: *grok_urls, sha256: unset}
+      format: raw
+      digest: sha256:a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f
+    linux-arm64: {os: linux, arch: aarch64, url_templates: *grok_urls, format: raw, digest: unset}
 ```
 
 宣言はデータなので、
@@ -161,7 +161,7 @@ system・過去の発言・今回の user message は 1 つのテキストにま
 4. **実行物の版を固定する。** 今は driver ごとに実行ファイル 1 つを bind する。runtime ごとに版と依存一式 (node の package など) を固定した置き場を持ち、更新は原子的に切り替え、実行中の run は旧版のまま終える。
 5. **login home の排他。** 同じ login home を使う host の run・jail の run・login・probe を、connection 単位でまとめて排他する (CLI の認証ファイルの更新が衝突しないように)。
 6. **resume は初期版では非対応と明示する。** parser は session id を拾えるが、worker は返していない。
-7. **導入は検証できる配布物だけ。** 公式の直接配布を優先し、バージョン固定時に記録した SHA-256 を実行前に照合する。直接配布がない場合は、バージョンと SHA-512 integrity を固定した npm のプラットフォーム別パッケージを使える。公式が script しか出していない製品は、資格情報を持たない使い捨ての container で script を動かし、取り出した成果物の hash を所有者が承認する。
+7. **導入は検証できる公式配布物だけ。** バージョンとプラットフォームごとの配布 URL、SHA-256 または SHA-512 を固定する。公式インストーラーが参照する配布 URL とチェックサムは、インストーラーのソースと配布マニフェストから確認する。
 8. **既存の Codex の jail は ADR-0001 に反する。** broker が `auth.json` を読み、上流への通信に認証を付けている (`codex_egress.py`)。公式 CLI に自分で認証させる CONNECT 素通しへ移す (ADR-0010 段 3 の残り)。新しい provider より先にやる。
 9. **外部 provider パッケージは v1.0 後に再設計する。** 信頼境界と再開条件は設計記録に残した。 [外部 provider パッケージ設計記録](plugin-architecture-2026-11.md)
 10. **学習の制限は新しい経路を出す前に。** `unknown` を公開するなら、制限 (chat と実行の両方、pool の候補ごと、入力と道具を組み立てる前) を先に入れる。道具を止められない runtime は `trains` の経路で拒む。
@@ -175,10 +175,14 @@ system・過去の発言・今回の user message は 1 つのテキストにま
 | P2 | connection の認証の一般化 (`print_cli` で API key も使える等) と学習の制限 | `trains` / `unknown` の経路で道具が渡らないことを試験で示す |
 | P3 (host 実装済み) | Cursor CLI (`agent -p`) の host プロファイルと console のブラウザーログイン。偽 CLI で read / write の引数、イベント、認証状態、モデル一覧を検証 | 実機で公式 login と read / write を検証し、jail で許可外の通信が拒まれることを確認 |
 | P4 (実装済み) | Grok Build 1.0.89 の host / jail プロファイルと device-code login | 実機で認証、モデル一覧、read / write、egress と長時間ストリームを確認 |
-| P5 (Grok 対応) | Providers から Grok の Linux x64 版を SHA-256 検証付きで直接導入。Linux arm64 は SHA-256 の確定後に有効化 | 実機で導入から login までを確認。agy・Cursor の管理導入は検証可能な配布物の特定後に対応 |
+| P5 (実装済み) | Providers から agy、Cursor、Grok Build の Linux x64 版を固定ハッシュの検証付きで導入 | 公式配布物から導入し、管理ディレクトリ内の CLI の版を確認 |
 | P6 | sdk runtime の共通契約 (7b 章) に Claude・Codex・Cursor・Antigravity SDK を載せ、jail の起動を JailPlace の共通の起動に畳む。Cursor SDK を 1.3.1 へ (API key) | chat と jail が同じ adapter を使う。console の Providers がすべて同じ形 |
 
-直接配布では取得に失敗すると次の URL を試し、SHA-256 が一致しなければ導入を中止する。Grok Build の直接導入は Node.js を必要としない。npm パッケージ内の Brotli 圧縮を展開する場合は、Kotoyose ホストの PATH にある Node.js を使う。既存の Grok Build 1.0.89 は同一の実行ファイルであり、既存の manifest で導入済みと判定して再利用する。
+インストーラーは取得に失敗すると次の URL を試す。取得した配布物のハッシュを展開・実行前に照合し、不一致なら導入を中止する。
+Grok Build は実行ファイル (SHA-256)、agy は `antigravity` を含む tar.gz (公式マニフェストの SHA-512)、Cursor は同梱 Node.js を含む tar.gz (SHA-256) を使う。取得を 256 MiB、tar.gz の展開を 768 MiB に制限し、絶対パス、親ディレクトリ参照、リンク、特殊ファイルを拒否する。
+`--version` の確認後にバージョンディレクトリと manifest をまとめて公開する。同じバージョンは既存の manifest で判定して再利用する。実行時は `profile_binaries` の指定、管理導入済みの CLI、PATH 上の CLI の順に解決する。
+Claude Code と Codex は SDK の同梱 CLI を使用する。Claude のログイン PTY と接続プローブも SDK の CLI を既定で使う。
+ホストの PATH にある Node.js を使う。既存の Grok Build 1.0.89 は同一の実行ファイルであり、既存の manifest で導入済みと判定して再利用する。
 ホストの `cli.print` route は chat でも利用できる。同期応答と SSE は偽 CLI で検証する。
 
 公開の仕組み (release branch → 許可リストのファイルだけを公開リポジトリへ) は B3 と別の作業にする。

@@ -1,10 +1,4 @@
-"""Optional Google Antigravity Python SDK backend.
-
-CLI backend remains the default because `agy` can consume cached Google AI Pro /
-Ultra subscription credentials. This backend is intentionally opt-in and targets
-Gemini API-key or Vertex authentication, while providing a native programmatic
-path for MCP, Skills, subagents, streaming, and SDK policies.
-"""
+"""Google Antigravity Python SDK runtime for Gemini API key and Vertex authentication."""
 
 from __future__ import annotations
 
@@ -236,7 +230,7 @@ def build_antigravity_sdk_session(
     session_id: str | None,
     request_headers: dict[str, str] | None = None,
 ) -> AntigravitySdkRuntimeSession:
-    """Experimental SDK backend builder (API key / Vertex, not subscription OAuth)."""
+    """Build the Antigravity SDK session for API key or Vertex authentication."""
     from ..config import get_config
 
     cwd = os.path.expanduser(cwd_override) if cwd_override is not None else preset.cwd
@@ -259,7 +253,7 @@ def build_antigravity_sdk_session(
         log.warning(
             "antigravity.sdk.effort_unsupported",
             effort=translated.effort,
-            hint="SDK backend は effort を公開していません。CLI backend を使用してください",
+            hint="Antigravity SDK は effort を公開していません",
         )
 
     return AntigravitySdkRuntimeSession(

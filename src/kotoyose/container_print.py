@@ -17,6 +17,8 @@ from typing import Any
 
 import structlog
 
+from .acp_client import LINE_LIMIT
+from .acp_execution import AcpExecution
 from .agent_container import CONTAINER_RUNTIME_BUNDLE, AgentContainerSpec
 from .agent_deadlines import AgentStartRejected
 from .codex_coding_policy import protected_workspace_entries, validate_workspace
@@ -25,6 +27,7 @@ from .jail_place import (
     CONTAINER_HOME,
     CONTAINER_RELAY,
     CONTAINER_SOCKET,
+    CONTAINER_WORKSPACE,
     PROXY_URL,
     RELAY_PATH,
     WALL_MARGIN_SECONDS,
@@ -96,13 +99,6 @@ def build_print_cli_container_plan(
     login_home = _validate_login_home(job.login_home)
     cli_binary = Path(job.cli_binary).resolve(strict=True)
 
-    full_prompt = compose_print_cli_prompt(
-        job.instructions,
-        job.prompt,
-        output_contract=job.output_contract,
-        output_schema=job.output_schema,
-    )
-
     ro_files = {_CONTAINER_RELAY: _RELAY_PATH}
     ro_dirs = protected_ro_dirs(protected, job.workspace)
     bundle = profile.isolated_bundle_root(cli_binary)
@@ -112,22 +108,30 @@ def build_print_cli_container_plan(
     else:
         container_cli = f"{CONTAINER_RUNTIME_BUNDLE}/{cli_binary.name}"
         ro_dirs[CONTAINER_RUNTIME_BUNDLE] = bundle
-    host_settings = profile.write_settings_file(job.surface, settings_dir)
-    container_settings: Path | None = None
-    if host_settings is not None:
-        container_settings = Path(f"/opt/agent/{host_settings.name}")
-        ro_files[str(container_settings)] = host_settings
+    env = build_print_cli_env(profile, _CONTAINER_HOME)
+    if job.acp:
+        if profile.acp is None:
+            raise ValueError(f"Profile {profile.id} does not declare ACP")
+        cli_args = list(profile.acp.arguments(job.model))
+        env.update(profile.acp.env)
+    else:
+        host_settings = profile.write_settings_file(job.surface, settings_dir)
+        container_settings: Path | None = None
+        if host_settings is not None:
+            container_settings = Path(f"/opt/agent/{host_settings.name}")
+            ro_files[str(container_settings)] = host_settings
+        cli_args = profile.render_argv(
+            model=job.model,
+            prompt=compose_print_cli_prompt(
+                job.instructions, job.prompt, output_contract=job.output_contract, output_schema=job.output_schema,
+            ),
+            timeout_seconds=print_timeout_seconds,
+            surface=job.surface,
+            settings_path=container_settings,
+            add_dirs=job.add_dirs,
+        )
 
-    cli_args = profile.render_argv(
-        model=job.model,
-        prompt=full_prompt,
-        timeout_seconds=print_timeout_seconds,
-        surface=job.surface,
-        settings_path=container_settings,
-        add_dirs=job.add_dirs,
-    )
-
-    exec_env = build_connect_proxy_env(build_print_cli_env(profile, _CONTAINER_HOME))
+    exec_env = build_connect_proxy_env(env)
     # AgentContainer always binds HOME=/home/agent at create time and rejects
     # passing HOME in spec.env; exec_env carries the full child environment.
     spec_env = {k: v for k, v in exec_env.items() if k != "HOME"}
@@ -216,6 +220,7 @@ async def execute_container_print(
     container_id: str | None = None
     container_confirmation = "confirmed"
     process_exited = True
+    acp: AcpExecution | None = None
 
     try:
         print_timeout_seconds = max(0.1, remaining_now * 0.85)
@@ -245,7 +250,7 @@ async def execute_container_print(
         if loop.time() >= deadline:
             raise TimeoutError
 
-        stream_limit = max(_STREAM_READER_MIN_LIMIT, job.output_limit_bytes * 6 + 65536)
+        stream_limit = LINE_LIMIT if job.acp else max(_STREAM_READER_MIN_LIMIT, job.output_limit_bytes * 6 + 65536)
         launch_attempted = True
         async with asyncio.timeout_at(deadline):
             container_id = await place.start_container(spec)
@@ -257,6 +262,9 @@ async def execute_container_print(
         assert process.stdout is not None
         assert process.stderr is not None
         stderr_task = asyncio.create_task(read_stderr_tail(process.stderr, max_bytes=32768))
+
+        if job.acp:
+            acp = AcpExecution(process, job, profile, on_event, cwd=CONTAINER_WORKSPACE)
 
         async def run_stream() -> tuple[str, str]:
             nonlocal content, output_bytes, turns, usage, provider_limit
@@ -282,6 +290,12 @@ async def execute_container_print(
                     "isolated": True,
                 },
             )
+            if acp is not None:
+                status_out, reason_out, content = await acp.run()
+                output_bytes = len(content)
+                turns = 1
+                return status_out, reason_out
+
             outcome, line_overflow = await read_print_cli_stdout_events(
                 process.stdout,
                 profile,
@@ -352,6 +366,13 @@ async def execute_container_print(
         if launch_task is not None and not launch_task.done():
             launch_task.cancel()
             launch_task.add_done_callback(_reap_late_process)
+        if acp is not None:
+            pending = tasks[0] if tasks and not tasks[0].done() else None
+            if pending is not None or status == "timeout":
+                await acp.client.cancel(pending)
+            content = content or bytes(acp.turn.content)
+            output_bytes = len(content)
+            usage = acp.turn.usage
         remove_task: asyncio.Task[str] | None = None
         if launch_attempted:
             remove_task = asyncio.create_task(place.remove_container(job_id, 0))
@@ -366,7 +387,11 @@ async def execute_container_print(
         if remove_task is not None:
             container_confirmation = await remove_task
         if process is not None:
-            proc_stop = await _shutdown(process, job.grace_seconds)
+            if acp is not None:
+                await asyncio.gather(*tasks, return_exceptions=True)
+                proc_stop = await acp.client.close(grace_seconds=job.grace_seconds)
+            else:
+                proc_stop = await _shutdown(process, job.grace_seconds)
             if proc_stop != "confirmed":
                 process_exited = False
         elif launch_attempted and container_confirmation != "confirmed":
@@ -409,7 +434,7 @@ async def execute_container_print(
         stop_confirmation=stop,
         usage=usage,
         provider_limit=provider_limit,
-        provider_session_id=None,
+        provider_session_id=acp.client.session_id if acp is not None else None,
         output_bytes=output_bytes,
         turns=turns,
         launch_outcome=(

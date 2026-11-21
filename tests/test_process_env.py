@@ -32,8 +32,6 @@ from kotoyose.connections_probe import _resolve_connection_secret_for_probe
 from kotoyose.execution_resources import NativeExecutionConfig
 from kotoyose.mcp_contract import ExternalMcpServerConfig, McpToolCeiling
 from kotoyose.model_discovery import _resolve_connection_secret
-from kotoyose.runtime.antigravity import AntigravityRuntimeSession, _cli_env_for
-from kotoyose.runtime.antigravity_probe import probe_antigravity_cli
 from kotoyose.runtime.claude_auth import build_auth_env
 from kotoyose.runtime.claude_options import build_claude_options
 from kotoyose.runtime.codex import CodexRuntimeSession
@@ -155,6 +153,7 @@ def test_scrub_moves_innocent_names_referenced_by_configs(monkeypatch, tmp_path)
     monkeypatch.setenv("INNOCENT_CONN_VAR", "conn-val")
     monkeypatch.setenv("INNOCENT_ANTHROPIC_VAR", "anthropic-val")
     monkeypatch.setenv("INNOCENT_AGY_VAR", "agy-val")
+    monkeypatch.setenv("INNOCENT_AGY_SDK_VAR", "agy-sdk-val")
     monkeypatch.setenv("INNOCENT_MCP_VAR", "mcp-val")
     monkeypatch.setenv("INNOCENT_S3_ACCESS", "s3-access-val")
     monkeypatch.setenv("INNOCENT_S3_SECRET", "s3-secret-val")
@@ -166,7 +165,10 @@ def test_scrub_moves_innocent_names_referenced_by_configs(monkeypatch, tmp_path)
             "m1": ModelPreset(
                 provider="claude",
                 anthropic_auth_token_env="INNOCENT_ANTHROPIC_VAR",
-                antigravity={"api_key_env": "INNOCENT_AGY_VAR"},
+                antigravity={
+                    "api_key_env": "INNOCENT_AGY_VAR",
+                    "sdk": {"api_key_env": "INNOCENT_AGY_SDK_VAR"},
+                },
             ),
         },
         clients={
@@ -214,6 +216,7 @@ def test_scrub_moves_innocent_names_referenced_by_configs(monkeypatch, tmp_path)
         "INNOCENT_CONN_VAR",
         "INNOCENT_ANTHROPIC_VAR",
         "INNOCENT_AGY_VAR",
+        "INNOCENT_AGY_SDK_VAR",
         "INNOCENT_MCP_VAR",
         "INNOCENT_S3_ACCESS",
         "INNOCENT_S3_SECRET",
@@ -415,65 +418,6 @@ async def test_cursor_bridge_child_receives_no_scrubbed_secrets_and_passes_api_k
     child_env = json.loads(dump_path.read_text(encoding="utf-8"))
     assert "KOTOYOSE_TEST_SENTINEL_TOKEN" not in child_env
     assert "INNOCENT_CONFIG_REF_VAR" not in child_env
-
-
-async def test_agy_child_process_receives_no_scrubbed_secrets(monkeypatch, tmp_path):
-    probe_dump = tmp_path / "agy_probe_env.json"
-    fake_agy_probe = _write_env_dump_cli(
-        tmp_path / "fake-agy-probe",
-        probe_dump,
-        body="print('1.2.0')\nsys.exit(0)",
-    )
-    run_dump = tmp_path / "agy_run_env.json"
-    fake_agy_run = _write_env_dump_cli(
-        tmp_path / "fake-agy-run",
-        run_dump,
-        body=(
-            "if '--version' in sys.argv:\n"
-            "    print('1.2.0')\n"
-            "else:\n"
-            "    print(json.dumps({'event':'result','status':'SUCCESS','response':'ok'}))\n"
-            "sys.exit(0)"
-        ),
-    )
-    login_home = tmp_path / "agy-home"
-    login_home.mkdir()
-
-    monkeypatch.setenv("KOTOYOSE_TEST_SENTINEL_TOKEN", "sentinel-agy-secret")
-    monkeypatch.setenv("INNOCENT_CONFIG_REF_VAR", "innocent-config-secret")
-
-    cfg = HarnessConfig(
-        connections={
-            "ext": Connection(provider="cursor", kind="api_key", data_policy="no_training", secret="env:INNOCENT_CONFIG_REF_VAR"),
-            "agy": Connection(provider="antigravity", kind="subscription", data_policy="no_training", config_dir=login_home),
-        },
-        routes={
-            "r-agy": AgentRoute(driver="antigravity.agy", model="gemini-3-pro", connection="agy"),
-        },
-    )
-    monkeypatch.setattr("kotoyose.config.get_config", lambda: cfg)
-    process_env.scrub(process_env.collect_config_env_names(cfg))
-
-    diag = await probe_antigravity_cli((str(fake_agy_probe), "--version"))
-    assert diag.compatible is True
-    assert probe_dump.exists()
-    probe_env = json.loads(probe_dump.read_text(encoding="utf-8"))
-    assert "KOTOYOSE_TEST_SENTINEL_TOKEN" not in probe_env
-    assert "INNOCENT_CONFIG_REF_VAR" not in probe_env
-
-    session = AntigravityRuntimeSession(
-        model="gemini-3-pro",
-        cwd=str(tmp_path),
-        config={"command": str(fake_agy_run)},
-        env=_cli_env_for(ModelPreset(route="r-agy")),
-    )
-    chunks = [item async for item in session.stream("hello")]
-    assert chunks
-
-    assert run_dump.exists()
-    run_env = json.loads(run_dump.read_text(encoding="utf-8"))
-    assert "KOTOYOSE_TEST_SENTINEL_TOKEN" not in run_env
-    assert "INNOCENT_CONFIG_REF_VAR" not in run_env
 
 
 async def test_scrubbed_credentials_still_work_end_to_end(monkeypatch, tmp_path):

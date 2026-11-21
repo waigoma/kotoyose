@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 import structlog
 
+from .claude_cli import bundled_claude_cli
 from . import process_env
 from .agent_spec import driver_manifest
 from .codex_subscription import read_subscription_expiry
@@ -792,10 +793,18 @@ async def probe_claude_connection(
     target_store = store or get_connection_state_store()
     ref_now = now or datetime.now(timezone.utc)
 
-    resolved_cli: Path | str | None = cli_binary
-    if resolved_cli is None:
-        found = shutil.which("claude")
-        resolved_cli = Path(found) if found else None
+    try:
+        resolved_cli = cli_binary if cli_binary is not None else bundled_claude_cli()
+    except ValueError as exc:
+        return await target_store.upsert(
+            conn_id,
+            auth="unknown",
+            quota=[],
+            quota_source="claude_cli_usage",
+            cli_version=None,
+            checked_at=ref_now,
+            last_error=_cap_error(str(exc)),
+        )
 
     version_info = await probe_cli_version(resolved_cli)
     cli_version = version_info.get("version")
@@ -805,17 +814,6 @@ async def probe_claude_connection(
             return await target_store.upsert(conn_id, cli_version=cli_version, checked_at=ref_now)
         existing = await target_store.get(conn_id)
         return existing if existing is not None else default_connection_state(conn_id)
-
-    if resolved_cli is None:
-        return await target_store.upsert(
-            conn_id,
-            auth="unknown",
-            quota=[],
-            quota_source="claude_cli_usage",
-            cli_version=cli_version,
-            checked_at=ref_now,
-            last_error=_cap_error("Claude CLI binary not found"),
-        )
 
     if not Path(conn.config_dir).is_dir():
         # 未ログインの dir を CLI に作らせない (作られると 0755 になる)。作るのはログインの流れ (0700)。
@@ -1617,7 +1615,6 @@ async def probe_connection(
     if (
         conn.kind == "subscription"
         and conn.provider.lower() in _CLAUDE_SUBSCRIPTION_PROVIDERS
-        and conn.config_dir is not None
     ):
         return await probe_claude_connection(
             conn_id,

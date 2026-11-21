@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kotoyose.config import HarnessConfig, ModelPreset
-from kotoyose.runtime.antigravity import AntigravityRuntimeSession
+from kotoyose.runtime.antigravity_sdk import AntigravitySdkRuntimeSession
 from kotoyose.runtime.base import RuntimeResult, RuntimeSession
 from kotoyose.runtime.claude import ClaudeRuntimeSession
 from kotoyose.runtime.codex import CodexRuntimeSession
@@ -139,38 +139,29 @@ async def test_get_or_resume_client_uses_provider_registry_builder(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_get_or_resume_client_builds_antigravity_runtime_session(tmp_path):
-    """provider=antigravity は runtime_session_id を AntigravityRuntimeSession に resume する。"""
+async def test_get_or_resume_client_builds_antigravity_sdk_session(tmp_path):
     config = HarnessConfig(
         models={
             "antigravity-coding": ModelPreset(
                 provider="antigravity",
                 model="Gemini 3.5 Flash (High)",
                 cwd=str(tmp_path),
-                antigravity={"print_timeout": "30s"},
+                antigravity={"sdk": {"timeout_seconds": 30}},
             )
         }
     )
 
-    lookup = AsyncMock(return_value="conv_abc")
+    lookup = AsyncMock(return_value=None)
     with (
         patch("kotoyose.session.get_config", return_value=config),
         patch("kotoyose.session.lookup_runtime_session", new=lookup),
     ):
         client, was_resumed = await get_or_resume_client("conv:antigravity", "antigravity-coding")
 
-    assert isinstance(client, AntigravityRuntimeSession)
+    assert isinstance(client, AntigravitySdkRuntimeSession)
     assert client.provider == "antigravity"
-    assert client.session_id == "conv_abc"
-    assert was_resumed is True
-    lookup.assert_awaited_once_with(
-        "conv:antigravity",
-        provider="antigravity",
-        model="antigravity-coding",
-        session_identity=_cache_identity(
-            "antigravity", "antigravity-coding", "Gemini 3.5 Flash (High)", [], None
-        )[2],
-    )
+    assert client.config == {"timeout_seconds": 30}
+    assert was_resumed is False
     assert sessions["conv:antigravity"] is client
 
 
