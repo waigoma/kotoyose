@@ -312,6 +312,64 @@ models:
 
 ---
 
+### 別の alias に頼む (MCP)
+
+親 alias の `mcp_refs` に `kotoyose` を追加し、`delegates` に依頼先を列挙します。親を呼ぶ Client の `models` にも依頼先が必要です。
+
+```yaml
+models:
+  kotoyose-chat:
+    description: 作業の取りまとめを担当する
+    delegates: [codex-coding]
+    mcp_refs: [kotoyose]
+  codex-coding:
+    provider: codex
+    description: コード変更をレビューする
+```
+
+人格や個人の記憶を持つ alias など、委譲の先にしたくない alias には `delegable: false` を設定します。`list_agents` に出ず、`ask_agent` と `delegates` でも使えません。
+
+組み込み MCP の接続先は既定で `http://127.0.0.1:8000/v1/mcp` です。別のポートやベース URL で起動する場合は、Kotoyose サーバーの `KOTOYOSE_SELF_URL` にベース URL を設定します。
+
+外部の Claude Code では、Client API キーを使って Streamable HTTP サーバーとして登録します。下の `KOTOYOSE_URL` は Kotoyose のベース URL です。
+
+```bash
+claude mcp add --transport http kotoyose "${KOTOYOSE_URL}/v1/mcp" \
+  --header "Authorization: Bearer ${KOTOYOSE_CLIENT_API_KEY}"
+```
+
+頼む側の agent には、取扱説明書の skill `kotoyose-delegation` (`skills/kotoyose-delegation-bundle`) を持たせます。alias なら `skill_definitions` に登録して `skill_refs` で参照し、外の Claude Code などには skill として入れます。alias の選び方、依頼文の書き方、続きの頼み方、頼まない方がよい場合が書いてあります。
+
+`list_agents` で依頼先を確認し、`ask_agent` に alias と単独で理解できる依頼文を渡します。続けて頼むときは、応答の `conversation_id` を指定します。
+
+### 隔離実行から同じワークスペースを調べる
+
+`/v1/executions` で動く Claude / Codex の alias も委譲できます。以下は設定済みの Claude 用接続 `claude` を使い、`coding` から `researcher` に調査を頼む例です。
+
+```yaml
+routes:
+  claude-coding:
+    driver: claude.agent-sdk
+    connection: claude
+    model: claude-sonnet-4-6
+  claude-research:
+    driver: claude.agent-sdk
+    connection: claude
+    model: claude-haiku-4-5
+models:
+  coding:
+    route: claude-coding
+    agent: {place: isolated, surface: write}
+    mcp_refs: [kotoyose]
+    delegates: [researcher]
+  researcher:
+    route: claude-research
+    description: ワークスペースの実装を調査する
+    agent: {place: isolated, surface: read}
+```
+
+Client の `models` に両方の alias を追加し、親子が同時に動ける実行枠を用意します。`coding` を通常どおり `builtin:host-coding@1` で実行すると、`ask_agent(alias="researcher", task="設定の読み込み順を調べて")` を呼べます。子は親と同じワークスペースを読み取り専用で開きます。依頼ごとに新しい子が起動するため、`conversation_id` は省略します。
+
 ## 8. 会話キーの設計ガイド
 
 会話キーはセッションを一意に識別する文字列です。

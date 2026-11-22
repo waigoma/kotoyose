@@ -16,7 +16,7 @@ import stat
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -25,7 +25,6 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from ..auth import admin_username, require_basic_auth
 from ..data_policy import TrainingCapability, alias_data_policy, connection_data_policy, training_digest
 from ..config import (
-    AgentPreset,
     McpDefinition,
     ModelPreset,
     PromptFileDefinition,
@@ -100,6 +99,8 @@ def _config_to_dict() -> dict[str, Any]:
     def preset_dict(preset) -> dict[str, Any]:
         return {
             "execution": preset.execution,
+            "description": preset.description,
+            "delegates": preset.delegates,
             **({"on": preset.on} if preset.on != "local" else {}),
             **({"place": preset.place} if preset.place is not None else {}),
             **({"allow": preset.allow.model_dump(mode="json")} if preset.allow is not None else {}),
@@ -145,11 +146,6 @@ def _config_to_dict() -> dict[str, Any]:
             "plugins": preset.plugins,
             "skill_refs": preset.skill_refs,
             "skills": preset.skills,
-            "agent_refs": preset.agent_refs,
-            "agents": {
-                name: agent.model_dump()
-                for name, agent in preset.agents.items()
-            },
             "codex": preset.codex,
             "cursor": preset.cursor,
             "antigravity": preset.antigravity,
@@ -177,10 +173,6 @@ def _config_to_dict() -> dict[str, Any]:
         "skill_definitions": {
             name: definition.model_dump()
             for name, definition in cfg.skill_definitions.items()
-        },
-        "agent_definitions": {
-            name: definition.model_dump()
-            for name, definition in cfg.agent_definitions.items()
         },
         "mcps": {name: definition.model_dump() for name, definition in cfg.mcps.items()},
         "prompt_files": {
@@ -636,6 +628,8 @@ async def rename_model(model_id: str, body: RenameModelRequest, owner: str = Dep
         # pool alias の候補は alias 名で参照している。名前だけ追従させる。
         for pool in new_cfg.pools.values():
             pool.candidates = [body.new_name if item == model_id else item for item in pool.candidates]
+        for preset in new_cfg.models.values():
+            preset.delegates = [body.new_name if alias == model_id else alias for alias in preset.delegates]
     _set_model(new_cfg, body.new_name, body.preset, owner)
     _save_config_or_422(new_cfg)
     return {"status": "ok", "model_id": body.new_name}
@@ -649,6 +643,9 @@ async def delete_model(model_id: str):
     if pools := [name for name, pool in cfg.pools.items() if model_id in pool.candidates]:
         raise HTTPException(
             status_code=409, detail=f"Model '{model_id}' is referenced by pool: {', '.join(pools)}")
+    if parents := [name for name, preset in cfg.models.items() if model_id in preset.delegates]:
+        raise HTTPException(
+            status_code=409, detail=f"Model '{model_id}' is referenced by delegates: {', '.join(parents)}")
     new_cfg = cfg.model_copy(deep=True)
     del new_cfg.models[model_id]
     new_cfg.training_acks = [ack for ack in new_cfg.training_acks if ack.alias != model_id]
@@ -703,31 +700,6 @@ async def delete_skill(name: str):
         raise HTTPException(status_code=409, detail=f"Skill '{name}' is referenced by: {', '.join(references)}")
     new_cfg = cfg.model_copy(deep=True)
     del new_cfg.skill_definitions[name]
-    _save_config_or_422(new_cfg)
-    return {"status": "ok", "name": name}
-
-
-@router.post("/agents/{name}", summary="個別 agent 追加")
-async def create_agent(name: str, definition: AgentPreset):
-    return await _save_resource("agent_definitions", name, definition, False)
-
-
-@router.put("/agents/{name}", summary="個別 agent 更新")
-async def update_agent(name: str, definition: AgentPreset):
-    return await _save_resource("agent_definitions", name, definition, True)
-
-
-@router.delete("/agents/{name}", summary="個別 agent 削除")
-async def delete_agent(name: str):
-    cfg = get_config()
-    if name not in cfg.agent_definitions:
-        raise HTTPException(status_code=404, detail=f"agent '{name}' not found")
-    if references := _resource_references("agent_refs", name):
-        raise HTTPException(
-            status_code=409, detail=f"agent '{name}' is referenced by: {', '.join(references)}"
-        )
-    new_cfg = cfg.model_copy(deep=True)
-    del new_cfg.agent_definitions[name]
     _save_config_or_422(new_cfg)
     return {"status": "ok", "name": name}
 
@@ -840,15 +812,6 @@ class McpRenameRequest(ResourceRenameRequest):
     server: dict[str, object] | None = None
 
 
-class AgentRenameRequest(ResourceRenameRequest):
-    """個別 agent の参照名と定義を変更するリクエスト。"""
-
-    description: str | None = None
-    prompt: str | None = None
-    tools: list[str] | None = None
-    model: Literal["haiku", "sonnet", "opus", "inherit"] | None = None
-
-
 async def _rename_resource(
     collection_name: str,
     refs_field: str,
@@ -916,25 +879,6 @@ async def rename_mcp(name: str, body: McpRenameRequest):
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return await _rename_resource("mcps", "mcp_refs", "MCP", name, body.new_name, mutate)
-
-
-@router.post("/agents/{name}/rename", summary="個別 agent の名前変更")
-async def rename_agent(name: str, body: AgentRenameRequest):
-    """agent 名と全 preset の agent_refs を 1 回の保存で変更する。"""
-    def mutate(definition: AgentPreset) -> AgentPreset:
-        values = definition.model_dump()
-        # tools:null (継承) と「送っていない」を区別するため model_fields_set で判定する。
-        for field in ("description", "prompt", "tools", "model"):
-            if field in body.model_fields_set:
-                values[field] = getattr(body, field)
-        try:
-            return AgentPreset.model_validate(values)
-        except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    return await _rename_resource(
-        "agent_definitions", "agent_refs", "agent", name, body.new_name, mutate
-    )
 
 
 @router.put("/prompt-files/{name}/content", summary="管理対象 prompt file 作成・更新")

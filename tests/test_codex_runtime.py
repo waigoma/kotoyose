@@ -7,7 +7,6 @@ notification は本物の pydantic model で組み立てる (adapter が isinsta
 from __future__ import annotations
 
 import asyncio
-import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +30,6 @@ from openai_codex.models import (
     TurnStartedNotification,
 )
 
-from kotoyose.config import AgentPreset
 from kotoyose.runtime.base import RuntimeEvent
 from kotoyose.runtime.codex import (
     ApprovalMode,
@@ -200,9 +198,6 @@ def test_build_codex_session_translates_skills_agents_effort_and_timeout(tmp_pat
         skill_refs=["debug"],
         effort="xhigh",
         timeout_seconds=90,
-        agents={
-            "reviewer": AgentPreset(description="review", prompt="review carefully")
-        },
     )
 
     monkeypatch.setattr("kotoyose.config._config", cfg)
@@ -213,7 +208,7 @@ def test_build_codex_session_translates_skills_agents_effort_and_timeout(tmp_pat
     )
     assert session.effort == "xhigh"
     assert session.config["timeout"] == 90
-    assert list(session.agents) == ["reviewer"]
+    assert "agents.enabled=false" in session._build_config_overrides()
 
 
 def test_build_codex_session_translates_isolation_and_mcp_deny(tmp_path, monkeypatch):
@@ -265,41 +260,6 @@ def test_build_codex_session_leaves_codex_home_unset_by_default(tmp_path, monkey
     session = build_codex_session(ModelPreset(provider="codex", cwd=str(tmp_path)), None, None)
 
     assert session.codex_home is None
-
-
-def test_build_codex_session_resolves_agent_tier_to_codex_runtime_model(
-    tmp_path, monkeypatch
-):
-    """共通 agent の model tier を Codex runtime model ID と read-only role へ変換する。"""
-    from kotoyose.config import AgentRoute, Connection, HarnessConfig, ModelPreset
-
-    cfg = HarnessConfig(
-        connections={"codex-host": Connection(provider="codex", kind="subscription", data_policy="no_training")},
-        routes={
-            "codex-luna": AgentRoute(driver="codex.app-server", model="gpt-test-luna", connection="codex-host")
-        },
-    )
-    preset = ModelPreset(
-        provider="codex",
-        cwd=str(tmp_path),
-        agents={
-            "researcher": AgentPreset(
-                description="research",
-                prompt="read only",
-                model="haiku",
-                tools=["Read", "Grep", "Glob", "WebFetch", "WebSearch"],
-            )
-        },
-    )
-
-    monkeypatch.setattr("kotoyose.config._config", cfg)
-    session = build_codex_session(preset, None, None)
-    session._build_config_overrides()
-    role_file = next(Path(session._agent_role_dir).glob("*.toml"))
-    parsed = tomllib.loads(role_file.read_text(encoding="utf-8"))
-
-    assert parsed["model"] == "gpt-test-luna"
-    assert parsed["sandbox_mode"] == "read-only"
 
 
 # ---------------------------------------------------------------------------
@@ -990,56 +950,8 @@ def test_build_config_overrides_flattens_nested_config_tables():
 
     assert session._build_config_overrides() == (
         "sandbox_workspace_write.network_access=true",
+        "agents.enabled=false",
     )
-
-
-@pytest.mark.asyncio
-async def test_agent_config_overrides_create_valid_role_and_disconnect_removes_it(tmp_path):
-    """共通 agent は Codex role file へ変換し、session 終了時に一時資源を消す。"""
-    session = CodexRuntimeSession(
-        model="gpt-5.1-codex",
-        cwd=str(tmp_path),
-        agents={
-            "reviewer": AgentPreset(
-                description="レビュー担当",
-                prompt="変更理由を確認する。\n安全性も確認する。",
-            )
-        },
-    )
-
-    overrides = session._build_config_overrides()
-    role_dir = session._agent_role_dir
-    assert role_dir is not None
-    role_file = next(Path(role_dir).glob("*.toml"))
-    parsed = tomllib.loads(role_file.read_text(encoding="utf-8"))
-    assert parsed == {
-        "name": "reviewer",
-        "developer_instructions": "変更理由を確認する。\n安全性も確認する。",
-    }
-    assert any(item.startswith("agents.reviewer.config_file=") for item in overrides)
-
-    await session.disconnect()
-    assert not Path(role_dir).exists()
-
-
-async def test_agent_role_temp_dir_is_removed_when_thread_setup_fails(
-    patch_async_codex, tmp_path
-):
-    """agent role 作成後の設定エラーでも一時ディレクトリを残さない。"""
-    session = CodexRuntimeSession(
-        model="gpt-5.1-codex",
-        cwd=str(tmp_path),
-        config={"sandbox": "invalid"},
-        agents={
-            "reviewer": AgentPreset(description="review", prompt="review carefully")
-        },
-    )
-
-    with pytest.raises(ValueError, match="sandbox"):
-        await session._ensure_thread()
-
-    assert session._agent_role_dir is None
-
 
 
 # ---------------------------------------------------------------------------

@@ -21,7 +21,9 @@ Kotoyose は、Claude Code や OpenAI Codex などの公式 CLI / SDK を束ね�
 
 ## できること
 
-- **AI の作業環境を一度定義すれば、どこからでも同じ AI が使える**: system prompt (prompt ファイル)、skill、MCP サーバー、subagent の定義、使ってよい道具 (`tools` / `deny`)、実行場所 (`host` / `isolated`) を `alias` という名前に束ねて定義できます。チャット UI、n8n、Discord の bot、自作のタスク管理、curl のどこから呼んでも、同じ名前を指定すれば同じ環境の AI が出てきます。prompt・skill・MCP などの部品は一か所に登録し、複数の `alias` から参照して使い回せます。
+- **AI の作業環境を一度定義すれば、どこからでも同じ AI が使える**: system prompt (prompt ファイル)、skill、MCP サーバー、頼んでよい別の alias、使ってよい道具 (`tools` / `deny`)、実行場所 (`host` / `isolated`) を `alias` という名前に束ねて定義できます。チャット UI、n8n、Discord の bot、自作のタスク管理、curl のどこから呼んでも、同じ名前を指定すれば同じ環境の AI が出てきます。prompt・skill・MCP などの部品は一か所に登録し、複数の `alias` から参照して使い回せます。
+- **別の model に作業を頼める**: Kotoyose 自身が MCP サーバー (`list_agents` / `ask_agent`) を持ち、agent は別の `alias` に作業を頼めます。Claude の作業の途中で調べものを Grok に回す、といった使い方ができます。頼まれた側はさらに別の alias に頼めません。jail で動くコーディングの agent からも、同じ作業場を読み取り専用で開く alias に頼めます。
+- **T3 Code や Zed から使える**: `kotoyose-acp` は ACP のエージェントとして動き、`alias` を model の選択肢として並べます。本文と道具の進捗を流し、途中で model を切り替えても会話を引き継ぎます。
 - **用途ごとに必要なものだけを持たせるので、トークン効率が良い**: skill や MCP サーバーは `alias` ごとに定義します。その用途に要る部品だけが context に載るため、全部入りの環境に比べて無関係な道具の説明でトークンを消費しません。
 - **契約しているサブスクの枠を、うまく使い切れる**: 各社の公式 CLI / SDK をそのまま動かすため、API の別料金ではなくサブスクリプションの枠で動作します。残量 (5 時間枠・週の枠) は公式の口から取得してダッシュボードに表示します。複数の `alias` を束ねる `combo` を使うと、枠を使い切った候補をリセットまで飛ばして次を使ったり、複数のサブスクに負荷を散らしたりできます。
 - **トークンを抜かない**: ログインはコードの貼り付け、ブラウザ、デバイスコードといった各社の公式の手順で管理コンソールから行います。トークンは CLI 自身が Kotoyose 専用のディレクトリで保持し、Kotoyose は読み取りも転送もしません。
@@ -76,7 +78,7 @@ flowchart LR
 
 - `connection`: 各社の公式 CLI / SDK のログイン先、入力が学習に使われるかの方針、利用枠の残量を管理する接続です。
 - `route`: どの driver、model、connection で動かすかを決める経路です。
-- `alias`: `route` に prompt ファイル、skill、MCP サーバー、subagent の定義、`tools` / `deny`、実行場所 (`host` / `isolated`)、学習の承諾を束ねた作業環境の名前です。`combo` で複数の `alias` を束ね、空いている方へ振り分けることもできます。
+- `alias`: `route` に prompt ファイル、skill、MCP サーバー、頼んでよい別の alias (`delegates`)、`tools` / `deny`、実行場所 (`host` / `isolated`)、学習の承諾を束ねた作業環境の名前です。`combo` で複数の `alias` を束ね、空いている方へ振り分けることもできます。
 - `client`: 発行した API キーごとに、誰が、どの `alias` を、どこで使ってよいかを制御する単位です。
 
 ## 対応している AI

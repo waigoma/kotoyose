@@ -294,7 +294,7 @@ def test_conformance_probe_host_file_read_and_jail_mounts(tmp_path: Path) -> Non
     assert "--read-only" in argv_ro
     assert "--cap-drop" in argv_ro and argv_ro[argv_ro.index("--cap-drop") + 1] == "ALL"
     assert "--security-opt" in argv_ro and argv_ro[argv_ro.index("--security-opt") + 1] == "no-new-privileges"
-    assert f"type=bind,src={workspace},dst=/workspace,readonly" in argv_ro
+    assert f"type=bind,src={workspace},dst=/workspace,readonly,bind-propagation=rprivate,bind-recursive=readonly" in argv_ro
     assert f"type=bind,src={home},dst=/home/agent" in argv_ro
     mount_sources = [
         item.split("src=", 1)[1].split(",", 1)[0]

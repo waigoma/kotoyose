@@ -222,8 +222,8 @@ def test_builder_resolves_preamble_mcp_and_cwd(tmp_path, monkeypatch):
 
 
 def test_builder_maps_cursor_sdk_1_native_options(tmp_path, monkeypatch):
-    """Cursor SDK 1.x が追加した tool policy、agent、setting source を配線する。"""
-    from kotoyose.config import AgentPreset, HarnessConfig, ModelPreset
+    """Cursor SDK 1.x の tool policy と setting source を配線し、subagent は渡さない。"""
+    from kotoyose.config import HarnessConfig, ModelPreset
 
     monkeypatch.setattr("kotoyose.config._config", HarnessConfig())
     session = build_cursor_session(
@@ -234,12 +234,6 @@ def test_builder_maps_cursor_sdk_1_native_options(tmp_path, monkeypatch):
             deny=["Bash"],
             setting_sources=["user", "project"],
             permission_mode="plan",
-            agents={
-                "reviewer": AgentPreset(
-                    description="review",
-                    prompt="review carefully",
-                )
-            },
         ),
         None,
         None,
@@ -249,8 +243,7 @@ def test_builder_maps_cursor_sdk_1_native_options(tmp_path, monkeypatch):
     assert session.disallowed_tools == ["Bash"]
     assert session.setting_sources == ["user", "project"]
     assert session.mode == "plan"
-    assert session.agents["reviewer"].description == "review"
-    assert session.agents["reviewer"].model == "inherit"
+    assert not hasattr(session, "agents")
 
 
 async def test_sdk_1_options_are_passed_to_agent_create(sdk):
@@ -262,7 +255,6 @@ async def test_sdk_1_options_are_passed_to_agent_create(sdk):
         "/tmp/work",
         tools=["Read"],
         disallowed_tools=["Bash"],
-        agents={"reviewer": {"description": "review", "prompt": "review"}},
         setting_sources=["project"],
         mode="plan",
     )
@@ -272,7 +264,7 @@ async def test_sdk_1_options_are_passed_to_agent_create(sdk):
     options = calls["create"]
     assert options.tools == ["Read"]
     assert options.disallowed_tools == ["Bash"]
-    assert "reviewer" in options.agents
+    assert options.agents is None
     assert options.local.setting_sources == ["project"]
     assert options.mode == "plan"
 

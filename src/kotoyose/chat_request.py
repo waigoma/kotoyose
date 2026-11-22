@@ -6,11 +6,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from .chat_policy import ChatPolicyViolation, validate_image_input
-from .config import ModelPreset
+from .config import HarnessConfig, ModelPreset
 from .conversation_key import derive_lookup_key
-from .models import ChatCompletionRequest
+from .execution_resources import ExecutionError
+from .models import ChatCompletionRequest, ChatMessage
 from .runtime.acp import AcpPrompt
-from .runtime.base import RuntimePrompt, prompt_audit_text, prompt_image_urls, prompt_text
+from .runtime.base import RuntimePrompt, RuntimeTextInput, prompt_audit_text, prompt_image_urls, prompt_text
+from .runtime.translation import EFFORT_PROVIDERS
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,3 +105,96 @@ def prepare_chat_request(
         session_identity=session_identity,
         cache_hit=ports.is_cache_hit(lookup_key, session_identity),
     )
+
+
+# SDK runtime は会話を自分で持つ。新規 session だけ、先行発言をプロンプトの先頭に載せる。
+_SDK_PROVIDERS = frozenset({"claude", "codex", "cursor", "antigravity"})
+_TRANSCRIPT_LIMIT = 200_000
+
+
+def ensure_reasoning_effort(config: HarnessConfig, alias: str, requested: str | None) -> None:
+    """この turn の reasoning_effort を、runtime が受け取れるときだけ通す。
+
+    候補一覧は既存の discovery cache だけを見る。cache が無いときは一覧が不明で、
+    ``preset.effort`` と同じく値をそのまま runtime へ渡す。
+
+    Raises:
+        ExecutionError: provider が effort を適用しない、または判明している候補の外なら HTTP 422。
+    """
+    if requested is None:
+        return
+    preset = config.preset_for(alias)
+    if preset.provider not in EFFORT_PROVIDERS:
+        raise ExecutionError(
+            "invalid_request",
+            f"reasoning_effort is not supported for provider '{preset.provider}'",
+            422,
+        )
+    from .model_discovery import cached_reasoning_efforts
+
+    known = cached_reasoning_efforts(config, alias)
+    if known is not None and requested not in known["supported"]:
+        supported = ", ".join(known["supported"])
+        raise ExecutionError(
+            "invalid_request",
+            f"reasoning_effort {requested!r} is not supported for this model (supported: {supported})",
+            422,
+        )
+
+
+def prompt_for_resolved_session(
+    messages: list[ChatMessage],
+    provider: str,
+    latest_prompt: RuntimePrompt,
+    *,
+    fresh: bool,
+) -> RuntimePrompt:
+    """新規の SDK session にだけ、先行する発言をプロンプトの先頭へ付ける。
+
+    cache hit、resume、``print_cli`` / ``cli_acp`` は ``prepare_chat_request`` が
+    組んだプロンプトのままにする。``fresh`` は session 解決の後に渡す
+    (cache hit でもなく、保存済み runtime session id からの resume でもない)。
+
+    Args:
+        messages: 最新の user message を含む、リクエストのメッセージ。
+        provider: 解決済みの runtime provider。
+        latest_prompt: 最新 user message、または CLI 向けに組んだ履歴。
+        fresh: この turn が履歴を持たない runtime 会話の開始なら True。
+
+    Returns:
+        runtime へ渡すプロンプト。監査用の本文は最新メッセージのままにする。
+    """
+    if not fresh or provider not in _SDK_PROVIDERS:
+        return latest_prompt
+    last_user = max((index for index, message in enumerate(messages) if message.role == "user"), default=-1)
+    earlier = [
+        f"{message.role}: {prompt_audit_text(message.runtime_prompt())}"
+        for message in messages[:last_user]
+    ]
+    if not earlier:
+        return latest_prompt
+    prefix = _fit_transcript(earlier)
+    if isinstance(latest_prompt, str):
+        return f"{prefix}\n{latest_prompt}"
+    return [RuntimeTextInput(text=prefix), *latest_prompt]
+
+
+def _fit_transcript(lines: list[str]) -> str:
+    """Keep the newest earlier messages inside the transcript character cap."""
+    kept = lines
+    omitted = False
+    while True:
+        rendered = _render_transcript(kept, omitted)
+        if len(rendered) <= _TRANSCRIPT_LIMIT or not kept:
+            return rendered
+        kept = kept[1:]
+        omitted = True
+
+
+def _render_transcript(lines: list[str], omitted: bool) -> str:
+    body = ["Earlier conversation:"]
+    if omitted:
+        body.append("[earlier messages omitted]")
+    body.extend(lines)
+    body.append("---")
+    return "\n".join(body)

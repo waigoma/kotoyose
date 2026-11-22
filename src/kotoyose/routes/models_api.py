@@ -7,6 +7,7 @@ from ..data_policy import alias_data_policy
 from ..agent_route import published_agent
 from ..agent_sanction import with_sanction
 from ..execution_resources import agent_profile_allowed
+from ..model_discovery import cached_reasoning_efforts
 from ..model_pools import pool_data_policy, published_pool
 
 router = APIRouter(dependencies=[Depends(authorize_execution)])
@@ -15,6 +16,20 @@ router = APIRouter(dependencies=[Depends(authorize_execution)])
 def _agent_with_sanction(alias, policy, service, config) -> dict | None:
     """published_agent に route の判定を足す。published_agent 自体は変えない。"""
     return with_sanction(published_agent(alias, policy, service.config, config=config), config, alias)
+
+
+def _published_model(config, alias: str, policy, service) -> dict:
+    """One alias row. reasoning_efforts is added only when the discovery cache knows it."""
+    row = {
+        "id": alias, "object": "model", "owned_by": "local",
+        **alias_data_policy(config, alias).view(),
+        "agent": _agent_with_sanction(alias, policy, service, config)
+        if service is not None and policy is not None and alias in config.models else None,
+    }
+    efforts = cached_reasoning_efforts(config, alias) if alias in config.models else None
+    if efforts is not None:
+        row["reasoning_efforts"] = efforts
+    return row
 
 
 @router.get(
@@ -46,13 +61,7 @@ async def list_models(request: Request):
             alias for alias in config.models
             if agent_profile_allowed(alias, policy, None, config=config)
         ]
-    data = [
-        {"id": m, "object": "model", "owned_by": "local",
-         **alias_data_policy(config, m).view(),
-         "agent": _agent_with_sanction(m, policy, service, config)
-         if service is not None and policy is not None and m in config.models else None}
-        for m in model_ids
-    ]
+    data = [_published_model(config, m, policy, service) for m in model_ids]
     if service is not None and policy is not None:
         data.extend(await _pool_entries(request, service, policy, config))
     return {"object": "list", "data": data}

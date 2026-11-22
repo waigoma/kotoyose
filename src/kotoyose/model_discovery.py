@@ -29,7 +29,7 @@ from openai_codex import AsyncCodex, CodexConfig, JsonRpcError
 from . import process_env
 from .config import Connection, ModelPreset, _build_auth_env, get_config
 from .claude_cli import bundled_claude_cli
-from .connections_probe import codex_home_and_auth_path, resolve_connection_cli_binary
+from .connections_probe import codex_home_and_auth_path, connection_for_model, resolve_connection_cli_binary
 from .print_cli_events import _values_from_payload
 from .print_cli_hooks import get_models_parser
 from .print_cli_home import PrintCliHomeBusyError, use_login_home
@@ -704,11 +704,149 @@ class _CachedDiscovery:
 
 
 _CONNECTION_DISCOVERY_CACHE: dict[str, _CachedDiscovery] = {}
+# model ごとの使える effort は model の一覧より変わりにくい。一覧の控え (10 分) が切れても
+# /v1/models や kotoyose-acp に出し続けるため、取れた effort だけを長く持つ。
+EFFORT_CACHE_TTL_SECONDS = 6 * 3600.0
+_EFFORT_CACHE: dict[str, tuple[float, tuple[Any, ...], dict[str, dict[str, Any]]]] = {}
 
 
 def clear_connection_discovery_cache() -> None:
     """Clear in-memory per-connection discovery cache (intended for test isolation)."""
     _CONNECTION_DISCOVERY_CACHE.clear()
+    _EFFORT_CACHE.clear()
+
+
+def _remember_efforts(provider: str, connection_id: str, conn: Connection, result: dict[str, Any]) -> None:
+    details = result.get("model_details")
+    if not isinstance(details, list):
+        return
+    efforts = {
+        entry["id"]: found for entry in details
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+        and (found := reasoning_efforts_from_detail(entry)) is not None
+    }
+    if efforts:
+        _EFFORT_CACHE[connection_id] = (
+            time.monotonic() + EFFORT_CACHE_TTL_SECONDS, _connection_cache_fingerprint(provider, conn), efforts,
+        )
+
+
+def reasoning_efforts_from_detail(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Read one cached catalog row's effort list. Empty or absent lists are unknown."""
+    if not isinstance(entry, dict):
+        return None
+    if "supported_reasoning_efforts" in entry:
+        supported = _effort_names(entry.get("supported_reasoning_efforts"), "reasoning_effort")
+        default = entry.get("default_reasoning_effort")
+        if not supported:
+            return None
+        return {
+            "supported": supported,
+            "default": default if isinstance(default, str) and default in supported else None,
+        }
+    if "supportedEffortLevels" in entry:
+        supported = [level for level in entry.get("supportedEffortLevels") or [] if isinstance(level, str) and level]
+        if not supported:
+            return None
+        return {"supported": supported, "default": None}
+    for parameter in entry.get("parameters") or []:
+        if isinstance(parameter, dict) and parameter.get("id") == "effort":
+            supported = _effort_names(parameter.get("values"), "value")
+            if not supported:
+                return None
+            return {"supported": supported, "default": _cursor_default_effort(entry, supported)}
+    return None
+
+
+def _effort_names(raw: object, key: str) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    names: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item:
+            names.append(item)
+        elif isinstance(item, dict):
+            value = item.get(key)
+            if isinstance(value, str) and value:
+                names.append(value)
+    return names
+
+
+def _cursor_default_effort(entry: dict[str, Any], supported: list[str]) -> str | None:
+    for variant in entry.get("variants") or []:
+        if not isinstance(variant, dict) or not variant.get("is_default"):
+            continue
+        for param in variant.get("params") or []:
+            if isinstance(param, dict) and param.get("id") == "effort" and param.get("value") in supported:
+                value = param.get("value")
+                return value if isinstance(value, str) else None
+    return None
+
+
+def cached_reasoning_efforts(config: Any, alias: str) -> dict[str, Any] | None:
+    """Return supported efforts for an alias from the unexpired discovery cache.
+
+    Does not refresh the cache or contact a provider. Unknown, unsupported, and
+    expired results are ``None`` so callers omit the field and pass values through.
+    """
+    from .runtime.translation import EFFORT_PROVIDERS
+
+    models = getattr(config, "models", None)
+    if not isinstance(models, dict) or alias not in models:
+        return None
+    preset = config.preset_for(alias)
+    if preset.provider not in EFFORT_PROVIDERS or not preset.model:
+        return None
+    connection_id = connection_for_model(config, alias)
+    if not connection_id:
+        return None
+    conn = config.connections.get(connection_id)
+    if conn is None:
+        return None
+    base = _connection_cache_fingerprint(preset.provider, conn)
+    now = time.monotonic()
+    cached = _CONNECTION_DISCOVERY_CACHE.get(connection_id)
+    if cached is not None and now < cached.expires_at and cached.fingerprint[:len(base)] == base:
+        details = cached.result.get("model_details")
+        if isinstance(details, list):
+            for entry in details:
+                if isinstance(entry, dict) and entry.get("id") == preset.model:
+                    return reasoning_efforts_from_detail(entry)
+    remembered = _EFFORT_CACHE.get(connection_id)
+    if remembered is not None and now < remembered[0] and remembered[1] == base:
+        return remembered[2].get(preset.model)
+    return None
+
+
+async def warm_reasoning_efforts(config: Any, *, execution_service: Any = None) -> int:
+    """alias が使う接続の model の一覧を取得し、effort の控えを満たす。
+
+    effort を当てられる provider の接続だけを、接続ごとに 1 回取得する。失敗はログに残して続ける。
+    取得できた接続の数を返す。
+    """
+    from .runtime.translation import EFFORT_PROVIDERS
+
+    targets: dict[str, str] = {}
+    for alias in getattr(config, "models", {}):
+        try:
+            preset = config.preset_for(alias)
+        except (KeyError, ValueError):
+            continue
+        if preset.provider not in EFFORT_PROVIDERS:
+            continue
+        connection_id = connection_for_model(config, alias)
+        conn = config.connections.get(connection_id) if connection_id else None
+        if conn is not None and conn.provider.lower() == preset.provider:
+            targets.setdefault(connection_id, preset.provider)
+    warmed = 0
+    for connection_id, provider in targets.items():
+        try:
+            await discover_models(provider, connection=connection_id, execution_service=execution_service)
+        except Exception as exc:  # noqa: BLE001 - one connection must not stop the others
+            log.warning("model_discovery.effort_warm_failed", connection=connection_id, error_type=type(exc).__name__)
+            continue
+        warmed += connection_id in _EFFORT_CACHE
+    return warmed
 
 
 def _connection_cache_fingerprint(provider: str, conn: Connection) -> tuple[Any, ...]:
@@ -1143,6 +1281,7 @@ async def _discover_connection_models(
 
     result = await _discover_connection_models_uncached(provider, conn, profile, binary)
     if _is_cacheable_connection_result(result):
+        _remember_efforts(provider, connection_id, conn, result)
         _CONNECTION_DISCOVERY_CACHE[connection_id] = _CachedDiscovery(
             expires_at=time.monotonic() + CONNECTION_DISCOVERY_CACHE_TTL_SECONDS,
             fingerprint=fingerprint,

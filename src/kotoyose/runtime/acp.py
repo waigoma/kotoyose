@@ -266,6 +266,7 @@ def build_acp_session(
 ) -> AcpRuntimeSession:
     """route と alias から、まだプロセスを持たないホスト用セッションを作る。"""
     from ..config import _inject_mcp_request_headers, resolve_mcp_secrets, resolve_prompt_texts
+    from ..delegation import MCP_NAME
     from ..session import SDKConnectionError
 
     config = config or get_config()
@@ -282,7 +283,9 @@ def build_acp_session(
     if binary is None:
         raise SDKConnectionError(f"Set drivers.cli.print.profile_binaries.{profile.id} to an available executable")
     _, _, servers = config.resolve_resources(preset)
-    servers = _inject_mcp_request_headers(resolve_mcp_secrets(servers), headers or {})
+    servers = _inject_mcp_request_headers(
+        resolve_mcp_secrets(servers), headers or {}, builtin_delegation=MCP_NAME in preset.mcp_refs,
+    )
     instructions = "\n".join(resolve_prompt_texts(config.resolve_prompt_files(preset)))
     if preset.output_schema is not None:
         instructions = compose_print_cli_prompt(instructions, "", output_contract="json", output_schema=preset.output_schema)

@@ -12,7 +12,6 @@ import {
   restoreTriggerFocus,
   wasPeekReused,
 } from "./peek.js";
-import { renderAgents } from "./pages/agents.js";
 import { renderAliases } from "./pages/aliases.js";
 import { renderCombos } from "./pages/combos.js";
 import { renderDashboard } from "./pages/dashboard.js";
@@ -37,7 +36,6 @@ const PAGES = {
   prompts: renderPrompts,
   skills: renderSkills,
   mcps: renderMcps,
-  agents: renderAgents,
   usage: renderUsage,
   executions: renderExecutions,
   machine: renderMachine,

@@ -70,11 +70,6 @@ def _translated(tmp_path):
     skill = tmp_path / "skill" / "SKILL.md"
     skill.parent.mkdir()
     skill.write_text("# skill", encoding="utf-8")
-    agent = SimpleNamespace(
-        description="Research",
-        prompt="Inspect safely.",
-        tools=["Read", "Grep"],
-    )
     return TranslatedRuntimeConfig(
         instructions="system",
         plugin_paths=(),
@@ -95,7 +90,6 @@ def _translated(tmp_path):
             },
         },
         skills=(RuntimeSkill(name="review", path=str(skill)),),
-        agents={"researcher": agent},
         effort="high",
         timeout_seconds=600,
         unsupported_fields=(),
@@ -129,11 +123,7 @@ def test_sdk_config_translates_resources_and_autonomous_policy(tmp_path):
     assert local.kwargs["timeout_seconds"] == 12
     assert remote.kwargs["url"] == "https://example.test/mcp"
     assert remote.kwargs["disabled_tools"] == ["write"]
-
-    subagent = kwargs["subagents"][0]
-    enabled = subagent.kwargs["capabilities"].kwargs["enabled_tools"]
-    assert _BuiltinTools.VIEW_FILE in enabled
-    assert _BuiltinTools.SEARCH_DIR in enabled
+    assert kwargs["subagents"] == []
 
 
 def test_sdk_api_key_env_is_resolved_without_storing_secret(tmp_path, monkeypatch):
@@ -147,7 +137,6 @@ def test_sdk_api_key_env_is_resolved_without_storing_secret(tmp_path, monkeypatc
             plugin_paths=(),
             mcp_servers={},
             skills=(),
-            agents={},
             effort=None,
             timeout_seconds=None,
             unsupported_fields=(),
@@ -189,7 +178,6 @@ def test_sdk_vertex_config_does_not_require_api_key(tmp_path):
             plugin_paths=(),
             mcp_servers={},
             skills=(),
-            agents={},
             effort=None,
             timeout_seconds=None,
             unsupported_fields=(),
@@ -222,7 +210,6 @@ def test_sdk_usage_is_normalized_for_kotoyose_accounting():
 def test_explicit_tool_snapshots_cannot_gain_schedule_or_future_defaults(tmp_path, config):
     from kotoyose.runtime.antigravity_sdk import _AUTONOMOUS_TOOLS, _READ_ONLY_TOOLS
     translated = _translated(tmp_path)
-    translated.agents["researcher"].tools = None
     kwargs = _build_sdk_config_kwargs(
         sdk={"types": _Types, "CapabilitiesConfig": _Capabilities, "policy": _Policy},
         model=None, cwd=str(tmp_path), translated=translated, config=config,
@@ -232,11 +219,9 @@ def test_explicit_tool_snapshots_cannot_gain_schedule_or_future_defaults(tmp_pat
     assert [item.value for item in caps["enabled_tools"]] == list(expected)
     assert not {"schedule", "manage_task", "future_tool"} & set(caps["enabled_tools"])
     assert caps["run_command_config"].kwargs == {"enable_daemons": False}
-    subagent_caps = kwargs["subagents"][0].kwargs["capabilities"].kwargs
-    assert [item.value for item in subagent_caps["enabled_tools"]] == list(_READ_ONLY_TOOLS)
-    assert subagent_caps["run_command_config"].kwargs == {"enable_daemons": False}
+    assert kwargs["subagents"] == []
     denied = {policy.kwargs["tool"] for policy in kwargs["policies"] if policy.kwargs["decision"] == "deny"}
-    assert {"schedule", "manage_task", "run_command"} <= denied
+    assert {"schedule", "manage_task", "run_command", "invoke_subagent"} <= denied
 
 
 def test_generic_options_cannot_override_lifespan_or_toolsets(tmp_path):
@@ -247,40 +232,7 @@ def test_generic_options_cannot_override_lifespan_or_toolsets(tmp_path):
     )
     assert isinstance(kwargs["capabilities"], _Capabilities)
     assert kwargs["policies"]
-    assert kwargs["subagents"]
-
-
-@pytest.mark.parametrize("model", ["haiku", "sonnet", "opus"])
-def test_sdk_requires_explicit_mapping_for_common_model_alias(tmp_path, model):
-    translated = _translated(tmp_path)
-    translated.agents["researcher"].model = model
-    sdk = {"types": _Types, "CapabilitiesConfig": _Capabilities, "policy": _Policy}
-    with pytest.raises(ValueError, match="subagent_models"):
-        _build_sdk_config_kwargs(sdk=sdk, model=None, cwd=str(tmp_path), translated=translated, config={})
-    kwargs = _build_sdk_config_kwargs(
-        sdk=sdk, model=None, cwd=str(tmp_path), translated=translated,
-        config={"subagent_models": {"researcher": "gemini-3.8-flash"}},
-    )
-    assert kwargs["subagents"][0].kwargs["model"] == "gemini-3.8-flash"
-
-
-@pytest.mark.parametrize("models", [{"missing": "gemini-3.8-flash"}, {"researcher": ""}, {"researcher": "inherit"}, []])
-def test_subagent_model_mapping_rejects_unknown_agent_or_invalid_value(tmp_path, models):
-    with pytest.raises(ValueError, match="subagent_models"):
-        _build_sdk_config_kwargs(
-            sdk={"types": _Types, "CapabilitiesConfig": _Capabilities, "policy": _Policy},
-            model=None, cwd=str(tmp_path), translated=_translated(tmp_path), config={"subagent_models": models},
-        )
-
-
-def test_sdk_unknown_subagent_tool_fails_closed(tmp_path):
-    translated = _translated(tmp_path)
-    translated.agents["researcher"].tools = ["Schedule"]
-    with pytest.raises(ValueError, match="unsupported tool"):
-        _build_sdk_config_kwargs(
-            sdk={"types": _Types, "CapabilitiesConfig": _Capabilities, "policy": _Policy},
-            model=None, cwd=str(tmp_path), translated=translated, config={},
-        )
+    assert kwargs["subagents"] == []
 
 
 def test_vertex_express_accepts_explicit_key_env(tmp_path, monkeypatch):

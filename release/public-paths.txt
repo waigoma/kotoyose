@@ -13,13 +13,23 @@ config.example.yml
 execution.example.json
 conversation.example.json
 .env.example
-docs/
-!docs/archive/
-!docs/rename-2026-11-21.md
+# docs は公開するものだけを列挙する。設計・ADR・運用手順・リリース手順・作業履歴は公開しない。
+docs/README.md
+docs/usage-guide.md
+docs/acp-agent.md
+docs/hub-execution-v1.md
+docs/adding-a-provider.md
+docs/ROADMAP.md
+docs/example-prompt.md
+docs/example-coding-verification.md
+docs/example-coding-git.md
+docs/standards/
 .github/workflows/ci.yml
+.github/workflows/github-release.yml
 skills/README.md
 skills/example-bundle/
 skills/kotoyose-config-bundle/
+skills/kotoyose-delegation-bundle/
 scripts/build-codex-rootfs
 scripts/native-claude
 scripts/native-codex
@@ -28,5 +38,6 @@ scripts/rotate_master_key.py
 scripts/sanction_candidates.py
 scripts/export-public.py
 scripts/check-public.py
+scripts/release-notes.py
 release/public-paths.txt
 release/public-fake-ips.txt

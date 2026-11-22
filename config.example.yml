@@ -23,6 +23,10 @@
 # skill_refs で参照する。plugin は束ディレクトリ、skill は束の中の skill 名。
 # 束の作り方は skills/README.md を参照。
 skill_definitions:
+  kotoyose-delegation:
+    description: 別の alias に作業を頼むときの作法 (list_agents / ask_agent)
+    plugin: ./skills/kotoyose-delegation-bundle
+    skill: kotoyose-delegation
   hello-kotoyose:
     description: skills 配線の動作確認用サンプル
     plugin: ./skills/example-bundle
@@ -33,18 +37,8 @@ skill_definitions:
     # 未指定なら {plugin}/skills/{skill}/SKILL.md がそのまま使われる。
     # fallback_prompt: ./docs/example-prompt.md
 
-# agent_refs で参照する。参照名がそのまま subagent 名になる。
-agent_definitions:
-  researcher:
-    description: 読み取り専用の調査係。要点のみを簡潔に報告する。
-    prompt: |-
-      あなたは読み取り専用の調査 subagent。指示された調査を実施し、
-      結論と根拠 (ファイルパス・バージョン・URL) を簡潔に報告する。
-      ファイルの作成・変更・削除、状態を変える操作は行わない。
-    # tools を省くと親セッションの全ツール (Bash 含む) を継承するため、
-    # read-only 用途では必ず明示する
-    tools: [Read, Grep, Glob, WebFetch, WebSearch]
-    model: haiku                   # haiku | sonnet | opus | inherit (既定: inherit)
+# 別 alias への委譲は provider の subagent ではなく、
+# alias の mcp_refs: [kotoyose] と delegates で行う。
 
 # mcp_refs で参照する。server は inline mcp_servers と同一スキーマ。
 #   type: http / sse -> url 必須
@@ -201,6 +195,10 @@ models:
   # --- claude: 最小構成 -----------------------------------------------------
   kotoyose-chat:
     route: claude-sonnet
+    description: 作業の取りまとめを担当する
+    # Client の models でも依頼先を許可してください。
+    # delegates: [codex-coding]
+    # mcp_refs: [kotoyose]
     cwd: ~/kotoyose-workspace
     bare: true
     permission_mode: bypassPermissions
@@ -216,7 +214,6 @@ models:
     cwd: ~/kotoyose-workspace
     bare: true
     skill_refs: [hello-kotoyose]    # plugins と skills を同時に組み立てる
-    agent_refs: [researcher]       # 参照名 = subagent 名
     mcp_refs: [example-mcp]
     prompt_file_refs: [example-prompt]
 
@@ -228,7 +225,7 @@ models:
   # bare: true なので Skill ツール自体が生成されず、CLAUDE.md / MCP / skills /
   # agents の自動検出もされない。deny に "Skill" を足さないこと —
   # bare: true では元々不要な上に、deny に Skill を入れると preset 全体で
-  # plugin skill が全滅する既知の罠がある (docs/ROADMAP.md Phase 14 参照)。
+  # plugin skill が全滅する既知の罠がある。
   #
   # memory_enabled: false — 分類は会話ではないので memory hook (旧仕様の
   # round-trip 用キー) 側の記憶に混ぜてはいけない。
@@ -346,7 +343,7 @@ settings:
   anthropic_base_url: null
 
 # ---------------------------------------------------------------------------
-# clients — API キーに結び付ける Client と権限境界 (ADR-0011)
+# clients — API キーに結び付ける Client と権限境界
 # Console の Endpoint 画面 (/admin/clients) からも作成・編集できる。
 # ---------------------------------------------------------------------------
 # clients:

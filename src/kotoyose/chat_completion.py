@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from .delegation import redact_token
 from .conversation_key import derive_storage_key
 from .models import ChatMessage
 from .output_guard import guard_enabled, redact_event
@@ -133,7 +134,8 @@ async def finalize_chat_turn(
 
 async def record_turn_failure(record_failed, interaction_id, error: Exception) -> None:
     """Keep SDK usage on failed turns without completing or registering a session."""
-    message = redact_event(str(error)) if guard_enabled() else str(error)
+    error_text = redact_token(str(error))
+    message = redact_event(error_text) if guard_enabled() else error_text
     if not isinstance(error, RuntimeTurnError):
         await record_failed(interaction_id, message)
         return

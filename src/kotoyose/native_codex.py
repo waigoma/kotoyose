@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from .execution_delegation import TOOL_SPECS, only_delegation_tools
 from .provider_usage_limits import normalize_provider_usage_limit
 
 import asyncio
@@ -27,6 +28,7 @@ from .codex_coding_policy import (
 )
 from .codex_soft_stop import CodexSoftStop
 from .codex_model_policy import model_catalog, validate_reasoning_effort
+from .logging_setup import log
 from .codex_subscription import AUTH_NAME, CAPABILITY_ENV
 from .codex_images import image_data_uris
 from .codex_request_policy import parse_json
@@ -276,6 +278,9 @@ def _exception_outcome(job: NativeAgentJob, exc: Exception, process, launch_atte
     outcome = _Outcome("failed", reason)
     if reason == "provider_error":
         outcome.diagnostic = exc if isinstance(exc, NativeCodexProviderError) else NativeCodexProviderError("unknown")
+        # 例外の本文は残さず、種類と分類だけを残す (原因を追えるように)。
+        log.warning("native_codex.provider_error", error_type=type(exc).__name__,
+                    classification=outcome.diagnostic.classification.code)
         if job.limits_mode:
             outcome.provider_limit = normalize_provider_usage_limit("codex", {"code": outcome.diagnostic.classification.code,
                 "http_status": outcome.diagnostic.classification.http_status_code}, datetime.now(timezone.utc))
@@ -370,8 +375,9 @@ class NativeCodexWorker:
             if ((subscription and (job.credential_value or job.codex_auth_file is None or not job.codex_auth_identity))
                     or (not subscription and (job.credential_name != "OPENAI_API_KEY" or not job.credential_value
                                              or job.codex_auth_file is not None or job.codex_auth_identity is not None))
-                    or job.base_url is not None or job.client_tool_specs
-                    or job.approval_bindings or set(job.tool_refs) - {_TOOL_REF}
+                    or job.base_url is not None
+                    or not only_delegation_tools(job.client_tool_specs, job.tool_refs, job.client_tool_call)
+                    or job.approval_bindings or set(job.tool_refs) - TOOL_SPECS.keys() - {_TOOL_REF}
                     or (job.resume_mode == "native" or job.provider_session_ref is not None) and self.sessions is None
                     or not job.model or "\x00" in job.model or not job.cli_binary.is_absolute()
                     or job.output_contract not in {"text", "json"}
@@ -400,7 +406,9 @@ class NativeCodexWorker:
                                  _EXEC_SCHEMA if _TOOL_REF in job.tool_refs else None,
                                  auth_file=job.codex_auth_file, auth_identity=job.codex_auth_identity,
                                  authorize=job.provider_authorize, image_uris=image_uris,
-                                 image_request_limit=min(32, job.max_turns + 1), reasoning_effort=job.reasoning_effort)
+                                 image_request_limit=min(32, job.max_turns + 1), reasoning_effort=job.reasoning_effort,
+                                 **({"delegation_refs": frozenset(job.tool_refs) & TOOL_SPECS.keys()}
+                                    if job.client_tool_specs else {}))
             async with asyncio.timeout_at(deadline if job.limits_mode else None):
                 socket_path = await egress.start()
             catalog = Path(egress.directory.name) / "models.json"
@@ -570,6 +578,8 @@ class NativeCodexWorker:
                 if reason == "provider_error":
                     diagnostic = NativeCodexProviderError("broker", http_status=egress.failure_http_status,
                                                           broker_diagnostic=egress.failure_diagnostic)
+                    log.warning("native_codex.broker_failure", http_status=egress.failure_http_status,
+                                classification=diagnostic.classification.code)
             elif status == "succeeded" and job.image_inputs and (egress.image_requests_completed == 0
                     or egress.image_requests_completed != egress.connections):
                 # 接続開始は最初の await 前に記録される。cleanup の取消も未完要求を消せない。
@@ -657,6 +667,18 @@ class NativeCodexWorker:
                          or not await self.can_resume_session(job.session_scope, job.provider_session_ref)):
             raise ValueError('provider_session_unavailable')
         model_provider = config.get("model_provider", _CONFIG["model_provider"])
+        dynamic_tools = {
+            spec["name"]: spec for spec in job.client_tool_specs
+            if spec["resource_ref"] in TOOL_SPECS
+        }
+        dynamic_specs = [
+            {"type": "function", "name": name, "description": spec["description"],
+             "inputSchema": spec["input_schema"]}
+            for name, spec in dynamic_tools.items()
+        ]
+        if _TOOL_REF in job.tool_refs:
+            dynamic_specs.insert(0, {"type": "function", "name": "sandbox_exec",
+                                     "description": _SANDBOX_EXEC_DESCRIPTION, "inputSchema": _EXEC_SCHEMA})
         thread = await rpc.request("thread/resume" if resuming else "thread/start", {
             "model": job.model, "cwd": "/workspace" if coding else "/tmp",
             **({'threadId': job.provider_session_ref.split(':', 2)[1], 'excludeTurns': True} if resuming else
@@ -666,10 +688,7 @@ class NativeCodexWorker:
             "approvalPolicy": "never", "developerInstructions": (
                 job.instructions + "\n\n" + _SANDBOX_EXEC_INSTRUCTIONS if _TOOL_REF in job.tool_refs else job.instructions
             ),
-            "config": config, **({"dynamicTools": ([{
-                "type": "function", "name": "sandbox_exec", "description": _SANDBOX_EXEC_DESCRIPTION,
-                "inputSchema": _EXEC_SCHEMA,
-            }] if _TOOL_REF in job.tool_refs else [])} if not resuming else {}),
+            "config": config, **({"dynamicTools": dynamic_specs} if not resuming else {}),
         })
         if (thread.get("model") != job.model or thread.get("modelProvider") != model_provider
                 or job.reasoning_effort is not None and thread.get("reasoningEffort") != job.reasoning_effort):
@@ -756,14 +775,12 @@ class NativeCodexWorker:
                         tool_calls[call_id] = (fingerprint, cached)
                         await rpc.send({"id": call_id, "result": cached})
                         continue
-                    if (method == "item/tool/call" and params.get("threadId") == thread_id
-                            and params.get("turnId") == turn_id and params.get("tool") == "sandbox_exec"
-                            and params.get("namespace") is None and semantic_key is not None
-                            and _TOOL_REF in job.tool_refs and not cancel.is_set()):
-                        arguments = params.get("arguments")
-                        if (isinstance(arguments, dict) and set(arguments) == {"argv", "cwd"}
+                    if (method == "item/tool/call" and in_scope and params.get("namespace") is None
+                            and semantic_key is not None and not cancel.is_set()):
+                        arguments, name = params.get("arguments"), params.get("tool")
+                        if (name == "sandbox_exec" and _TOOL_REF in job.tool_refs and isinstance(arguments, dict)
+                                and set(arguments) == {"argv", "cwd"}
                                 and _valid_argv(arguments["argv"]) and _valid_cwd(arguments["cwd"])):
-                            admitted = True
                             if len(assistant_items) + len(semantic_calls) >= job.max_turns:
                                 raise ValueError("turn_limit_exceeded")
                             result = await execute_tool(tuple(arguments["argv"]), arguments["cwd"])
@@ -773,13 +790,27 @@ class NativeCodexWorker:
                             text = json.dumps({"status": result.status, "exit_code": result.exit_code,
                                                "stdout": result.stdout.decode("utf-8", errors="replace"),
                                                "stderr": result.stderr.decode("utf-8", errors="replace")})
+                            success = result.status == "succeeded"
+                        elif isinstance(name, str) and name in dynamic_tools:
+                            if len(assistant_items) + len(semantic_calls) + len(builtin_items) >= job.max_turns:
+                                raise ValueError("turn_limit_exceeded")
+                            if isinstance(arguments, dict):
+                                outcome = await job.client_tool_call(dynamic_tools[name]["resource_ref"], arguments)
+                                success = outcome.state == "succeeded"
+                                text = json.dumps(outcome.result if outcome.result is not None else {"error": outcome.state})
+                            else:
+                                success, text = False, "invalid delegation arguments"
+                        else:
+                            text = None
+                        if text is not None:
+                            admitted = True
                             tool_bytes += len(text.encode())
                             rpc.output_bytes = tool_bytes + sum(len(value.encode()) for value in messages.values())
                             if tool_bytes > job.output_limit_bytes:
                                 raise NativeCodexLimitError("tool_result_bytes", tool_bytes, job.output_limit_bytes)
-                            response = {"contentItems": [{"type": "inputText", "text": text}],
-                                        "success": result.status == "succeeded"}
-                            self._emit(job, RuntimeEvent(kind="tool_result", tool_name="sandbox_exec", summary=result.status))
+                            response = {"contentItems": [{"type": "inputText", "text": text}], "success": success}
+                            self._emit(job, RuntimeEvent(kind="tool_result", tool_name=name,
+                                                         summary="succeeded" if success else "failed"))
                     # Unknown approval/permission requests receive an RPC error, never an accept response.
                     if method != "item/tool/call":
                         await rpc.send({"id": message["id"], "error": {"code": -32601, "message": "tool_denied"}})
@@ -800,7 +831,7 @@ class NativeCodexWorker:
                         soft.observe(method, item)
                     if item.get("type") == "agentMessage":
                         assistant_items.add(item["id"])
-                        if len(assistant_items) + (len(builtin_items) if coding else len(semantic_calls)) > job.max_turns:
+                        if len(assistant_items) + len(builtin_items) + len(semantic_calls) > job.max_turns:
                             raise ValueError("turn_limit_exceeded")
                         if method == "item/completed":
                             value = item.get("text", "")
@@ -817,7 +848,7 @@ class NativeCodexWorker:
                         if not isinstance(item_id, str) or not item_id:
                             raise ValueError("invalid_protocol")
                         builtin_items.add(item_id)
-                        if len(assistant_items) + len(builtin_items) > job.max_turns:
+                        if len(assistant_items) + len(builtin_items) + len(semantic_calls) > job.max_turns:
                             raise ValueError("turn_limit_exceeded")
                         if method == "item/completed":
                             state = item.get("status")

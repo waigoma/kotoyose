@@ -183,7 +183,12 @@ _CLAUDE_SURFACES = (
         "none", True, tool_refs=frozenset({HOST_CODING}), tool_match="without",
         allow_mcp=True, allow_approval=True, accepted_tools="none",
     ),
-    _closed("read"),
+    SurfaceCell(
+        "read", True, tool_match="exact", accepted_tools="none",
+        admission_requires=frozenset({"agent_container"}), requires=frozenset({"agent_container"}),
+        credential_modes=frozenset({"runtime_managed", "environment", "secret"}), execution_mode=READ_MODE,
+        workspace_readonly=True, rejection="Claude read requires a container and no workspace tools",
+    ),
     SurfaceCell(
         "exec", False, tool_refs=frozenset({SANDBOX_EXEC}), tool_match="subset",
         accepted_tools="sandbox-exec subset",
@@ -197,7 +202,11 @@ _CLAUDE_SURFACES = (
 )
 _PRINT_CLI_SURFACES = (
     _closed("none"),
-    _closed("read"),
+    SurfaceCell(
+        "read", True, tool_match="exact", accepted_tools="none",
+        admission_requires=frozenset({"agent_container"}), requires=frozenset({"agent_container", "egress"}),
+        credential_modes=frozenset({"cli_login_home"}), workspace_readonly=True,
+    ),
     _closed("exec"),
     SurfaceCell(
         "write",
@@ -314,8 +323,6 @@ def _check_table() -> None:
     for row in DRIVERS:
         if tuple(cell.surface for cell in row.surfaces) != ("none", "read", "exec", "write"):
             raise ValueError(f"{row.driver} must declare none/read/exec/write")
-        if row.provider != "codex" and any(cell.admitted and cell.surface == "read" for cell in row.surfaces):
-            raise ValueError(f"{row.driver} cannot admit read yet")
         by_provider.setdefault(row.provider, []).append(row)
     for provider, rows in by_provider.items():
         first = rows[0]
@@ -698,7 +705,7 @@ def accepted_runs(resolved, *, agent_container: bool) -> list[dict[str, str]]:
             return []
         accepted_place = "room" if place == "isolated" else "host"
         ceiling = getattr(resolved, "_agent_surface", None)
-        if ceiling == "none":
+        if ceiling in {"none", "read"}:
             return [{"accepted_tools": "none", "place": accepted_place}]
         return [{"accepted_tools": _HOST_PRINT_CLI.accepted_tools, "place": accepted_place}]
     try:
@@ -713,9 +720,11 @@ def accepted_runs(resolved, *, agent_container: bool) -> list[dict[str, str]]:
     if manifest.surface_selector == "request":
         # 宣言の無い解決は今まで通り両方を出す。宣言した surface は上限で、それより上は出さない。
         ceiling = getattr(resolved, "_agent_surface", None)
+        if ceiling == "read":
+            return [_run(_cell(manifest, "read"))] if agent_container else []
         runs = []
         for cell in manifest.surfaces:
-            if not cell.admitted:
+            if not cell.admitted or cell.surface == "read":
                 continue
             if ceiling is not None and surface_exceeds(cell.surface, ceiling):
                 continue
@@ -729,7 +738,7 @@ def accepted_runs(resolved, *, agent_container: bool) -> list[dict[str, str]]:
 
 
 def requests_room(*, is_agent: bool, backend: str | None, provider: str | None,
-                  execution_mode: str | None, tool_refs) -> bool:
+                  execution_mode: str | None, tool_refs, surface: str | None = None) -> bool:
     """部屋へ入る要求か。Codex は profile の mode、Claude は host-coding の有無。"""
     if not is_agent or backend != "native" or not provider:
         return False
@@ -741,6 +750,8 @@ def requests_room(*, is_agent: bool, backend: str | None, provider: str | None,
         cell = _admitted_mode_cell(manifest, execution_mode)
         return cell is not None and runtime_for(cell.surface) == "room"
     if manifest.surface_selector == "request":
+        if surface == "read":
+            return True
         write = _cell(manifest, "write")
         return bool(write is not None and write.admitted and set(write.tool_refs) & set(tool_refs))
     return False
@@ -773,7 +784,7 @@ UNDECLARED_DRIVER_REJECTION = "Agent driver or mode is not declared in the drive
 
 def agent_workspace_tool_error(*, backend: str | None, provider: str | None, execution_mode: str | None,
                                isolation: str, tool_refs, has_mcp: bool, has_approval: bool,
-                               agent_container: bool) -> str | None:
+                               agent_container: bool, surface: str | None = None) -> str | None:
     """native agent の道具が、選ばれた cell の宣言から外れていれば今の文言を返す。"""
     if backend != "native" or not provider:
         return None
@@ -784,6 +795,10 @@ def agent_workspace_tool_error(*, backend: str | None, provider: str | None, exe
         return UNDECLARED_DRIVER_REJECTION
     tools = set(tool_refs)
     if manifest.surface_selector == "request":
+        if surface == "read":
+            read = _cell(manifest, "read")
+            return read.rejection if _rejects(read, isolation=isolation, tools=tools, has_mcp=has_mcp,
+                                              has_approval=has_approval, agent_container=agent_container) else None
         write = _cell(manifest, "write")
         if write is None or not write.admitted or not (set(write.tool_refs) & tools) or write.rejection is None:
             return None
@@ -806,7 +821,7 @@ def agent_workspace_tool_error(*, backend: str | None, provider: str | None, exe
     return None
 
 
-def stamped_execution_mode(*, provider: str | None, host_coding: bool) -> str | None:
+def stamped_execution_mode(*, provider: str | None, host_coding: bool, surface: str | None = None) -> str | None:
     """要求が部屋を選ぶ driver だけ、container 経路の mode を snapshot に書く。"""
     if not host_coding or not provider:
         return None
@@ -816,7 +831,5 @@ def stamped_execution_mode(*, provider: str | None, host_coding: bool) -> str | 
         return None
     if manifest.surface_selector != "request":
         return None
-    write = _cell(manifest, "write")
-    if write is None or not write.admitted:
-        return None
-    return write.execution_mode
+    cell = _cell(manifest, "read" if surface == "read" else "write")
+    return cell.execution_mode if cell is not None and cell.admitted else None

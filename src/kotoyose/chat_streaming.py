@@ -6,12 +6,14 @@ import asyncio
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
 
 import structlog
 
 from .chat_completion import CompletionPorts, TurnContext, finalize_chat_turn, record_turn_failure
+from .chat_usage import build_response_usage
 from .config import get_config
 from .connections_probe import connection_for_model, is_auth_failure_error, record_connection_auth_failure
 from .output_guard import CredentialLeakSuspected, LEAK_REASON, check_answer, redact_event
@@ -41,6 +43,7 @@ class StreamContext:
     turn: TurnContext
     prompt: RuntimePrompt
     inspect_output: bool = False
+    include_events: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +83,48 @@ def _interrupted_tail(chunk_id: str, created: int, model: str) -> list[str]:
         ],
     )
     return [f"data: {error_chunk.model_dump_json()}\n\n", "data: [DONE]\n\n"]
+
+
+# ACP の ToolKind へ寄せる、SDK runtime の道具名。載っていない名前は other。
+_TOOL_KIND_BY_NAME = {
+    "read": "read", "edit": "edit", "write": "edit", "multiedit": "edit", "notebookedit": "edit",
+    "apply_patch": "edit", "bash": "execute", "shell": "execute", "grep": "search", "glob": "search",
+    "ls": "search", "webfetch": "fetch", "websearch": "fetch",
+}
+_ACP_TOOL_KINDS = {"read", "edit", "delete", "move", "search", "execute", "think", "fetch"}
+_ACP_TOOL_STATUS = {"pending", "in_progress", "completed", "failed"}
+ACTIVITY_KINDS = frozenset({"tool_call", "tool_call_update", "tool_use", "tool_result"})
+
+
+def _activity_chunk(event: RuntimeEvent, inspect_output: bool) -> str | None:
+    """道具の進捗を、runtime によらない ACP の tool call の形で SSE に載せる。"""
+    payload = event.payload or {}
+    if event.kind in ("tool_call", "tool_call_update"):
+        # cli.acp: tool_name は ACP の ToolKind、summary は状態。
+        tool_id = payload.get("tool_call_id")
+        status = event.summary if event.summary in _ACP_TOOL_STATUS else None
+        tool_kind = event.tool_name if event.tool_name in _ACP_TOOL_KINDS else "other"
+        title = payload.get("title") if isinstance(payload.get("title"), str) else event.tool_name or "tool"
+        kind = event.kind
+    else:
+        # Claude / Codex / Cursor SDK: tool_use が開始、tool_result が終了。summary は引数か結果の要約。
+        tool_id = payload.get("tool_use_id")
+        name = event.tool_name or "tool"
+        tool_kind = _TOOL_KIND_BY_NAME.get(name.lower(), "other")
+        if event.kind == "tool_use":
+            kind, status = "tool_call", "in_progress"
+            title = f"{name}: {event.summary}" if event.summary else name
+        else:
+            kind, status = "tool_call_update", "failed" if payload.get("is_error") else "completed"
+            title = None
+    if not isinstance(tool_id, str) or not 0 < len(tool_id) <= 256:
+        return None
+    if title is not None:
+        title = (redact_event(title) if inspect_output else title)[:200]
+    fields = {"tool_call_id": tool_id, "title": title, "tool_kind": tool_kind, "status": status}
+    data = {"object": "kotoyose.event", "kind": kind}
+    data.update({key: value for key, value in fields.items() if value is not None})
+    return f"data: {json.dumps(data)}\n\n"
 
 
 def _record_failed_detached(
@@ -140,6 +185,24 @@ def stream_chat_response(
             )
             return f"data: {chunk.model_dump_json()}\n\n"
 
+        held_events: deque[tuple[int, str]] = deque()
+        released_chars = 0
+
+        def ordered_chunks(text: str) -> Iterator[str]:
+            nonlocal released_chars
+            end = released_chars + len(text)
+            while held_events and held_events[0][0] <= end:
+                offset, event = held_events.popleft()
+                split = offset - released_chars
+                if split:
+                    yield text_chunk(text[:split])
+                yield event
+                text = text[split:]
+                released_chars = offset
+            if text:
+                yield text_chunk(text)
+            released_chars = end
+
         full: list[str] = []
         pending = ""
         usage: dict | None = None
@@ -157,6 +220,13 @@ def stream_chat_response(
                         runtime_error_emitted or item.kind == "error"
                     )
                     event_queue.put_nowait(item)
+                    event = (_activity_chunk(item, context.inspect_output)
+                             if context.include_events and item.kind in ACTIVITY_KINDS else None)
+                    if event is not None:
+                        if context.inspect_output and pending:
+                            held_events.append((released_chars + len(pending), event))
+                        else:
+                            yield event
                     continue
                 full.append(item)
                 if context.inspect_output:
@@ -167,14 +237,15 @@ def stream_chat_response(
                     check_answer(pending)
                     if len(pending) > _HOLDBACK_CHARS:
                         released, pending = pending[:-_HOLDBACK_CHARS], pending[-_HOLDBACK_CHARS:]
-                        yield text_chunk(released)
+                        for chunk in ordered_chunks(released):
+                            yield chunk
                 else:
                     yield text_chunk(item)
             answer = final_text if final_text is not None else "".join(full)
             if context.inspect_output:
                 check_answer(answer)
-                if pending:
-                    yield text_chunk(pending)
+                for chunk in ordered_chunks(pending):
+                    yield chunk
         except Exception as exc:
             message = redact_event(str(exc)) if context.inspect_output else str(exc)
             log.error("sdk.error", error=message)
@@ -222,7 +293,15 @@ def stream_chat_response(
                 )
             ],
         )
-        yield f"data: {final.model_dump_json()}\n\n"
+        if context.include_events and usage:
+            tokens_in, tokens_out, _ = ports.completion.extract_tokens(
+                usage, context.turn.latest_text, answer,
+            )
+            payload = final.model_dump()
+            payload["usage"] = build_response_usage(usage, tokens_in, tokens_out).model_dump()
+            yield f"data: {json.dumps(payload)}\n\n"
+        else:
+            yield f"data: {final.model_dump_json()}\n\n"
         yield "data: [DONE]\n\n"
 
         completion = await finalize_chat_turn(

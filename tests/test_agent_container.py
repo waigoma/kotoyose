@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
+import subprocess
 import uuid
 from pathlib import Path
 from unittest.mock import patch
@@ -257,7 +259,7 @@ async def test_read_room_workspace_mount_is_readonly_and_home_stays_writable(doc
     docker.calls.clear()
     await container.create(_spec(dirs, job_id="job-2", workspace_readonly=True))
     mounts = _mounts(_create_argv(docker))
-    assert f"type=bind,src={ws},dst=/workspace,readonly" in mounts
+    assert f"type=bind,src={ws},dst=/workspace,readonly,bind-propagation=rprivate,bind-recursive=readonly" in mounts
     assert f"type=bind,src={home},dst=/home/agent" in mounts
     assert f"type=bind,src={home},dst=/home/agent,readonly" not in mounts
 
@@ -698,3 +700,20 @@ async def test_real_codex_binary_runs_read_only_inside_container(tmp_path):
         confirmation = await container.remove(job, 1)
     assert confirmation == "confirmed"
     assert await container.exists(job) is False
+
+
+@pytest.mark.skipif(not os.environ.get("KOTOYOSE_DOCKER_TEST_IMAGE") or shutil.which("docker") is None,
+                    reason="needs a real Docker and KOTOYOSE_DOCKER_TEST_IMAGE")
+def test_real_docker_accepts_recursive_readonly_workspace(tmp_path):
+    # The mount string must be accepted by the real Docker CLI, not only match a mock.
+    from kotoyose.agent_container import _bind_mount
+
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a").write_text("hi")
+    argv = ["docker", "run", "--rm", "--network", "none",
+            *_bind_mount(str(tmp_path), "/workspace", readonly=True, recursive_readonly=True),
+            "--entrypoint", "/bin/sh", os.environ["KOTOYOSE_DOCKER_TEST_IMAGE"], "-c",
+            "cat /workspace/a && ! touch /workspace/b 2>/dev/null && ! touch /workspace/sub/c 2>/dev/null"]
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr[-500:]
+    assert result.stdout.strip() == "hi"

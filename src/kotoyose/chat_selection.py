@@ -131,6 +131,7 @@ def pin_pm_saved_preset(
     options = build_claude_options(
         config, preset, model_name=request.model, cwd_override=request.cwd,
         request_headers=headers, env={}, session_store=get_default_store(),
+        effort_override=request.reasoning_effort,
     )
     # Pin after full recipe composition. Preserve tools, MCP, memory prompts,
     # plugins, skills, session store, system prompt snapshots, and streaming.

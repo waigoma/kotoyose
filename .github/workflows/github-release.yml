@@ -1,0 +1,96 @@
+name: GitHub Releases
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: github-releases
+  cancel-in-progress: false
+
+# Reconcile GitHub Releases for tags named v*. Every job is skipped when the
+# repository is private, so this file can live in the private tree without
+# publishing there. The runner's gh CLI uses the built-in GITHUB_TOKEN.
+# Checkout is the only action, pinned to the same commit as release-public.yml.
+
+jobs:
+  release:
+    if: "github.event.repository.private == false"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Create missing releases
+        env:
+          # Actions does not export the built-in token by itself; gh reads GH_TOKEN.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "GH_TOKEN is required."
+            exit 1
+          fi
+          tags_file=$(mktemp)
+          notes_file=$(mktemp)
+          trap 'rm -f "$tags_file" "$notes_file"' EXIT
+          gh api --paginate "/repos/${GITHUB_REPOSITORY}/tags?per_page=100" \
+            --jq '.[] | select(.name | startswith("v")) | .name' > "$tags_file"
+          tags=()
+          while IFS= read -r name || [ -n "$name" ]; do
+            case "$name" in
+              v*) tags+=("$name") ;;
+            esac
+          done < "$tags_file"
+          if [ "${#tags[@]}" -eq 0 ]; then
+            echo "No v* tags; nothing to release."
+            exit 0
+          fi
+          highest=$(python3 scripts/release-notes.py --highest "${tags[@]}")
+          ordered=()
+          for tag in "${tags[@]}"; do
+            if [ -n "$highest" ] && [ "$tag" = "$highest" ]; then
+              continue
+            fi
+            ordered+=("$tag")
+          done
+          if [ -n "$highest" ]; then
+            ordered+=("$highest")
+          fi
+          for tag in "${ordered[@]}"; do
+            version=${tag#v}
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Release ${tag} already exists; leaving it unchanged."
+              continue
+            fi
+            if [ -f CHANGELOG.md ]; then
+              python3 scripts/release-notes.py --version "$version" --changelog CHANGELOG.md < /dev/null > "$notes_file"
+            else
+              python3 scripts/release-notes.py --version "$version" < /dev/null > "$notes_file"
+            fi
+            latest_args=(--latest=false)
+            if [ -n "$highest" ] && [ "$tag" = "$highest" ]; then
+              latest_args=(--latest)
+            fi
+            if ! gh release create "$tag" \
+                --repo "$GITHUB_REPOSITORY" \
+                --title "Kotoyose ${version}" \
+                --notes-file "$notes_file" \
+                "${latest_args[@]}" \
+                --verify-tag; then
+              if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+                echo "Release ${tag} already exists; leaving it unchanged."
+                continue
+              fi
+              echo "Failed to create the release for ${tag}."
+              exit 1
+            fi
+            echo "Created release ${tag}."
+          done

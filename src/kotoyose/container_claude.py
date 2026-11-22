@@ -40,9 +40,11 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
+from .agent_spec import admitted_execution_cell
+from .execution_delegation import TOOL_SPECS, only_delegation_tools
 from .agent_container import container_name
 from .agent_deadlines import AgentStartRejected
-from .codex_coding_policy import HOST_TOOL_REF, validate_mode, validate_workspace
+from .codex_coding_policy import validate_mode, validate_workspace
 from .jail_place import (
     CONTAINER_HOME,
     CONTAINER_RELAY,
@@ -58,6 +60,7 @@ from .jail_place import (
     create_egress_socket_dir,
     remove_container_confirmed,
 )
+from .runtime.claude_options import claude_disallowed_tools
 from .native_claude import (
     _CREDENTIAL_KEYS,
     _SDK_PROTOCOL_OVERHEAD,
@@ -114,7 +117,7 @@ _IDLE_TIMEOUT_SECONDS = 300.0
 # container 作成から終了までの余白。CLI の停止と container の回収に使う。
 _WALL_MARGIN_SECONDS = WALL_MARGIN_SECONDS
 # built-in の Web 系 tool は coding では使わない。それ以外の built-in は CLI の既定どおり有効にする。
-_DISALLOWED_TOOLS = ("WebFetch", "WebSearch")
+_DISALLOWED_TOOLS = tuple(claude_disallowed_tools(("WebFetch", "WebSearch")))
 # container の CLI が見る環境変数。HOME は AgentContainer が固定し、launcher が同じ値を渡す。
 _BASE_CONTAINER_ENV = {
     "CLAUDE_CONFIG_DIR": _CONTAINER_CONFIG_DIR,
@@ -193,7 +196,10 @@ def _validate_job(job: NativeAgentJob, settings) -> tuple[EgressUpstream, Path]:
     """launch 前に入力を検証し、上流の指定と CLI の実体を返す。副作用は持たない。"""
     if settings is None or validate_mode(job.codex_execution_mode) is not True:
         raise ValueError("invalid_job")
-    if set(job.tool_refs) != {HOST_TOOL_REF} or job.client_tool_specs or job.approval_bindings:
+    cell = admitted_execution_cell("claude", job.codex_execution_mode)
+    if (cell is None or set(job.tool_refs) - TOOL_SPECS.keys() != set(cell.tool_refs)
+            or not only_delegation_tools(job.client_tool_specs, job.tool_refs, job.client_tool_call)
+            or job.approval_bindings):
         raise ValueError("invalid_job")
     if job.workspace is None:
         raise ValueError("invalid_job")
@@ -279,14 +285,15 @@ def _launcher_env(
     }
 
 
-def _options(job: NativeAgentJob, wrapper: Path, host_cwd: Path, env: dict[str, str]) -> ClaudeAgentOptions:
+def _options(job: NativeAgentJob, wrapper: Path, host_cwd: Path, env: dict[str, str], *,
+             servers: dict | None = None, readonly: bool = False) -> ClaudeAgentOptions:
     """built-in tool を有効にした CLI の設定。host の cwd は SDK が存在を要求するため空の dir を使う。"""
     return ClaudeAgentOptions(
-        tools=None,
-        allowed_tools=[],
+        tools=["Read", "Grep", "Glob"] if readonly else None,
+        allowed_tools=["mcp__client__" + spec["name"] for spec in job.client_tool_specs],
         disallowed_tools=list(_DISALLOWED_TOOLS),
         system_prompt=job.instructions,
-        mcp_servers={},
+        mcp_servers=servers or {},
         strict_mcp_config=True,
         permission_mode="bypassPermissions",
         max_turns=job.max_turns,
@@ -401,6 +408,9 @@ async def execute_container_claude(
         launch_dir = Path(tempfile.mkdtemp(prefix="kotoyose-native-claude-"))
         wrapper = _write_launcher(launch_dir)
 
+        cell = admitted_execution_cell("claude", job.codex_execution_mode)
+        readonly = cell.workspace_readonly
+        validate_workspace(job.workspace, device=job.workspace_device, inode=job.workspace_inode)
         spec = place.build_spec(
             job_id=job_id,
             workspace=job.workspace,
@@ -410,6 +420,8 @@ async def execute_container_claude(
             grace_seconds=job.grace_seconds,
             env=_container_env(connect_egress=connect_egress),
             ro_files={_CONTAINER_CLI: cli, _CONTAINER_RELAY: _RELAY_PATH},
+            workspace_readonly=readonly,
+            memory_bytes=job.memory_bytes or 0, cpus=job.cpus or 0, pids_limit=job.pids_limit or 0,
         )
         if job.validate_start is not None:
             await job.validate_start()
@@ -422,7 +434,8 @@ async def execute_container_claude(
             job.credential_name,
             connect_egress=connect_egress,
         )
-        options = _options(job, wrapper, launch_dir, env)
+        servers = worker._build_server(job, invocation, None) if job.client_tool_specs else {}
+        options = _options(job, wrapper, launch_dir, env, servers=servers, readonly=readonly)
         # session store は接続しない。SDK の resume は host の一時 config dir へ transcript を展開するが、
         # container の CLI はそれを見られない。保持しない session は ref にならず、Hub は再開を
         # durable_state (新しい Run) へ倒す。

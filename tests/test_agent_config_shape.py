@@ -134,7 +134,7 @@ def test_agent_requires_route_and_drivers(tmp_path):
 
 
 def test_declared_surface_is_a_ceiling(monkeypatch):
-    """Claude の surface は選ばれた 1 面ではなく上限。read はまだ受付しない。"""
+    """Claude の read は読み取り専用の部屋に固定し、write は従来の道具を使える。"""
     monkeypatch.setattr("kotoyose.provider_jail._trusted_binary", lambda value: Path(value))
     config = HarnessConfig(
         connections={"claude-oauth": Connection(provider="claude", kind="subscription", data_policy="no_training", secret="claude-oauth")},
@@ -159,11 +159,11 @@ def test_declared_surface_is_a_ceiling(monkeypatch):
         "none", "exactly host-coding",
     ]
     assert accepted_runs(narrow, agent_container=True) == [{"accepted_tools": "none", "place": "jail"}]
-    with pytest.raises(ValueError, match="not admitted"):
-        resolve_declared_agent(
-            "reading", config.preset_for("reading"), settings, config,
-            resolve_preferences=False, resolve_prompts=False,
-        )
+    reading = resolve_declared_agent(
+        "reading", config.preset_for("reading"), settings, config, resolve_preferences=False, resolve_prompts=False,
+    )
+    assert accepted_runs(reading, agent_container=True) == [{"accepted_tools": "none", "place": "room"}]
+    assert accepted_runs(reading, agent_container=False) == []
 
 
 def test_removed_host_agent_is_not_published(tmp_path):

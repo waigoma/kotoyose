@@ -1,9 +1,11 @@
 """Claude SDK option factory の単体テスト。"""
 
+from pathlib import Path
+
 import pytest
 
-from kotoyose.config import AgentPreset, HarnessConfig, ModelPreset
-from kotoyose.runtime.claude_options import build_claude_options
+from kotoyose.config import HarnessConfig, ModelPreset
+from kotoyose.runtime.claude_options import build_claude_options, claude_disallowed_tools
 
 
 def test_build_claude_options_translates_preset_without_global_config():
@@ -12,13 +14,6 @@ def test_build_claude_options_translates_preset_without_global_config():
         model="claude-sonnet-5",
         thinking="enabled",
         thinking_budget_tokens=2048,
-        agents={
-            "reviewer": AgentPreset(
-                description="review code",
-                prompt="Review carefully",
-                model="sonnet",
-            )
-        },
     )
     config = HarnessConfig(models={"coding": preset})
 
@@ -34,7 +29,8 @@ def test_build_claude_options_translates_preset_without_global_config():
 
     assert options.model == "claude-sonnet-5"
     assert options.thinking == {"type": "enabled", "budget_tokens": 2048}
-    assert options.agents["reviewer"].model == "sonnet"
+    assert options.agents is None
+    assert options.disallowed_tools == ["Task", "Agent"]
     assert options.env == {"ANTHROPIC_API_KEY": "token"}
 
 
@@ -85,6 +81,44 @@ def test_claude_output_schema_is_passed_to_installed_sdk():
     assert options.output_format == {"type": "json_schema", "schema": schema}
 
 
+def test_host_and_jail_builders_always_disallow_task_and_agent():
+    """host の option builder と jail / native の builder は Task と Agent を拒否する。"""
+    from kotoyose.container_claude import _DISALLOWED_TOOLS, _options as container_options
+    from kotoyose.native_claude import NativeAgentJob, _build_options
+
+    preset = ModelPreset(deny=["Bash(*)", "Task"])
+    options = build_claude_options(
+        HarnessConfig(models={"chat": preset}), preset, model_name="chat",
+        cwd_override=None, request_headers=None, env={}, session_store=None,
+    )
+    assert options.disallowed_tools == ["Bash(*)", "Task", "Agent"]
+    assert claude_disallowed_tools(["Agent", "Read"]) == ["Agent", "Read", "Task"]
+    assert set(_DISALLOWED_TOOLS) >= {"WebFetch", "WebSearch", "Task", "Agent"}
+
+    job = NativeAgentJob(
+        attempt_id="attempt",
+        model="claude-test",
+        instructions="stay",
+        prompt="hi",
+        credential_name="ANTHROPIC_API_KEY",
+        credential_value="secret",
+        cli_binary=Path("/usr/bin/claude"),
+        max_turns=1,
+        timeout_seconds=1,
+        grace_seconds=1,
+        output_limit_bytes=1024,
+        output_contract="text",
+        tool_refs=(),
+        image_inputs=(),
+        client_tool_specs=(),
+        approval_bindings=(),
+    )
+    native = _build_options(job, Path("/tmp/launcher"), Path("/tmp/empty"), None)
+    assert "Task" in native.disallowed_tools and "Agent" in native.disallowed_tools
+    jail = container_options(job, Path("/tmp/launcher"), Path("/tmp/empty"), {})
+    assert "Task" in jail.disallowed_tools and "Agent" in jail.disallowed_tools
+
+
 @pytest.mark.parametrize("snapshot", [None, False, True])
 def test_explicit_oauth_migration_keeps_mcp_allowlist_and_prompt_policy(snapshot):
     from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
@@ -107,7 +141,7 @@ def test_explicit_oauth_migration_keeps_mcp_allowlist_and_prompt_policy(snapshot
     assert "--bare" not in command
     assert options.mcp_servers == preset.mcp_servers
     assert options.skills == options.tools == []
-    assert options.disallowed_tools == ["Bash(*)"]
+    assert options.disallowed_tools == ["Bash(*)", "Task", "Agent"]
     assert options.plugins == []
     if snapshot is None:
         assert "snapshot" not in options.system_prompt

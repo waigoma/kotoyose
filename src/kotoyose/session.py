@@ -18,13 +18,16 @@ import hashlib
 import json
 import time
 from collections.abc import Mapping
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from claude_agent_sdk import ClaudeSDKClient
 
+from . import delegation
 from .data_policy import alias_data_policy, configured_capabilities, training_binding
 from .execution_resources import ExecutionError, NativeExecutionConfig
 from .config import (
+    SESSION_TTL_SECONDS,
     ClaudeSubscriptionAuthError,
     HarnessConfig,
     ModelPreset,
@@ -92,6 +95,13 @@ def _touch(key: str) -> None:
     session_last_used[key] = time.time()
 
 
+def discard_runtime(key: str | None, client: RuntimeSession) -> None:
+    if key is not None and sessions.get(key) is client:
+        sessions.pop(key)
+        session_last_used.pop(key, None)
+        session_cache_identities.pop(key, None)
+
+
 # ── TTL 管理 ───────────────────────────────────────────────────────
 
 async def evict_expired_sessions(ttl_seconds: int) -> None:
@@ -99,6 +109,7 @@ async def evict_expired_sessions(ttl_seconds: int) -> None:
     TTL を超えたセッションを切断してメモリから削除する。
     app.py の TTL バックグラウンドタスクから定期的に呼ばれる。
     """
+    delegation.prune_expired(time.monotonic())
     now = time.time()
     expired = [
         key for key, last in session_last_used.items()
@@ -130,6 +141,9 @@ async def get_or_resume_client(
     request_headers: dict[str, str] | None = None,
     *, selection: "PinnedChatSelection | None" = None, config_snapshot: HarnessConfig | None = None,
     execution_settings: NativeExecutionConfig | None = None,
+    reasoning_effort: str | None = None,
+    delegation_parent: delegation.DelegationParent | None = None,
+    delegated: bool = False,
 ) -> tuple[RuntimeSession, bool]:
     """会話キーに対応する runtime session を返す。
 
@@ -205,6 +219,7 @@ async def get_or_resume_client(
             preloaded_secrets={},
             **({"builder_options": {"config": config, "settings": execution_settings}}
                if provider == "print_cli" else {}),
+            effort_override=reasoning_effort,
         )
     preloaded_secrets: dict[str, str] = {}
     secret_versions: dict[str, int] = {}
@@ -217,6 +232,8 @@ async def get_or_resume_client(
             raise SDKConnectionError(str(exc), code="authentication_failed") from exc
         except SecretStoreError as exc:
             raise SDKConnectionError(str(exc)) from exc
+    if delegated or delegation.MCP_NAME not in preset.mcp_refs:
+        delegation_parent = None
     requested_identity = selection.identity if selection is not None else _cache_identity(
         provider, model, preset.model, preset.required_request_headers, request_headers,
         output_schema=preset.output_schema,
@@ -225,7 +242,10 @@ async def get_or_resume_client(
         **({"secret_versions": secret_versions} if secret_versions else {}),
         training_binding=binding,
         acp_scope=acp_binding(config, preset, cwd_override) if provider == "cli_acp" else None,
+        reasoning_effort=reasoning_effort,
     )
+    if delegation_parent:
+        requested_identity = delegation_identity(requested_identity, delegation_parent.client_id)
     identity_mismatch = False
 
     if lookup_key and lookup_key in sessions:
@@ -258,9 +278,7 @@ async def get_or_resume_client(
                         cached_provider=cached_provider,
                         error=str(e),
                     )
-            sessions.pop(lookup_key, None)
-            session_last_used.pop(lookup_key, None)
-            session_cache_identities.pop(lookup_key, None)
+            discard_runtime(lookup_key, cached)
         else:
             _touch(lookup_key)
             log.info("session.cache_hit", conversation_key=lookup_key, provider=provider)
@@ -277,8 +295,10 @@ async def get_or_resume_client(
             allow_persisted_resume=not identity_mismatch,
             session_identity=requested_identity[2],
             preloaded_secrets=preloaded_secrets,
+            delegation_parent=delegation_parent,
             **({"builder_options": {"config": config, "settings": execution_settings}}
                if provider == "cli_acp" else {}),
+            effort_override=reasoning_effort,
         )
         if lookup_key:
             session_cache_identities[lookup_key] = requested_identity
@@ -299,12 +319,66 @@ async def get_or_resume_client(
             session_identity=requested_identity[2],
         )
 
+    with _new_delegation_grant(delegation_parent, model, lookup_key) as (token, grant):
+        runtime_client = await _build_claude_runtime_session(
+            model, preset, selection, config, config_snapshot, cwd_override, request_headers,
+            preloaded_secrets, existing_session_id, lookup_key, token, reasoning_effort,
+        )
+        runtime_client = _bind_delegation_runtime(runtime_client, grant)
+    if lookup_key:
+        sessions[lookup_key] = runtime_client
+        _touch(lookup_key)
+        session_cache_identities[lookup_key] = requested_identity
+    return runtime_client, bool(existing_session_id)
+
+
+@contextmanager
+def _new_delegation_grant(parent: delegation.DelegationParent | None, alias: str, key: str | None):
+    if parent is None:
+        yield None, None
+        return
+    token, grant = delegation.issue(
+        parent.client_id, alias, key, parent.allowed_aliases,
+        parent_depth=0, ttl=SESSION_TTL_SECONDS, api_key_name=parent.api_key_name,
+    )
+    try:
+        yield token, grant
+    except BaseException:
+        delegation.revoke(grant)
+        raise
+
+
+def _bind_delegation_runtime(runtime: RuntimeSession, grant: delegation.DelegationGrant | None) -> RuntimeSession:
+    if grant is None:
+        return runtime
+    grant.runtime = runtime
+    return delegation.DelegationRuntime(runtime, grant)
+
+
+def delegation_identity(identity: tuple[str, str, str], client_id: str) -> tuple[str, str, str]:
+    provider, model, digest = identity
+    scoped = delegation.fingerprint(f"delegation:{digest}:{client_id}").hex()
+    return provider, model, scoped
+
+
+async def _build_claude_runtime_session(
+    model: str, preset: ModelPreset, selection: "PinnedChatSelection | None",
+    config: HarnessConfig | None, config_snapshot: HarnessConfig | None,
+    cwd_override: str | None, request_headers: dict[str, str] | None,
+    preloaded_secrets: dict[str, str], existing_session_id: str | None,
+    lookup_key: str | None, token: str | None, reasoning_effort: str | None = None,
+) -> RuntimeSession:
     # build_options は _build_auth_env 経由で secret store 解決等を行うため、
     # run_in_executor で worker thread に退避してイベントループのブロックを避ける。
     if selection is not None:
         # Use the exact options whose route/policy identity was checked before
         # cache lookup. Config reloads cannot change this request's execution.
         options = selection.options
+        if token:
+            servers = dict(options.mcp_servers)
+            with delegation.runtime_credentials(token):
+                delegation.inject_delegation_server(servers)
+            options = dataclasses.replace(options, mcp_servers=servers)
     else:
         loop = asyncio.get_running_loop()
 
@@ -317,7 +391,9 @@ async def get_or_resume_client(
                 kwargs["resolved_secrets"] = preloaded_secrets
             if config_snapshot is not None or preset.route is not None:
                 kwargs["config"] = config
-            with use_resolved_secrets(preloaded_secrets):
+            if reasoning_effort is not None:
+                kwargs["effort_override"] = reasoning_effort
+            with use_resolved_secrets(preloaded_secrets), delegation.runtime_credentials(token):
                 return build_options(model, **kwargs)
 
         ctx = contextvars.copy_context()
@@ -344,8 +420,11 @@ async def get_or_resume_client(
     client = ClaudeSDKClient(options=options)
     try:
         await client.connect()
+    except asyncio.CancelledError:
+        await client.disconnect()
+        raise
     except Exception as e:
-        raise SDKConnectionError(str(e)) from e
+        raise SDKConnectionError(delegation.redact_token(str(e))) from None
     runtime_client = ClaudeRuntimeSession(
         client=client,
         timeout_seconds=preset.timeout_seconds,
@@ -356,13 +435,7 @@ async def get_or_resume_client(
         from .structured_output import StructuredOutputSession
         runtime_client = StructuredOutputSession(runtime_client, preset.output_schema)
 
-    if lookup_key:
-        sessions[lookup_key] = runtime_client
-        _touch(lookup_key)
-        session_cache_identities[lookup_key] = requested_identity
-    # DB upsert は chat.py のレスポンス取得後に行う (本物の AssistantMessage.session_id を使うため)。
-    # bool() を使うことで空文字列 ("") も False になり、if existing_session_id: 分岐と整合する。
-    return runtime_client, bool(existing_session_id)
+    return runtime_client
 
 
 def _cache_identity(
@@ -377,6 +450,7 @@ def _cache_identity(
     secret_versions: Mapping[str, int] | None = None,
     training_binding: str | None = None,
     acp_scope: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> tuple[str, str, str]:
     """session cache が安全に再利用できる runtime 設定の同一性を返す。"""
     normalized = {key.lower(): value for key, value in (request_headers or {}).items()}
@@ -392,6 +466,7 @@ def _cache_identity(
                 "codex_sandbox": codex_sandbox} if execution_environment is not None else {}),
             **({"secret_versions": sorted((name, int(ver)) for name, ver in secret_versions.items())}
                if secret_versions else {}),
+            **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
             "required_headers": [
                 (name.lower(), normalized.get(name.lower(), ""))
                 for name in sorted(required_headers, key=str.lower)
@@ -415,6 +490,8 @@ async def _build_registered_runtime_session(
     session_identity: str | None,
     preloaded_secrets: Mapping[str, str] | None = None,
     builder_options: dict | None = None,
+    effort_override: str | None = None,
+    delegation_parent: delegation.DelegationParent | None = None,
 ) -> tuple[RuntimeSession, bool]:
     """registry に登録済みの subprocess provider session を構築する。"""
     spec = RUNTIME_PROVIDER_REGISTRY[provider]
@@ -439,13 +516,18 @@ async def _build_registered_runtime_session(
             if preloaded_secrets is not None
             else await resolve_preset_secrets_async(get_config(), preset)
         )
-        with use_resolved_secrets(secrets_map):
-            client = spec.builder(preset, cwd_override, existing_session_id, request_headers, **(builder_options or {}))
+        builder_kwargs = dict(builder_options or {})
+        if effort_override is not None:
+            builder_kwargs["effort_override"] = effort_override
+        with _new_delegation_grant(delegation_parent, model, lookup_key) as (token, grant):
+            with use_resolved_secrets(secrets_map), delegation.runtime_credentials(token):
+                client = spec.builder(preset, cwd_override, existing_session_id, request_headers, **builder_kwargs)
+            if preset.output_schema is not None:
+                from .structured_output import StructuredOutputSession
+                client = StructuredOutputSession(client, preset.output_schema)
+            client = _bind_delegation_runtime(client, grant)
     except SecretStoreError as exc:
-        raise SDKConnectionError(str(exc)) from exc
-    if preset.output_schema is not None:
-        from .structured_output import StructuredOutputSession
-        client = StructuredOutputSession(client, preset.output_schema)
+        raise SDKConnectionError(delegation.redact_token(str(exc))) from None
     if lookup_key:
         sessions[lookup_key] = client
         _touch(lookup_key)

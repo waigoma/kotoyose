@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 import hashlib
 from importlib.metadata import version
 from pathlib import Path
 from typing import TypeVar
+from uuid import uuid4
 
 from .data_policy import alias_data_policy, configured_capabilities, training_digest
 from .capabilities import CapabilityManifest
-from .execution_contract import AgentExecution, CommandExecution, ExecutionRequest, WorkerRequirements, ResumeRequest
+from .execution_contract import AgentExecution, CommandExecution, ExecutionInput, ExecutionRequest, WorkerRequirements, ResumeRequest
 from .execution_resume import build_resume_manifest, check_predecessor, operations_digest, unsafe
 from .runtime.resume import ResumeSupport
 from .execution_artifacts import ArtifactCaptureSpec, MAX_ARTIFACT_BYTES, MAX_TOTAL_BYTES
@@ -19,7 +20,7 @@ from .local_artifact_store import LocalArtifactStore
 from .artifact_blob_store import ArtifactStorageError
 from .native_sessions import retention_binding
 from .agent_spec import (
-    HOST_CODING, admission_isolation, surface_exceeds, admitted_execution_cell, agent_workspace_tool_error, requests_room,
+    HOST_CODING, WORKSPACE_READ, admission_isolation, surface_exceeds, admitted_execution_cell, agent_workspace_tool_error, requests_room,
     room_builtin_tools, room_requires_host_scope, rootfs_digest_is_coding, stamped_execution_mode,
 )
 from .execution_resources import (
@@ -31,6 +32,8 @@ from .execution_resources import (
     content_digest, codex_authentication_binding, codex_profile_authentication, pinned_codex_egress_limits,
 )
 from .execution_store import ExecutionStore
+from .delegation import MCP_NAME
+from .execution_delegation import TOOL_SPECS, require_live_parent, targets
 from .execution_images import (
     MAX_IMAGE_COUNT, MAX_IMAGE_TOTAL_BYTES, IMAGE_ARTIFACT_REF_PATTERN, validate_image_artifact,
 )
@@ -155,6 +158,43 @@ class ExecutionAdmission:
         request, profile = self._effective_request(request)
         return await self._resolve(principal, policy, request, profile)
 
+    async def resolve_shared_child(self, parent: dict, policy: CallerPolicy, alias: str,
+                                   task: str, deadline: datetime) -> tuple[AgentExecution, dict]:
+        from .config import get_config
+
+        config = get_config()
+        pinned = parent["snapshot"]
+        if alias not in {item["alias"] for item in targets(config, pinned["alias"], policy, self.settings)}:
+            raise ExecutionError("permission_denied", "Alias is outside the delegation scope", 403)
+        source = parent["request"]
+        request = AgentExecution(
+            schema_version="1", kind="agent", idempotency_key=f"delegate:{uuid4().hex}",
+            caller_run_ref=source["caller_run_ref"], workspace_ref=source["workspace_ref"],
+            execution_grant_ref=source["execution_grant_ref"], budgets_ref=source["budgets_ref"],
+            agent_definition_ref=source["agent_definition_ref"], model=alias,
+            inputs=[ExecutionInput(kind="task_request", provenance="agent_generated",
+                                   content_ref="builtin:delegated-task@1")],
+        )
+        request, profile = self._effective_request(request)
+        if (request.requirements.isolation != "sandbox" or profile._agent_surface != "read"
+                or (getattr(profile, "provider", None) == "codex"
+                    and getattr(profile, "execution_environment", None) != "isolated")):
+            raise ExecutionError("permission_denied", "Delegation requires an isolated read runtime", 403)
+        if getattr(profile, "provider", None) == "codex":
+            request = request.model_copy(update={"tool_refs": [WORKSPACE_READ]})
+        snapshot = await self._resolve(parent["principal"], policy, request, profile, delegated_task=task)
+        bounds = [deadline, datetime.fromisoformat(pinned["deadline"]), datetime.fromisoformat(snapshot["deadline"])]
+        # 子の alias に時間の上限が無ければ、親の残り時間と実行の期限だけで切る。
+        if (timeout := config.preset_for(alias).timeout_seconds) is not None:
+            bounds.append(datetime.now(timezone.utc) + timedelta(seconds=timeout))
+        until = min(bounds)
+        if until <= datetime.now(timezone.utc):
+            raise ExecutionError("deadline_exceeded", "Parent execution deadline has passed", 409)
+        snapshot.update(parent_attempt_id=parent["id"], delegated_by=pinned["alias"],
+                        depth=1, deadline=until.isoformat(), surface="read")
+        require_live_parent(parent, snapshot)
+        return request, snapshot
+
     def _pool_aliases(self) -> dict:
         from .config import get_config
         return getattr(get_config(), "pools", None) or {}
@@ -201,7 +241,7 @@ class ExecutionAdmission:
         raise failure
 
     async def _resolve(self, principal: str, policy: CallerPolicy, request: ExecutionRequest, profile, *,
-                       requested_model: str | None = None) -> dict:
+                       requested_model: str | None = None, delegated_task: str | None = None) -> dict:
         """Apply admission checks to one already-resolved alias/profile.
 
         requested_model は、呼び手が名指した pool alias。権限はそれに対して見る。
@@ -257,7 +297,7 @@ class ExecutionAdmission:
             is_agent=isinstance(request, AgentExecution), backend=profile.backend,
             provider=getattr(profile, "provider", None),
             execution_mode=getattr(profile, "codex_execution_mode", None),
-            tool_refs=getattr(request, "tool_refs", ()),
+            tool_refs=getattr(request, "tool_refs", ()), surface=getattr(profile, "_agent_surface", None),
         )
         if host_coding:
             from .codex_provider_scope import admit_provider_executor
@@ -287,7 +327,8 @@ class ExecutionAdmission:
         if isinstance(request, CommandExecution):
             plan, timeout = await self._command(principal, policy, grant, request)
         else:
-            plan, timeout = await self._agent(principal, policy, grant, request, profile, requested_model=requested_model)
+            plan, timeout = await self._agent(principal, policy, grant, request, profile,
+                                              requested_model=requested_model, delegated_task=delegated_task)
         if host_coding and plan.get("execution_environment") == "isolated":
             cell = admitted_execution_cell(
                 getattr(profile, "provider", None), getattr(profile, "codex_execution_mode", None),
@@ -583,11 +624,12 @@ class ExecutionAdmission:
 
     async def _agent(self, principal: str, policy: CallerPolicy, grant: ExecutionGrant, request: AgentExecution,
                      profile: NativeRuntimeProfile | PrintCliRuntimeProfile | None, *,
-                     requested_model: str | None = None) -> tuple[dict, TimeoutPolicy]:
+                     requested_model: str | None = None, delegated_task: str | None = None) -> tuple[dict, TimeoutPolicy]:
         if profile is None or request.model is None:
             raise ExecutionError("invalid_request", "runtime_profile was replaced by a model alias", 422)
         authority_model = requested_model or request.model
-        if not self._model_allowed(authority_model, policy) or not self._model_allowed(authority_model, grant):
+        if (not self._model_allowed(authority_model, policy)
+                or (delegated_task is None and not self._model_allowed(authority_model, grant))):
             raise ExecutionError("permission_denied", "Agent model is outside caller or grant scope", 403)
         if profile.backend == "print_cli":
             validate_print_request(
@@ -597,15 +639,16 @@ class ExecutionAdmission:
             )
         elif profile.compression_mode != 'runtime_managed':
             raise ExecutionError('unsupported_capability', 'This runtime cannot guarantee caller-controlled compression', 501)
+        surface = getattr(profile, "_agent_surface", None)
         host_coding = requests_room(
             is_agent=True, backend=profile.backend, provider=getattr(profile, "provider", None),
-            execution_mode=getattr(profile, "codex_execution_mode", None), tool_refs=request.tool_refs,
+            execution_mode=getattr(profile, "codex_execution_mode", None), tool_refs=request.tool_refs, surface=surface,
         )
         message = agent_workspace_tool_error(
             backend=profile.backend, provider=getattr(profile, "provider", None),
             execution_mode=getattr(profile, "codex_execution_mode", None),
             isolation=request.requirements.isolation, tool_refs=request.tool_refs,
-            has_mcp=bool(request.mcp_refs), has_approval=bool(request.approval_bindings),
+            has_mcp=bool(request.mcp_refs), has_approval=bool(request.approval_bindings), surface=surface,
             agent_container=getattr(self.settings, "agent_container", None) is not None,
         )
         if message:
@@ -622,6 +665,17 @@ class ExecutionAdmission:
                                   'binding': binding.model_dump(mode='json'), 'tool': tool.model_dump(mode='json')})
         if len(mcp_tools) > 64:
             raise ExecutionError('permission_denied', 'MCP tool surface exceeds limit', 403)
+        from .config import get_config
+
+        preset = (getattr(get_config(), "models", None) or {}).get(request.model)
+        delegation_tools = []
+        if (delegated_task is None and requested_model is None and preset is not None and preset.is_jailed
+                and MCP_NAME in preset.mcp_refs and request.requirements.isolation == "sandbox"):
+            if (profile.backend != "native" or
+                    (profile.provider == "codex" and host_coding
+                     and getattr(profile, "execution_environment", None) != "isolated")):
+                raise ExecutionError("unsupported_capability", "This runtime cannot expose jailed delegation", 501)
+            delegation_tools = list(TOOL_SPECS.values())
         definition = await self._get(principal, request.agent_definition_ref, AgentDefinition)
         client_tools: list[dict] = []
         builtins = room_builtin_tools(
@@ -651,22 +705,33 @@ class ExecutionAdmission:
             raise ExecutionError("invalid_request", "Client tools require a fixed client_key", 400)
         if len({item.approval_id for item in request.approval_bindings}) != len(request.approval_bindings):
             raise ExecutionError("invalid_request", "Approval bindings must be unique", 400)
-        names = [tool["name"] for tool in client_tools] + [item['tool']['alias'] for item in mcp_tools]
+        names = [tool["name"] for tool in [*client_tools, *delegation_tools]] + [item['tool']['alias'] for item in mcp_tools]
         if len(set(names)) != len(names) or "request_approval" in names:
             raise ExecutionError("invalid_request", "Client tool names must be distinct and unreserved", 400)
-        refs = [request.agent_definition_ref, request.budgets_ref, definition.timeout_policy_ref, *request.tool_refs]
+        refs = [request.agent_definition_ref, request.budgets_ref, definition.timeout_policy_ref]
+        if delegated_task is None:
+            refs.extend(request.tool_refs)
         if request.artifact_spec_ref is not None:
             refs.append(request.artifact_spec_ref)
-        refs.extend(item.content_ref for item in request.inputs)
+        if delegated_task is None:
+            refs.extend(item.content_ref for item in request.inputs)
+        elif "agent_generated" not in policy.provenance:
+            raise ExecutionError("permission_denied", "Caller does not allow agent-generated inputs", 403)
         refs.extend(request.skill_refs)
         self._scope(grant, refs)
         timeout = await self._get(principal, definition.timeout_policy_ref, TimeoutPolicy)
         inputs = []
+        if delegated_task is not None:
+            definition = definition.model_copy(update={
+                "instructions": "Investigate the task using the read-only workspace and report your findings.",
+                "output_contract": "text",
+            })
+            inputs.append({"kind": "task_request", "provenance": "agent_generated", "text": delegated_task})
         memory_snapshots = []
         skills = []
         image_count = 0
         image_total_bytes = 0
-        for item in request.inputs:
+        for item in request.inputs if delegated_task is None else ():
             if item.kind == "image":
                 if item.provenance == "trusted":
                     raise ExecutionError("permission_denied", "Image input cannot claim trusted provenance", 403)
@@ -889,7 +954,15 @@ class ExecutionAdmission:
                     error="authentication_failed",
                 )
                 raise ExecutionError("authentication_failed", "Codex ChatGPT login is required", 401) from exc
-        stamped = stamped_execution_mode(provider=getattr(profile, "provider", None), host_coding=host_coding)
+        if profile.backend == "native" and surface == "read":
+            runtime["surface"] = "read"
+        if delegated_task is not None and getattr(profile, "provider", None) == "claude":
+            from .preset_prompts import resolve_preset_prompts
+            prompts = resolve_preset_prompts(get_config(), preset)
+            if prompts is not None:
+                runtime["preset_prompt_snapshot"] = prompts.model_dump(mode="json")
+        stamped = stamped_execution_mode(provider=getattr(profile, "provider", None),
+                                         host_coding=host_coding, surface=surface)
         if stamped is not None:
             # 名前は Codex 由来のまま残す。この値だけが NativeAgentJob に container 経路を選ばせる。
             runtime["codex_execution_mode"] = stamped
@@ -913,14 +986,16 @@ class ExecutionAdmission:
             "kind": "agent", **runtime,
             "definition": definition.model_dump(mode="json"), "inputs": inputs,
             "memory_snapshots": memory_snapshots,
-            "tool_refs": [*request.tool_refs, *(item['tool_ref'] for item in mcp_tools)], "skills": skills,
+            "tool_refs": [*request.tool_refs, *(item['tool_ref'] for item in mcp_tools),
+                          *(spec["resource_ref"] for spec in delegation_tools)], "skills": skills,
+            **({"delegation_tools": delegation_tools} if delegation_tools else {}),
             "mcp_tools": mcp_tools,
             "client_tools": client_tools,
             "approval_bindings": [item.model_dump(mode="json") for item in request.approval_bindings],
             "client_key": request.client_key,
         }
         subscription = runtime.get("credential_mode") == "chatgpt_subscription"
-        if ((subscription or request.required_authentication_mode == "chatgpt_subscription")
+        if (delegated_task is None and (subscription or request.required_authentication_mode == "chatgpt_subscription")
                 and (request.required_authentication_mode is None or request.expected_authentication_binding_digest is None)):
             raise ExecutionError("invalid_request", "Subscription execution requires authentication mode and binding digest", 422,
                                  reason_code="authentication_binding_required")
@@ -938,12 +1013,14 @@ class ExecutionAdmission:
                                      reason_code="authentication_binding_mismatch")
         if request.expected_authentication_binding_digest is not None:
             plan["expected_authentication_binding_digest"] = request.expected_authentication_binding_digest
+        elif delegated_task is not None and subscription:
+            plan["expected_authentication_binding_digest"] = codex_authentication_binding(runtime)["binding_digest"]
         billing = require_runtime_selection(runtime, provider=request.required_provider,
                                             billing_mode=request.required_billing_mode)
         if billing is not None:
             plan["runtime_billing"] = billing
         session_binding = (retention_binding(self.settings, runtime['provider'])
-                           if self.settings is not None and profile.backend == 'native' else None)
+                           if delegated_task is None and self.settings is not None and profile.backend == 'native' else None)
         if session_binding is not None:
             plan['provider_session_storage'] = session_binding
         if request.artifact_spec_ref is not None:

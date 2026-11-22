@@ -106,7 +106,7 @@ def test_console_sidebar_has_the_fixed_order():
     version = _version()
     nav = client.get(f"/admin/ui/console/{version}/js/nav.js", auth=AUTH).text
     labels = ["Dashboard", "Providers", "Endpoint", "Routes", "Combos", "Aliases",
-              "Prompts", "Skills", "MCPs", "Agents", "Usage", "Executions", "Machine", "Secrets"]
+              "Prompts", "Skills", "MCPs", "Usage", "Executions", "Machine", "Secrets"]
     positions = [nav.index(f'label: "{label}"') for label in labels]
     assert positions == sorted(positions)
 
@@ -117,7 +117,7 @@ def test_console_js_does_not_assign_innerhtml():
                  "pages/dashboard.js", "pages/providers.js", "pages/endpoint.js",
                  "pages/routes.js", "pages/combos.js", "pages/aliases.js",
                  "pages/prompts.js", "pages/skills.js", "pages/mcps.js",
-                 "pages/agents.js", "pages/usage.js", "pages/executions.js",
+                 "pages/usage.js", "pages/executions.js",
                  "pages/machine.js", "pages/secrets.js", "path-picker.js"):
         body = client.get(f"/admin/ui/console/{version}/js/{name}", auth=AUTH).text
         assert not re.search(r"\.innerHTML\s*=", body), name
@@ -149,8 +149,7 @@ def test_console_library_modules_are_referenced_and_served():
     version = _version()
     for module_path, symbol in (("js/pages/prompts.js", "renderPrompts"),
                                 ("js/pages/skills.js", "renderSkills"),
-                                ("js/pages/mcps.js", "renderMcps"),
-                                ("js/pages/agents.js", "renderAgents")):
+                                ("js/pages/mcps.js", "renderMcps")):
         url = f"/admin/ui/console/{version}/{module_path}"
         assert url in html
         res = client.get(url, auth=AUTH)
@@ -163,14 +162,14 @@ def test_console_library_modules_are_referenced_and_served():
     assert "immutable" in helper_res.headers["cache-control"]
 
     main_js = client.get(f"/admin/ui/console/{version}/js/main.js", auth=AUTH).text
-    for page_file in ("./pages/prompts.js", "./pages/skills.js", "./pages/mcps.js", "./pages/agents.js"):
+    for page_file in ("./pages/prompts.js", "./pages/skills.js", "./pages/mcps.js"):
         assert page_file in main_js
 
     nav_js = client.get(f"/admin/ui/console/{version}/js/nav.js", auth=AUTH).text
     assert 'key: "prompts", label: "Prompts", count: "prompt_files"' in nav_js
     assert 'key: "skills", label: "Skills", count: "skill_definitions"' in nav_js
     assert 'key: "mcps", label: "MCPs", count: "mcps"' in nav_js
-    assert 'key: "agents", label: "Agents", count: "agent_definitions"' in nav_js
+    assert "agent_definitions" not in nav_js
 
 
 def test_pool_state_returns_empty_without_an_execution_service():

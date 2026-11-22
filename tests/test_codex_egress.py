@@ -180,3 +180,26 @@ def test_reviewed_rootfs_pins_inventory_and_never_accepts_private_cert_or_contro
 def test_missing_rootfs_fails_closed():
     with pytest.raises(ValueError):
         validate_rootfs(None, None)
+
+
+def test_delegate_tool_schemas_and_history_require_pinned_refs():
+    from kotoyose.execution_delegation import LIST_AGENTS, TOOL_SPECS
+
+    schema = TOOL_SPECS[LIST_AGENTS]["input_schema"]
+    body = {"model": "fixed", "stream": True, "store": False,
+            "tools": [{"type": "function", "name": "list_agents", "parameters": schema}],
+            "input": [{"type": "function_call", "name": "list_agents", "arguments": "{}", "call_id": "1"},
+                      {"type": "function_call_output", "call_id": "1", "output": "[]"}]}
+    request = b"POST /v1/responses HTTP/1.1\r\nauthorization: Bearer fake\r\n\r\n"
+    enabled = CodexEgress(1, 65536, "fixed", "fake", None, delegation_refs=frozenset({LIST_AGENTS}))
+    disabled = CodexEgress(1, 65536, "fixed", "fake", None)
+    try:
+        enabled.validate_request(request, json.dumps(body).encode())
+        with pytest.raises(ValueError, match="egress_denied"):
+            disabled.validate_request(request, json.dumps(body).encode())
+        body["input"][0]["name"] = "ask_agent"
+        with pytest.raises(ValueError, match="egress_denied"):
+            enabled.validate_request(request, json.dumps(body).encode())
+    finally:
+        enabled.directory.cleanup()
+        disabled.directory.cleanup()

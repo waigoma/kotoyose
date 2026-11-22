@@ -197,8 +197,11 @@ def _check_target(target: object, what: str, prefixes: tuple[str, ...], *, singl
     return target
 
 
-def _bind_mount(source: str, target: str, *, readonly: bool) -> list[str]:
+def _bind_mount(source: str, target: str, *, readonly: bool, recursive_readonly: bool = False) -> list[str]:
     option = f"type=bind,src={source},dst={target}" + (",readonly" if readonly else "")
+    if recursive_readonly:
+        # Docker は bind-recursive=readonly に bind-propagation=rprivate の明示を求める。無いと container を作れない。
+        option += ",bind-propagation=rprivate,bind-recursive=readonly"
     return ["--mount", option]
 
 
@@ -492,6 +495,11 @@ class AgentContainer:
                 raise ValueError("label value is invalid")
             labels_items.append((key, value))
 
+        if spec.workspace_readonly:
+            workspace_path = Path(workspace)
+            for source in (Path(home), *(Path(path).resolve() for path in spec.rw_dirs.values())):
+                if source.is_relative_to(workspace_path) or workspace_path.is_relative_to(source):
+                    raise ValueError("writable mount overlaps read-only workspace")
         extra = self._extra_mount_args(spec)
         argv = [
             "run", "-d",
@@ -516,7 +524,8 @@ class AgentContainer:
             "--read-only",
             "--tmpfs", _CONTAINER_TMPFS,
         ))
-        argv.extend(_bind_mount(workspace, _CONTAINER_WORKSPACE, readonly=spec.workspace_readonly))
+        argv.extend(_bind_mount(workspace, _CONTAINER_WORKSPACE, readonly=spec.workspace_readonly,
+                                recursive_readonly=spec.workspace_readonly))
         argv.extend(_bind_mount(home, _CONTAINER_HOME, readonly=False))
         if agent_root is not None:
             argv.extend(_bind_mount(agent_root, _CONTAINER_AGENT_ROOT, readonly=True))
@@ -552,7 +561,8 @@ class AgentContainer:
             if target != CONTAINER_RUNTIME_BUNDLE:
                 _check_target(target, "ro_dirs", (_CONTAINER_WORKSPACE + "/",), single_segment=True)
             claim(target)
-            argv.extend(_bind_mount(_canonical_dir(spec.ro_dirs[target], f"ro_dirs {target}"), target, readonly=True))
+            argv.extend(_bind_mount(_canonical_dir(spec.ro_dirs[target], f"ro_dirs {target}"), target, readonly=True,
+                                    recursive_readonly=spec.workspace_readonly and target.startswith(_CONTAINER_WORKSPACE + "/")))
         return argv
 
     def _exec_argv(

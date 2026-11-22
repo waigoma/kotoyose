@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from cursor_sdk import (
-    AgentDefinition, AgentOptions, AsyncAgent, AsyncClient, HttpMcpServerConfig,
+    AgentOptions, AsyncAgent, AsyncClient, HttpMcpServerConfig,
     LocalAgentOptions, SDKImage, SseMcpServerConfig, StdioMcpServerConfig,
     TokenUsage, UserMessage,
 )
@@ -39,7 +39,6 @@ _CLEANUP_FAILED = object()
 _TERMINAL_STATUSES = frozenset({"finished", "error", "cancelled", "expired"})
 _SUMMARY_LIMIT = 500
 _CURSOR_SETTING_SOURCES = frozenset({"user", "project", "team", "mdm", "plugins", "all"})
-_CURSOR_AGENT_TIERS = frozenset({"haiku", "sonnet", "opus"})
 _IGNORED_CLI_KEYS = {"command", "args", "output_format", "stream_partial_output", "force", "resume_flag"}
 _CURSOR_AUTH_RECOVERY_MARKERS = (
     "try logging out and back in",
@@ -93,7 +92,6 @@ class CursorRuntimeSession:
     mcp_servers: dict[str, Any] = field(default_factory=dict)
     tools: list[str] | None = None
     disallowed_tools: list[str] = field(default_factory=list)
-    agents: dict[str, Any] = field(default_factory=dict)
     setting_sources: list[str] | None = None
     sandbox_options: dict[str, Any] | None = None
     mode: str | None = None
@@ -414,7 +412,7 @@ class CursorRuntimeSession:
             mcp_servers=self.mcp_servers or None,
             tools=self.tools,
             disallowed_tools=self.disallowed_tools or None,
-            agents=self.agents or None,
+            agents=None,
             mode=self.mode,
         )
         try:
@@ -459,16 +457,18 @@ def build_cursor_session(
     cwd_override: str | None,
     session_id: str | None,
     request_headers: dict[str, str] | None = None,
+    *,
+    effort_override: str | None = None,
 ) -> CursorRuntimeSession:
     """preset の prompt/MCP resource を Cursor SDK の設定へ変換する。"""
     from ..config import get_config
 
     cwd = os.path.expanduser(cwd_override) if cwd_override is not None else preset.cwd
     cfg = get_config()
-    translated = translate_runtime_config(cfg, preset, request_headers)
+    translated = translate_runtime_config(
+        cfg, preset, request_headers, effort_override=effort_override,
+    )
     cursor_config = apply_common_timeout(dict(preset.cursor or {}), translated.timeout_seconds)
-    agent_models = _cursor_agent_models(cursor_config.get("agent_models"))
-    cursor_agents = _to_sdk_agents(translated.agents, agent_models)
 
     explicit_setting_sources = "setting_sources" in cursor_config
     raw_setting_sources = (
@@ -533,67 +533,11 @@ def build_cursor_session(
         },
         tools=preset.tools,
         disallowed_tools=list(preset.deny),
-        agents=cursor_agents,
         setting_sources=setting_sources,
         sandbox_options=sandbox_options,
         mode="plan" if preset.permission_mode == "plan" else None,
         connection=connection_id,
     )
-
-
-def _cursor_agent_models(value: object) -> dict[str, str]:
-    """共通 subagent tier を Cursor model ID へ変換する明示マップを検証する。"""
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise ValueError("cursor.agent_models は object で指定してください")
-    if not all(isinstance(tier, str) for tier in value):
-        raise ValueError("cursor.agent_models の tier 名は文字列で指定してください")
-    unsupported = [tier for tier in value if tier not in _CURSOR_AGENT_TIERS]
-    if unsupported:
-        raise ValueError(
-            "cursor.agent_models に未対応の tier があります: "
-            + ", ".join(sorted(unsupported))
-        )
-    resolved: dict[str, str] = {}
-    for tier, model in value.items():
-        if not isinstance(model, str) or not model.strip():
-            raise ValueError(
-                f"cursor.agent_models.{tier} は空でない文字列の model ID で指定してください"
-            )
-        resolved[tier] = model.strip()
-    return resolved
-
-
-def _to_sdk_agents(
-    agents: dict[str, Any],
-    model_overrides: dict[str, str] | None = None,
-) -> dict[str, AgentDefinition]:
-    """共通 agent 定義を Cursor SDK 1.x の inline subagent へ変換する。"""
-    resolved: dict[str, AgentDefinition] = {}
-    model_overrides = model_overrides or {}
-    for name, agent in agents.items():
-        if agent.model == "inherit":
-            model: str | None = "inherit"
-        else:
-            model = model_overrides.get(agent.model)
-            if model is None:
-                log.warning(
-                    "cursor.agent.model_alias_unsupported",
-                    agent=name,
-                    model=agent.model,
-                )
-        if agent.tools is not None:
-            raise ValueError(
-                f"cursor subagent '{name}' tools is unsupported; omit tools rather than "
-                "silently ignoring an unenforceable allowlist (including [])"
-            )
-        resolved[name] = AgentDefinition(
-            description=agent.description,
-            prompt=agent.prompt,
-            model=model,
-        )
-    return resolved
 
 
 def _cursor_model_params(value: object) -> dict[str, str]:

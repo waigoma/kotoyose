@@ -1,4 +1,4 @@
-// Shared helpers for the Library pages (Prompts, Skills, MCPs, Agents).
+// Shared helpers for the Library pages (Prompts, Skills, MCPs).
 
 import { attachmentTags, el } from "./dom.js";
 import { openPeek } from "./peek.js";

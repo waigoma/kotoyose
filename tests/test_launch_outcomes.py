@@ -46,7 +46,7 @@ async def test_launch_outcome_reaches_limits_and_stop_evidence(tmp_path, monkeyp
         snapshot = await service.admission.resolve('caller-a', policy, request)
         attempt, _ = await store.admit('caller-a', request.model_dump(mode='json'), snapshot, 2)
         results = []
-        async def run_runtime(attempt, cancellation, *, worker, interaction, tracker, runtime_entry):
+        async def run_runtime(attempt, cancellation, *, worker, interaction, tracker, runtime_entry, delegation_call=None):
             operation = await store.prepare_operation(attempt['id'], 'provider_process')
             async def started(_pid):
                 await tracker.start()

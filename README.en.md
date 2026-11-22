@@ -19,7 +19,9 @@ On top of that, subscriptions mostly work only inside each vendor's own app, and
 
 ## What you get
 
-- **Define the environment once, use the same AI everywhere.** Bundle a system prompt (prompt files), skills, MCP servers, subagent definitions, allowed tools (`tools` / `deny`) and the place to run (`host` / `isolated`) under an `alias`. Whether the call comes from a chat UI, n8n, a Discord bot, your own task manager or curl, the same name gives you the same environment. Prompts, skills and MCP servers are registered once and shared by many aliases.
+- **Define the environment once, use the same AI everywhere.** Bundle a system prompt (prompt files), skills, MCP servers, the other aliases it may delegate to, allowed tools (`tools` / `deny`) and the place to run (`host` / `isolated`) under an `alias`. Whether the call comes from a chat UI, n8n, a Discord bot, your own task manager or curl, the same name gives you the same environment. Prompts, skills and MCP servers are registered once and shared by many aliases.
+- **Hand work to another model.** Kotoyose is itself an MCP server (`list_agents` / `ask_agent`), so an agent can delegate a task to another alias, for example sending a research step from Claude to Grok. A delegated agent cannot delegate further. Jailed coding agents can delegate to aliases that open the same workspace read-only.
+- **Use it from T3 Code or Zed.** `kotoyose-acp` speaks ACP and lists your aliases as models. It streams text and tool progress, and keeps the conversation when you switch models.
 - **Only what the job needs, so fewer tokens.** Skills and MCP servers are chosen per alias. Only the pieces that use case needs reach the context, so you do not pay for descriptions of unrelated tools.
 - **Make the most of the subscriptions you pay for.** Kotoyose runs each vendor's official CLI or SDK, so work is billed to your subscription allowance rather than separate API pricing. Remaining 5-hour and weekly allowances come from the official surfaces and show up on the dashboard. A `combo` groups several aliases: it skips a candidate whose allowance is used up until it resets, or spreads load across subscriptions.
 - **No token extraction.** Sign in from the console with each vendor's own flow (paste a code, browser, device code). The CLI keeps its own credentials in an Kotoyose-dedicated directory; Kotoyose never reads or forwards them.
@@ -74,7 +76,7 @@ flowchart LR
 
 - `connection`: which official CLI or SDK account to use, whether its input is used for training, and its remaining allowance.
 - `route`: which driver, model and connection to run with.
-- `alias`: a named working environment that bundles a `route` with prompt files, skills, MCP servers, subagent definitions, `tools` / `deny`, the place to run (`host` / `isolated`) and training consent. A `combo` can group several aliases and send work to whichever has room.
+- `alias`: a named working environment that bundles a `route` with prompt files, skills, MCP servers, the aliases it may delegate to (`delegates`), `tools` / `deny`, the place to run (`host` / `isolated`) and training consent. A `combo` can group several aliases and send work to whichever has room.
 - `client`: decides, per API key, who may use which `alias`, and where.
 
 ## Supported AI

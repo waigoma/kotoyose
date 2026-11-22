@@ -1,5 +1,22 @@
 # Kotoyose の変更履歴
 
+## 1.2.0 (2026-11-22)
+
+- SDK の新しい runtime session には、それまでの会話を先頭に付けて渡すようにした。
+- チャットの `reasoning_effort` で、対応する alias の effort をその turn だけ上書きできるようにした。`/v1/models` と `kotoyose-acp` にも、その alias が対応する effort を出した。
+- 組み込み MCP の `list_agents` と `ask_agent` で、許可された別の alias にチャットを委譲できるようにした。
+- 隔離された Claude / Codex の実行から、同じワークスペースを読み取り専用で開く alias に委譲できるようにした。
+- alias の `delegable: false` で、その alias を委譲の先から外せるようにした。
+- 委譲の取扱説明書の skill `kotoyose-delegation` を追加した。
+- Kotoyose の alias を ACP クライアントから選べる `kotoyose-acp` コマンドを追加した。
+- `X-Kotoyose-Events: 1` を指定したチャット SSE にツールイベントを追加した。
+- `kotoyose-acp` は API キーを持ち主だけが読めるファイル (`KOTOYOSE_API_KEY_FILE`) から読める。
+- 使える effort を起動時と以後 4 時間ごとに取得し、再起動のあとも `/v1/models` と `kotoyose-acp` に出す。
+
+### Removed
+
+- `agent_refs` / `agents` / `agent_definitions` を削除した。別 alias への委譲は `mcp_refs: [kotoyose]` と `delegates` を使う。Claude の Task / Agent ツールは常に無効。
+
 ## 1.1.0 (2026-11-21)
 
 - コンソールから Antigravity CLI 1.5.13、Cursor Agent 2026.11.19-f005e9d、Grok Build 1.0.89 の公式配布物を固定ハッシュで検証して導入できるようにした (Linux x86_64)。

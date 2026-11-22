@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from ..config import (
-    AgentPreset,
     HarnessConfig,
     ModelPreset,
     _inject_mcp_request_headers,
@@ -16,12 +15,15 @@ from ..config import (
     resolve_prompt_texts,
     resolve_skill_fallback_texts,
 )
+from ..delegation import MCP_NAME
 from ..logging_setup import log
 
 # Skill を runtime へ native 注入できる provider。ここに無い provider では
 # skill_refs の本文を system prompt へ前置する (skill fallback)。
 # Antigravity は workspace plugin overlay の .agents/plugins/*/skills へ変換する。
 _SKILL_CAPABLE_PROVIDERS = frozenset({"claude", "codex", "antigravity"})
+# preset.effort を実行設定へ渡す runtime。Antigravity SDK は警告するだけで転送しない。
+EFFORT_PROVIDERS = frozenset({"claude", "codex", "cursor"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,7 +42,6 @@ class TranslatedRuntimeConfig:
     plugin_paths: tuple[str, ...]
     mcp_servers: dict[str, dict]
     skills: tuple[RuntimeSkill, ...]
-    agents: dict[str, AgentPreset]
     effort: str | None
     timeout_seconds: float | None
     unsupported_fields: tuple[str, ...]
@@ -52,6 +53,7 @@ def translate_runtime_config(
     request_headers: dict[str, str] | None = None,
     *,
     resolved_secrets: Mapping[str, str] | None = None,
+    effort_override: str | None = None,
 ) -> TranslatedRuntimeConfig:
     """参照・inline・request header を provider 非依存の規則で 1 回だけ解決する。"""
     plugin_paths, skill_filter, mcp_servers = config.resolve_resources(preset)
@@ -96,10 +98,10 @@ def translate_runtime_config(
         mcp_servers=_inject_mcp_request_headers(
             resolve_mcp_secrets(mcp_servers, resolved_secrets=resolved_secrets),
             request_headers or {},
+            builtin_delegation=MCP_NAME in preset.mcp_refs,
         ),
         skills=skills,
-        agents=config.resolve_agents(preset),
-        effort=preset.effort,
+        effort=effort_override if effort_override is not None else preset.effort,
         timeout_seconds=preset.timeout_seconds,
         unsupported_fields=_unsupported_fields(preset),
     )

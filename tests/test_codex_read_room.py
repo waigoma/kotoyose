@@ -33,7 +33,7 @@ def test_codex_read_is_admitted_only_for_workspace_read():
     claude = next(row for row in DRIVERS if row.driver == "claude.agent-sdk")
     claude_read = next(item for item in claude.surfaces if item.surface == "read")
     assert cell.admitted is True
-    assert claude_read.admitted is False
+    assert claude_read.admitted and claude_read.workspace_readonly
     assert cell.tool_refs == frozenset({READ_TOOL_REF})
     assert cell.tool_match == "exact"
     assert cell.execution_mode == READ_MODE

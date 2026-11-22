@@ -12,6 +12,7 @@ import tempfile
 import h11
 from collections.abc import Awaitable, Callable
 
+from .execution_delegation import TOOL_SPECS
 from .codex_model_policy import validate_reasoning_effort
 from .codex_broker_diagnostics import BrokerObservation
 from .codex_request_policy import parse_json, validate_input
@@ -134,7 +135,7 @@ class CodexEgress:
                  authorize: Callable[[], Awaitable[None]] | None = None,
                  image_uris: tuple[str, ...] = (), image_request_limit: int = 1,
                  reasoning_effort: str | None = None, coding: bool = False,
-                 limits: CodexEgressLimits | None = None):
+                 limits: CodexEgressLimits | None = None, delegation_refs: frozenset[str] = frozenset()):
         if coding and (auth_file is None or tool_schema is not None):
             raise ValueError("invalid_job")
         self.coding = coding
@@ -150,7 +151,9 @@ class CodexEgress:
         self.byte_limit = byte_limit
         self.model = model
         self.credential = credential
-        self.tool_schema = tool_schema
+        self.tool_schemas = {TOOL_SPECS[ref]["name"]: TOOL_SPECS[ref]["input_schema"] for ref in delegation_refs}
+        if tool_schema is not None:
+            self.tool_schemas["sandbox_exec"] = tool_schema
         self.bytes = 0
         self.accounted_request_bytes = 0
         self.request_bytes_read = 0
@@ -363,16 +366,19 @@ class CodexEgress:
             from .codex_coding_policy import validate_builtin_tools
             validate_builtin_tools(tools)
         else:
-            if not isinstance(tools, list) or len(tools) != (1 if self.tool_schema is not None else 0):
+            if not isinstance(tools, list) or len(tools) != len(self.tool_schemas):
                 raise ValueError("egress_denied")
+            remaining = dict(self.tool_schemas)
             for tool in tools:
                 if (not isinstance(tool, dict) or tool.get("type") != "function"
-                        or tool.get("name") != "sandbox_exec" or tool.get("parameters") != self.tool_schema
+                        or not isinstance(name := tool.get("name"), str) or name not in remaining
+                        or tool.get("parameters") != remaining.pop(name)
                         or set(tool) - {"type", "name", "description", "parameters", "strict"}):
                     raise ValueError("egress_denied")
         if value.get("tool_choice", "auto") not in {"auto", "none"}:
             raise ValueError("egress_denied")
-        validate_input(value.get("input", []), self.coding or self.tool_schema is not None, self.image_uris, coding=self.coding)
+        validate_input(value.get("input", []), self.coding or bool(self.tool_schemas), self.image_uris,
+                       coding=self.coding, function_names=self.tool_schemas.keys() if not self.coding else None)
         metadata = value.pop("client_metadata", None)
         if metadata is not None and (not isinstance(metadata, dict) or len(metadata) > 32
                 or any(not isinstance(key, str) or not isinstance(item, str)

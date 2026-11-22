@@ -232,7 +232,7 @@ async def test_options_enable_builtin_tools_and_deny_web_tools(env):
     options = _options()
     assert options.tools is None
     assert options.allowed_tools == []
-    assert set(options.disallowed_tools) == {"WebFetch", "WebSearch"}
+    assert set(options.disallowed_tools) == {"WebFetch", "WebSearch", "Task", "Agent"}
     assert options.permission_mode == "bypassPermissions"
     assert options.mcp_servers == {} and options.strict_mcp_config is True
     assert options.setting_sources == [] and options.skills == [] and options.plugins == []
@@ -740,3 +740,42 @@ def test_emit_sdk_tool_result_forwards_to_activity_event(env):
     assert progress[0].tool_name == "Bash"
     assert API_KEY not in repr(progress)
     assert API_KEY not in repr(activity)
+
+
+async def test_container_delegation_is_a_host_sdk_server(env, monkeypatch):
+    from mcp.types import CallToolRequest, CallToolRequestParams, ListToolsRequest
+    from kotoyose.client_tool_bridge import ClientToolCallOutcome
+    from kotoyose.execution_delegation import ASK_AGENT, LIST_AGENTS, TOOL_SPECS
+
+    dispatch = AsyncMock(return_value=ClientToolCallOutcome("succeeded", []))
+    responses = []
+
+    async def query(client, prompt):
+        server = client.options.mcp_servers["client"]["instance"]
+        listing = await server.request_handlers[ListToolsRequest](ListToolsRequest())
+        request = CallToolRequest(params=CallToolRequestParams(name="list_agents", arguments={}))
+        answer = await server.request_handlers[CallToolRequest](request)
+        responses.extend((listing.root, answer.root))
+
+    monkeypatch.setattr(FakeSdkClient, "query", query)
+    result = await _run(_worker(env), _job(env, tool_refs=(HOST_TOOL_REF, LIST_AGENTS, ASK_AGENT),
+                                          client_tool_specs=tuple(TOOL_SPECS.values()), client_tool_call=dispatch))
+    assert result.status == "succeeded"
+    options = _options()
+    assert options.mcp_servers["client"]["type"] == "sdk"
+    assert set(options.allowed_tools) == {"mcp__client__list_agents", "mcp__client__ask_agent"}
+    listing, answer = responses
+    assert {tool.name for tool in listing.tools} == {"list_agents", "ask_agent"}
+    assert answer.content[0].text == "[]"
+    dispatch.assert_awaited_once_with(LIST_AGENTS, {})
+
+
+async def test_claude_read_room_mounts_the_admitted_workspace_readonly(env):
+    from kotoyose.agent_spec import READ_MODE
+
+    result = await _run(_worker(env), _job(env, codex_execution_mode=READ_MODE, tool_refs=()))
+    assert result.status == "succeeded"
+    spec, = env.container.created
+    assert spec.workspace == env.workspace and spec.workspace_readonly is True
+    assert _options().tools == ["Read", "Grep", "Glob"]
+    assert _options().mcp_servers == {}

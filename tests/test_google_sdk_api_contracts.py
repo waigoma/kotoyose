@@ -5,7 +5,6 @@ A missing optional package is a skip, never evidence of provider conformance.
 """
 
 from importlib.metadata import version
-from types import SimpleNamespace
 
 import pytest
 
@@ -16,7 +15,6 @@ from kotoyose.runtime.translation import TranslatedRuntimeConfig
 def _translated():
     return TranslatedRuntimeConfig(
         instructions="contract-test", plugin_paths=(), mcp_servers={}, skills=(),
-        agents={"researcher": SimpleNamespace(description="Research", prompt="Read only", tools=None, model="inherit")},
         effort=None, timeout_seconds=None, unsupported_fields=(),
     )
 
@@ -30,10 +28,10 @@ def installed_sdk():
 
 @pytest.mark.parametrize("config,expected", [
     ({}, {"view_file", "read_url_content", "finish"}),
-    ({"autonomous_tools": True}, {"view_file", "create_file", "edit_file", "run_command", "invoke_subagent", "generate_image", "search_web", "read_url_content", "finish"}),
-    ({"allow_all": True}, {"view_file", "create_file", "edit_file", "run_command", "invoke_subagent", "generate_image", "search_web", "read_url_content", "finish"}),
+    ({"autonomous_tools": True}, {"view_file", "create_file", "edit_file", "run_command", "generate_image", "search_web", "read_url_content", "finish"}),
+    ({"allow_all": True}, {"view_file", "create_file", "edit_file", "run_command", "generate_image", "search_web", "read_url_content", "finish"}),
 ])
-def test_actual_local_config_pins_root_and_subagent_tools(installed_sdk, tmp_path, config, expected, monkeypatch):
+def test_actual_local_config_pins_root_tools_without_provider_subagents(installed_sdk, tmp_path, config, expected, monkeypatch):
     sdk = installed_sdk
     # Reproduce default-helper drift; our adapter must never call these helpers.
     monkeypatch.setattr(sdk["types"].BuiltinTools, "read_only", classmethod(lambda cls: [cls.SCHEDULE]))
@@ -41,9 +39,7 @@ def test_actual_local_config_pins_root_and_subagent_tools(installed_sdk, tmp_pat
     local = sdk["LocalAgentConfig"](**kwargs)
     assert {tool.value for tool in local.capabilities.enabled_tools} == expected
     assert local.capabilities.run_command_config.enable_daemons is False
-    child = local.subagents[0]
-    assert {tool.value for tool in child.capabilities.enabled_tools} == {"view_file", "read_url_content", "finish"}
-    assert child.capabilities.run_command_config.enable_daemons is False
+    assert local.subagents == []
 
 
 async def test_actual_policy_denies_schedule_and_daemons_even_with_allow_all(installed_sdk, tmp_path):
@@ -58,13 +54,3 @@ async def test_actual_policy_denies_schedule_and_daemons_even_with_allow_all(ins
         decision = await hook.run(None, sdk["types"].ToolCall(name=name, args=arguments))
         assert decision.allow is allowed
 
-
-def test_actual_sdk_subagent_model_contract(installed_sdk, tmp_path):
-    sdk = installed_sdk
-    translated = _translated()
-    translated.agents["researcher"].model = "haiku"
-    kwargs = _build_sdk_config_kwargs(
-        sdk=sdk, model=None, cwd=str(tmp_path), translated=translated,
-        config={"subagent_models": {"researcher": "gemini-3.8-flash"}},
-    )
-    assert sdk["LocalAgentConfig"](**kwargs).subagents[0].model == "gemini-3.8-flash"

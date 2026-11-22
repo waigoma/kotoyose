@@ -125,6 +125,5 @@ def validate_auth_options(options: ClaudeAgentOptions) -> None:
         raise ValueError(
             "Claude bare=true does not support subscription OAuth. "
             "An administrator must explicitly select bare=false with reviewed "
-            "isolation/resource settings, or configure an existing API key for bare mode. "
-            "See docs/features/claude-terminal-contracts.md."
+            "isolation/resource settings, or configure an existing API key for bare mode."
         )

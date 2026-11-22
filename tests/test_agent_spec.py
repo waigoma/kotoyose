@@ -21,11 +21,11 @@ def test_table_declares_todays_drivers_and_does_not_admit_unread_surfaces():
         row.driver: tuple(cell.surface for cell in row.surfaces if cell.admitted)
         for row in DRIVERS
     }
-    assert admitted["claude.agent-sdk"] == ("none", "write")
+    assert admitted["claude.agent-sdk"] == ("none", "read", "write")
     assert admitted["codex.app-server"] == ("read", "exec", "write")
     assert admitted["cursor.sdk"] == ()
     assert admitted["antigravity.sdk"] == ()
-    assert admitted["cli.print"] == admitted["cli.acp"] == ("write",)
+    assert admitted["cli.print"] == admitted["cli.acp"] == ("read", "write")
     cli_print = next(row for row in DRIVERS if row.driver == "cli.print")
     cli_print_write = next(cell for cell in cli_print.surfaces if cell.surface == "write")
     assert cli_print_write.requires == frozenset({"agent_container", "egress"})

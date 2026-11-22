@@ -19,7 +19,6 @@ export const NAV_GROUPS = [
     { key: "prompts", label: "Prompts", count: "prompt_files" },
     { key: "skills", label: "Skills", count: "skill_definitions" },
     { key: "mcps", label: "MCPs", count: "mcps" },
-    { key: "agents", label: "Agents", count: "agent_definitions" },
   ] },
   { label: "Monitor", items: [
     { key: "usage", label: "Usage" },

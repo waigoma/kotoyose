@@ -261,7 +261,7 @@ def test_deny_list_passed_to_disallowed_tools(tmp_path):
         config = _load_yaml_config()
     with patch("kotoyose.config._config", config):
         opts = build_options("test-model")
-    assert opts.disallowed_tools == ["Bash(rm -rf*)", "Write(/etc/*)"]
+    assert opts.disallowed_tools == ["Bash(rm -rf*)", "Write(/etc/*)", "Task", "Agent"]
 
 
 def test_permission_mode_always_bypass(tmp_path):
@@ -1049,11 +1049,6 @@ def test_skills_default_none():
     assert ModelPreset().skills is None
 
 
-def test_agents_default_empty():
-    """agents の既定は空 dict。"""
-    assert ModelPreset().agents == {}
-
-
 def test_skills_accepts_all_list_and_empty():
     """skills は "all" / [names] / [] を受容する。"""
     assert ModelPreset(skills="all").skills == "all"
@@ -1201,81 +1196,28 @@ def test_individual_refs_resolve_in_order_and_inline_wins(tmp_path):
     }
 
 
-def test_agent_refs_resolve_in_order_and_inline_wins(tmp_path):
-    """agent_refs を記載順で合成し、同名の inline agent 定義を優先する。"""
-    yaml_file = tmp_path / "config.yml"
-    yaml_file.write_text(textwrap.dedent("""
-        agent_definitions:
-          researcher:
-            description: 収蔵庫の researcher
-            prompt: shared research prompt
-            tools: [Read, Grep]
-            model: sonnet
-          reviewer:
-            description: 収蔵庫の reviewer
-            prompt: shared review prompt
-        models:
-          referenced:
-            agent_refs: [researcher, reviewer]
-            agents:
-              reviewer:
-                description: inline reviewer
-                prompt: inline review prompt
-                model: opus
-              extra:
-                description: inline extra
-                prompt: inline extra prompt
-    """))
+def test_removed_subagent_config_keys_fail_with_delegation_hint(tmp_path):
+    """agent_definitions と alias の agent_refs / agents は委譲先を示して拒否する。"""
+    message = r"removed; delegate with mcp_refs: \[kotoyose\] and delegates"
+    root = tmp_path / "root.yml"
+    root.write_text("agent_definitions: {}\nmodels: {}\n")
+    with patch.dict(os.environ, {"KOTOYOSE_CONFIG": str(root)}):
+        with pytest.raises(ValueError, match=message):
+            _load_yaml_config()
 
-    with patch.dict(os.environ, {"KOTOYOSE_CONFIG": str(yaml_file)}):
-        config = _load_yaml_config()
-    with patch("kotoyose.config._config", config):
-        opts = build_options("referenced")
+    alias = tmp_path / "alias.yml"
+    alias.write_text("models:\n  chat:\n    agent_refs: [researcher]\n")
+    with patch.dict(os.environ, {"KOTOYOSE_CONFIG": str(alias)}):
+        with pytest.raises(ValueError, match=message) as refs:
+            _load_yaml_config()
+    assert "agent_refs" in str(refs.value)
 
-    assert list(opts.agents) == ["researcher", "reviewer", "extra"]
-    assert opts.agents["researcher"].prompt == "shared research prompt"
-    assert opts.agents["researcher"].tools == ["Read", "Grep"]
-    assert opts.agents["researcher"].model == "sonnet"
-    # 同名は inline が勝ち、位置だけ refs の記載順を保つ。
-    assert opts.agents["reviewer"].prompt == "inline review prompt"
-    assert opts.agents["reviewer"].model == "opus"
-    assert opts.agents["extra"].prompt == "inline extra prompt"
-
-
-def test_inline_agents_without_refs_keep_existing_behaviour(tmp_path):
-    """agent_refs を使わない preset の agents は従来どおり inline だけで組み立てる。"""
-    yaml_file = tmp_path / "config.yml"
-    yaml_file.write_text(textwrap.dedent("""
-        agent_definitions:
-          researcher:
-            description: 参照されない収蔵庫の agent
-            prompt: unused prompt
-        models:
-          inline-only:
-            agents:
-              helper:
-                description: inline helper
-                prompt: inline helper prompt
-          no-agents:
-            bare: true
-    """))
-
-    with patch.dict(os.environ, {"KOTOYOSE_CONFIG": str(yaml_file)}):
-        config = _load_yaml_config()
-    with patch("kotoyose.config._config", config):
-        inline_only = build_options("inline-only")
-        no_agents = build_options("no-agents")
-
-    # 収蔵庫に定義があっても、参照しない preset へは一切注入されない。
-    assert list(inline_only.agents) == ["helper"]
-    assert inline_only.agents["helper"].prompt == "inline helper prompt"
-    assert no_agents.agents is None
-
-
-def test_duplicate_agent_refs_rejected():
-    """同じ agent の二重参照は保存前に拒否する。"""
-    with pytest.raises(ValueError, match="重複"):
-        ModelPreset(agent_refs=["researcher", "researcher"])
+    inline = tmp_path / "inline.yml"
+    inline.write_text("models:\n  chat:\n    agents: {}\n")
+    with patch.dict(os.environ, {"KOTOYOSE_CONFIG": str(inline)}):
+        with pytest.raises(ValueError, match=message) as agents:
+            _load_yaml_config()
+    assert "agents" in str(agents.value)
 
 
 @pytest.mark.parametrize(
@@ -1353,7 +1295,6 @@ def test_mcp_header_template_accepts_case_insensitive_declared_request_header(tm
     [
         ("skill_refs", "skill_definitions: {}"),
         ("mcp_refs", "mcps: {}"),
-        ("agent_refs", "agent_definitions: {}"),
     ],
 )
 def test_unknown_resource_reference_rejected_at_config_load(
@@ -1500,94 +1441,8 @@ def test_duplicate_resource_references_rejected(field):
         ModelPreset(**{field: ["base", "base"]})
 
 
-def test_agents_passed_to_options(tmp_path):
-    """agents が ClaudeAgentOptions.agents に AgentDefinition として渡る。"""
-    yaml_content = textwrap.dedent("""
-        models:
-          task-model:
-            agents:
-              researcher:
-                description: read-only research agent
-                prompt: summarize findings with evidence
-                tools: [Read, Grep, Glob, WebFetch, WebSearch]
-                model: haiku
-    """)
-    yaml_file = tmp_path / "config.yml"
-    yaml_file.write_text(yaml_content)
-    with patch.dict(os.environ, {"KOTOYOSE_CONFIG": str(yaml_file)}):
-        config = _load_yaml_config()
-    with patch("kotoyose.config._config", config):
-        opts = build_options("task-model")
-
-    assert opts.agents is not None
-    researcher = opts.agents["researcher"]
-    assert researcher.description == "read-only research agent"
-    assert researcher.prompt == "summarize findings with evidence"
-    assert researcher.tools == ["Read", "Grep", "Glob", "WebFetch", "WebSearch"]
-    assert researcher.model == "haiku"
-
-
-def test_agent_tools_omitted_inherits_sdk_default(tmp_path):
-    """agent.tools 省略時は None を渡し、SDK 側の継承挙動を保つ。"""
-    yaml_content = textwrap.dedent("""
-        models:
-          task-model:
-            agents:
-              researcher:
-                description: read-only research agent
-                prompt: summarize findings with evidence
-                model: haiku
-    """)
-    yaml_file = tmp_path / "config.yml"
-    yaml_file.write_text(yaml_content)
-    with patch.dict(os.environ, {"KOTOYOSE_CONFIG": str(yaml_file)}):
-        config = _load_yaml_config()
-    with patch("kotoyose.config._config", config):
-        opts = build_options("task-model")
-
-    assert opts.agents is not None
-    assert opts.agents["researcher"].tools is None
-
-
-def test_agent_tools_empty_list_disables_tools_explicitly(tmp_path):
-    """agent.tools: [] は None と区別し、ツールなし固定として渡す。"""
-    yaml_content = textwrap.dedent("""
-        models:
-          task-model:
-            agents:
-              researcher:
-                description: no-tool agent
-                prompt: answer without tools
-                tools: []
-                model: haiku
-    """)
-    yaml_file = tmp_path / "config.yml"
-    yaml_file.write_text(yaml_content)
-    with patch.dict(os.environ, {"KOTOYOSE_CONFIG": str(yaml_file)}):
-        config = _load_yaml_config()
-    with patch("kotoyose.config._config", config):
-        opts = build_options("task-model")
-
-    assert opts.agents is not None
-    assert opts.agents["researcher"].tools == []
-
-
-def test_agent_model_invalid_value_rejected():
-    """agents.*.model は SDK が受け付ける tier alias だけを許可する。"""
-    from pydantic import ValidationError
-
-    with pytest.raises(ValidationError):
-        ModelPreset(agents={
-            "researcher": {
-                "description": "bad model",
-                "prompt": "noop",
-                "model": "banana",
-            },
-        })
-
-
-def test_agents_none_when_not_configured(tmp_path):
-    """agents 未設定なら ClaudeAgentOptions.agents は None。"""
+def test_claude_options_always_disallow_builtin_subagent_tools(tmp_path):
+    """deny が空でも Task と Agent は disallowed_tools に入る。既存の deny は残す。"""
     yaml_file = tmp_path / "config.yml"
     yaml_file.write_text("models:\n  any-model: {}\n")
     with patch.dict(os.environ, {"KOTOYOSE_CONFIG": str(yaml_file)}):
@@ -1597,6 +1452,7 @@ def test_agents_none_when_not_configured(tmp_path):
          patch.dict(os.environ, {"ANTHROPIC_AUTH_TOKEN": "", "ANTHROPIC_API_KEY": ""}, clear=False):
         opts = build_options("any-model")
     assert opts.agents is None
+    assert opts.disallowed_tools == ["Task", "Agent"]
 
 
 def test_omitted_cwd_is_expanded_like_explicit_cwd(tmp_path):
@@ -1640,11 +1496,10 @@ def test_config_example_loads_and_validates():
         "claude", "codex", "cursor", "antigravity",
     }
 
-    # 参照機構の実演 preset が 4 種の *_refs すべてを実際に解決できること
+    # 参照機構の実演 preset が skill / mcp / prompt の *_refs を実際に解決できること
     refs_demo = config.models["kotoyose-with-refs"]
     plugins, skills, mcp_servers = config.resolve_resources(refs_demo)
     assert plugins and skills and mcp_servers
-    assert list(config.resolve_agents(refs_demo)) == ["researcher"]
     assert config.resolve_prompt_files(refs_demo)
 
     # 読み手がエージェントの作業場所を推測せずに済むよう、全 preset が cwd を明示する。
@@ -1669,8 +1524,6 @@ def test_config_recipes_loads_and_validates():
     assert "RemoteTrigger" in coding.deny
     assert "WebFetch(*)" not in coding.deny
     assert "WebSearch(*)" not in coding.deny
-    assert coding.agents["researcher"].model == "haiku"
-    # researcher はリクエスト doc の対象 2 preset 両方に配線されている必要がある
     assert "orchestrator-task-agent" in config.models
     task_agent = config.models["orchestrator-task-agent"]
     assert task_agent.bare is False
@@ -1680,7 +1533,6 @@ def test_config_recipes_loads_and_validates():
     assert "RemoteTrigger" in task_agent.deny
     assert "WebFetch(*)" not in task_agent.deny
     assert "WebSearch(*)" not in task_agent.deny
-    assert task_agent.agents["researcher"].model == "haiku"
 
 
 def test_committed_example_bundle_is_valid_plugin():
@@ -1983,7 +1835,7 @@ def test_tools_independent_of_deny(tmp_path):
     with patch("kotoyose.config._config", config):
         opts = build_options("test-model")
     assert opts.tools == []
-    assert opts.disallowed_tools == ["Bash(*)"]
+    assert opts.disallowed_tools == ["Bash(*)", "Task", "Agent"]
 
 
 def test_replaced_configuration_keys_are_rejected():

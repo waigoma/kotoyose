@@ -8,7 +8,7 @@ import json
 from importlib.metadata import version
 import os
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from dataclasses import asdict
 
@@ -36,6 +36,9 @@ from .execution_resources import (
     agent_model_allowed, agent_profile_allowed, resolve_agent_model, codex_authentication_binding, codex_profile_authentication,
 )
 from .execution_store import ExecutionStore
+from .client_tool_bridge import ClientToolCallOutcome
+from .delegation import redact_token
+from .execution_delegation import ASK_AGENT, LIST_AGENTS, MAX_TASK_BYTES, TOOL_SPECS, DelegationCalls, targets
 from .execution_output_guard import check_artifacts, check_workspace, workspace_state
 from .output_guard import LEAK_MESSAGE, LEAK_REASON, guard_enabled
 from .agent_spec import HOST_CODING
@@ -60,6 +63,16 @@ _IMPLEMENTED = (
     "memory_bootstrap", "client_tools", "agent_execution_v1",
 )
 
+
+
+def _raise_site(exc: BaseException) -> str | None:
+    """例外が起きた一番内側の frame を、本文を含めずに module:line で返す。"""
+    tb = exc.__traceback__
+    if tb is None:
+        return None
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    return f"{tb.tb_frame.f_globals.get('__name__', '?')}:{tb.tb_lineno}"
 
 class ExecutionService:
     """LocalWorker の単一 coordinator。別プロセスの二重起動は DB lease で拒む。"""
@@ -599,12 +612,13 @@ class ExecutionService:
             self._schedule(attempt)
         return attempt["id"]
 
-    def _schedule(self, attempt: dict, *, after: Callable[[dict], Awaitable[None]] | None = None) -> asyncio.Event:
-        cancel = asyncio.Event()
+    def _schedule(self, attempt: dict, *, after: Callable[[dict], Awaitable[None]] | None = None,
+                  cancel: asyncio.Event | None = None) -> asyncio.Event:
+        cancel = cancel if cancel is not None else asyncio.Event()
         self._cancels[attempt["id"]] = cancel
         async def run():
             try:
-                await self._execute(attempt, cancel)
+                return await self._execute(attempt, cancel)
             finally:
                 if after is not None:
                     await after(attempt)
@@ -676,7 +690,9 @@ class ExecutionService:
     async def describe(self, principal: str, attempt_id: str) -> dict:
         """内部の host path/env を wire に出さず、結果と安全状態を返す。"""
         row = await self.store.attempt(principal, attempt_id)
-        generation = row["generation"] + (row["stop_confirmation"] == "confirmed" and row["side_effect_resolution"] == "resolved")
+        delegated = row["snapshot"].get("parent_attempt_id")
+        generation = row["generation"] + (not delegated and row["stop_confirmation"] == "confirmed"
+                                          and row["side_effect_resolution"] == "resolved")
         compression = {}
         if row['snapshot'].get('compression_policy') is not None:
             compression = {'compression': {'policy': row['snapshot']['compression_policy'], **(await self.store.context_observation(attempt_id))}}
@@ -687,6 +703,7 @@ class ExecutionService:
         return {
             **compression,
             **authentication,
+            **({key: row["snapshot"][key] for key in ("parent_attempt_id", "delegated_by", "depth")} if delegated else {}),
             **({"resolved_model": row["snapshot"]["resolved_model"]} if "resolved_model" in row["snapshot"] else {}),
             **({"resume_manifest": row["snapshot"]["resume_manifest"],
                 "resume_manifest_digest": row["snapshot"]["resume_manifest_digest"],
@@ -732,7 +749,62 @@ class ExecutionService:
         except Exception as exc:
             log.warning("model_pool.observe_failed", error_type=type(exc).__name__)
 
-    async def _execute(self, attempt: dict, cancel: asyncio.Event) -> None:
+    async def _delegation_tool(self, parent, calls, tool_ref, arguments, remaining_seconds):
+        from .config import get_config
+        from .execution_resources import authenticate_client
+
+        try:
+            if calls.closed or calls.cancel.is_set() or remaining_seconds() <= 0:
+                raise ExecutionError("tool_denied", "Parent execution is stopping", 409)
+            _, policy = authenticate_client(parent["principal"])
+            if tool_ref == LIST_AGENTS and not arguments:
+                agents = targets(get_config(), parent["snapshot"]["alias"], policy, self.config)
+                return ClientToolCallOutcome("succeeded", agents)
+            if tool_ref != ASK_AGENT or set(arguments) - {"alias", "task", "conversation_id"}:
+                raise ExecutionError("invalid_request", "Invalid delegation arguments", 400)
+            if "conversation_id" in arguments:
+                raise ExecutionError("invalid_request", "conversation_id is unsupported for jailed delegation", 400)
+            alias, task = arguments.get("alias"), arguments.get("task")
+            if (not isinstance(alias, str) or not isinstance(task, str) or not task.strip()
+                    or len(task.encode("utf-8", errors="replace")) > MAX_TASK_BYTES or redact_token(task) != task):
+                raise ExecutionError("invalid_request", "A valid alias and non-empty task are required", 400)
+            deadline = datetime.now(timezone.utc) + timedelta(seconds=max(0, remaining_seconds()))
+            return await calls.run(lambda stop: self._run_delegated_child(parent, policy, alias, task, deadline, stop))
+        except ExecutionError as exc:
+            return ClientToolCallOutcome("failed", {"error": redact_token(str(exc))})
+        except Exception as exc:
+            # 例外の本文には依頼文などが入り得るので残さない。種類と、起きた場所 (module:line) だけを残す。
+            log.warning("execution.delegation_failed", error_type=type(exc).__name__, at=_raise_site(exc))
+            return ClientToolCallOutcome("failed", {"error": "Delegated execution failed"})
+
+    async def _run_delegated_child(self, parent, policy, alias, task, deadline, stop):
+        principal = parent["principal"]
+        self._require_accepting()
+        request, snapshot = await self.admission.resolve_shared_child(parent, policy, alias, task, deadline)
+        if stop.is_set():
+            raise ExecutionError("tool_denied", "Parent execution is stopping", 409)
+        self._require_accepting()
+        child, _ = await self.store.admit(principal, request.model_dump(mode="json"), snapshot, policy.max_concurrent)
+        self._schedule(child, cancel=stop)
+        execution = self._tasks[child["id"]]
+        cancellation = asyncio.create_task(stop.wait())
+        try:
+            await asyncio.wait({execution, cancellation}, return_when=asyncio.FIRST_COMPLETED)
+            if stop.is_set() and not execution.done():
+                await self.store.cancel(principal, child["id"], "parent_execution_ended")
+        finally:
+            cancellation.cancel()
+            result = await asyncio.shield(execution)
+        if stop.is_set() or not result or result[0] != "succeeded" or result[2] != "confirmed":
+            reason = result[1] if result else "stopped_before_start"
+            raise ExecutionError("delegated_execution_failed", f"Delegated execution failed ({reason})", 409)
+        _, _, _, content, usage = result
+        return ClientToolCallOutcome("succeeded", {
+            "text": content.decode("utf-8", errors="replace"),
+            **({"usage": usage} if usage.get("source") == "reported" else {}),
+        })
+
+    async def _execute(self, attempt: dict, cancel: asyncio.Event) -> tuple[str, str | None, str | None, bytes, dict] | None:
         attempt_id, snapshot = attempt["id"], attempt["snapshot"]
         warning = None
         launched = False
@@ -742,6 +814,7 @@ class ExecutionService:
         interaction: AgentInteraction | None = None
         terminal = ("failed", "worker_failure", "unconfirmed", b"", {})
         artifacts = {}
+        calls = DelegationCalls(cancel) if snapshot.get("delegation_tools") else None
         try:
             grant = await self.store.resource(attempt["principal"], attempt["request"]["execution_grant_ref"])
             agent_activation = snapshot.get('agent_activation')
@@ -787,8 +860,15 @@ class ExecutionService:
                 baseline = await asyncio.to_thread(workspace_state, path) if inspect_workspace else {}
                 interaction = AgentInteraction(attempt)
                 launched = True
-                result = await self.agent_executor.execute(attempt, cancel, worker=worker,
-                                                           interaction=interaction, runtime_entry=runtime_entry)
+                async def delegate(tool_ref, args, remaining):
+                    return await self._delegation_tool({**attempt, "status": "running"}, calls, tool_ref, args, remaining)
+
+                result = await self.agent_executor.execute(
+                    attempt, cancel, worker=worker, interaction=interaction, runtime_entry=runtime_entry,
+                    **({"delegation_call": delegate} if calls is not None else {}),
+                )
+                if calls is not None:
+                    await calls.close()
                 agent_launch_outcome = result.launch_outcome
                 operations = await self.store.operations(attempt_id)
                 stop = result.stop_confirmation
@@ -830,7 +910,7 @@ class ExecutionService:
                     status, reason, stop = finished
                 await self._observe_pool(snapshot, status, result.provider_limit, reason=reason)
                 terminal = (status, reason, stop, result.content, result.usage)
-                return
+                return terminal
             job = CommandJob(
                 attempt_id=attempt_id, generation=attempt["generation"], workspace=path,
                 argv=tuple(snapshot["argv"]), cwd=snapshot["cwd"], env=snapshot["env"],
@@ -858,6 +938,8 @@ class ExecutionService:
             terminal = ("cancelled", "execution_cancelled", "unconfirmed", b"", {})
             raise
         except Exception as exc:
+            if calls is not None:
+                await calls.close()
             from .agent_deadlines import AgentStartRejected
             # Artifact 保存後処理の障害で、既に得た停止証拠を GC 済み unit の再照会で失わない。
             stop = ("confirmed" if observed_stop == "confirmed" or not launched or isinstance(exc, AgentStartRejected)
@@ -883,7 +965,10 @@ class ExecutionService:
                 await self._observe_pool(snapshot, status, None, reason=reason, error_detail=error_detail)
             terminal = (status, reason, stop, b"", {})
             log.warning("execution.failed", attempt_id=attempt_id, reason=reason)
+            return terminal
         finally:
+            if calls is not None:
+                await calls.close()
             from .artifact_file import ArtifactFile
             for artifact in artifacts.values():
                 if isinstance(artifact, CapturedArtifact) and isinstance(artifact.content, ArtifactFile):
@@ -1046,7 +1131,7 @@ class ExecutionService:
                 # Claude coding は Codex の sandbox / tool policy の pin を持たない。container の中で動く。
                 if (snapshot.get("kind") != "agent" or snapshot.get("backend") != "native"
                         or snapshot.get("worker_id") != PROVIDER_WORKER_ID
-                        or set(snapshot.get("tool_refs", [])) != expected
+                        or set(snapshot.get("tool_refs", [])) - TOOL_SPECS.keys() != expected
                         or snapshot.get("image_id") is not None
                         or snapshot.get("worker_capabilities") != CodexProviderExecutor.public_snapshot()):
                     raise ExecutionError("request_conflict", "Pinned host coding executor changed", 409)
@@ -1061,7 +1146,7 @@ class ExecutionService:
                 raise ExecutionError("request_conflict", "Pinned host coding sandbox is unsupported", 409) from exc
             if (snapshot.get("kind") != "agent" or snapshot.get("backend") != "native"
                     or provider != "codex" or snapshot.get("worker_id") != PROVIDER_WORKER_ID
-                    or set(snapshot.get("tool_refs", [])) != expected
+                    or set(snapshot.get("tool_refs", [])) - TOOL_SPECS.keys() != expected
                     or snapshot.get("image_id") is not None
                     or snapshot.get("worker_capabilities") != CodexProviderExecutor.public_snapshot()):
                 raise ExecutionError("request_conflict", "Pinned host coding executor changed", 409)

@@ -26,6 +26,7 @@ from .connection_state_store import ConnectionStateStore, set_connection_state_s
 from .connections_probe import connection_probe_loop
 from .conversation.compose import create_conversations
 from .db import close_db, init_db
+from .delegation_mcp import DelegationMCP, delegation_route
 from .execution_bootstrap import start_execution_service
 from .execution_resources import ExecutionError
 from .logging_setup import configure_logging
@@ -41,6 +42,26 @@ from .session import evict_expired_sessions, session_cache_identities, sessions,
 log = structlog.get_logger()
 
 _TTL_CHECK_INTERVAL = 60  # seconds
+
+
+_EFFORT_WARM_DELAY = 10.0
+_EFFORT_WARM_INTERVAL = 4 * 3600.0
+
+
+async def _effort_warm_loop(app_state) -> None:
+    """起動の少し後と、その後は一定間隔で、alias の model の使える effort を取得しておく。"""
+    from .model_discovery import warm_reasoning_efforts
+
+    await asyncio.sleep(_EFFORT_WARM_DELAY)
+    while True:
+        try:
+            warmed = await warm_reasoning_efforts(
+                get_config(), execution_service=getattr(app_state, "execution_service", None),
+            )
+            log.info("model_discovery.efforts_warmed", connections=warmed)
+        except Exception as exc:  # noqa: BLE001 - the loop must keep running
+            log.warning("model_discovery.effort_warm_loop_failed", error_type=type(exc).__name__)
+        await asyncio.sleep(_EFFORT_WARM_INTERVAL)
 
 
 async def _ttl_loop() -> None:
@@ -105,6 +126,7 @@ async def lifespan(app: FastAPI):
     )
     ttl_task = asyncio.create_task(_ttl_loop())
     probe_task = asyncio.create_task(connection_probe_loop(app_state=app.state))
+    effort_task = asyncio.create_task(_effort_warm_loop(app.state))
     log.info("app.started")
     try:
         yield
@@ -112,6 +134,11 @@ async def lifespan(app: FastAPI):
         probe_task.cancel()
         try:
             await probe_task
+        except asyncio.CancelledError:
+            pass
+        effort_task.cancel()
+        try:
+            await effort_task
         except asyncio.CancelledError:
             pass
         await shutdown_login_sessions()
@@ -148,6 +175,13 @@ async def lifespan(app: FastAPI):
         log.info("app.stopped")
 
 
+@asynccontextmanager
+async def app_lifespan(app: FastAPI):
+    app.state.delegation_mcp = DelegationMCP()
+    async with app.state.delegation_mcp.manager.run(), lifespan(app):
+        yield
+
+
 app = FastAPI(
     title="Kotoyose",
     description=(
@@ -163,11 +197,12 @@ app = FastAPI(
         '`"stream": true` で SSE (Server-Sent Events) ストリーミング応答が利用可能です。'
     ),
     version="0.2.0",
-    lifespan=lifespan,
+    lifespan=app_lifespan,
 )
 app.state.api_key_store = ApiKeyStore()
 app.state.secret_store = None
 app.add_middleware(RequestIDMiddleware)
+app.router.routes.append(delegation_route())
 app.include_router(health.router)
 app.include_router(models_api.router)
 app.include_router(chat.router)

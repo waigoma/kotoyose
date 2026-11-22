@@ -30,10 +30,11 @@ def _text_content(content, types):
             raise ValueError("egress_denied")
 
 
-def validate_input(items, has_tool, image_uris: tuple[str, ...] = (), *, coding: bool = False):
+def validate_input(items, has_tool, image_uris: tuple[str, ...] = (), *, coding: bool = False, function_names=None):
     """remote media/files、AdditionalTools、未知の API input を推論前に拒否する。"""
     if not isinstance(items, list):
         raise ValueError("egress_denied")
+    names = function_names if function_names is not None else ({"exec_command", "write_stdin"} if coding else {"sandbox_exec"})
     observed = []
     for item in items:
         if not isinstance(item, dict):
@@ -56,8 +57,7 @@ def validate_input(items, has_tool, image_uris: tuple[str, ...] = (), *, coding:
                 else:
                     _text_content([part], {"input_text", "output_text"})
         elif kind == "function_call":
-            names = {"exec_command", "write_stdin"} if coding else {"sandbox_exec"}
-            if (not has_tool or item.get("name") not in names
+            if (not has_tool or not isinstance(item.get("name"), str) or item["name"] not in names
                     or not isinstance(item.get("arguments"), str)
                     or set(item) - {"type", "id", "call_id", "name", "arguments", "status"}):
                 raise ValueError("egress_denied")

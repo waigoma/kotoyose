@@ -163,3 +163,66 @@ async def test_first_turn_stream_error_disconnects_uncached_client():
     assert response.status_code == 200
     assert "[Error: stream interrupted]" in response.text
     client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.parametrize("event_header", [None, "0", "1"])
+async def test_streaming_runtime_events_opt_in(event_header):
+    from kotoyose.runtime.base import RuntimeEvent
+
+    async def stream_runtime(client, prompt):
+        yield "before"
+        yield RuntimeEvent("tool_call", "read", "pending", {"tool_call_id": "call", "title": "cat a.py", "private": True})
+        yield RuntimeEvent("tool_use", "Bash", "x" * 300, {"tool_use_id": "use"})
+        yield RuntimeEvent("thinking", summary="hidden")
+        yield "after"
+        yield RuntimeEvent("tool_call_update", summary="completed", payload={"tool_call_id": "call"})
+        yield RuntimeEvent("tool_result", "Bash", "error: boom", {"tool_use_id": "use", "is_error": True})
+        yield RuntimeEvent("tool_call", payload={"tool_call_id": "x" * 257})
+        yield (None, {"input_tokens": 5, "output_tokens": 2, "cost_usd": 0.1}, None)
+
+    with (
+        patch("kotoyose.routes.chat.get_or_resume_client", new=AsyncMock(return_value=(AsyncMock(), False))),
+        patch("kotoyose.routes.chat.stream_claude", new=stream_runtime),
+        patch("kotoyose.routes.chat.guard_enabled", return_value=True),
+        patch("kotoyose.routes.chat._rotate_hash_key", new=AsyncMock()),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=TEST_API_HEADERS,
+        ) as client:
+            response = await client.post(
+                "/v1/chat/completions",
+                headers={} if event_header is None else {"X-Kotoyose-Events": event_header},
+                json={"model": "kotoyose-chat", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+            )
+    assert response.status_code == 200
+    lines = response.text.splitlines()
+    assert lines[-2] == "data: [DONE]"
+    chunks = [json.loads(line[6:]) for line in lines if line.startswith("data: {")]
+    if event_header != "1":
+        assert len(chunks) == 3
+        assert chunks[1]["choices"][0]["delta"]["content"] == "beforeafter"
+        assert "usage" not in chunks[-1]
+        assert all(chunk["object"] == "chat.completion.chunk" for chunk in chunks)
+        return
+
+    assert chunks[1]["choices"][0]["delta"]["content"] == "before"
+    assert chunks[2] == {
+        "object": "kotoyose.event", "kind": "tool_call", "tool_call_id": "call",
+        "title": "cat a.py", "tool_kind": "read", "status": "pending",
+    }
+    assert chunks[3] == {
+        "object": "kotoyose.event", "kind": "tool_call", "tool_call_id": "use",
+        "title": ("Bash: " + "x" * 300)[:200], "tool_kind": "execute", "status": "in_progress",
+    }
+    assert chunks[4]["choices"][0]["delta"]["content"] == "after"
+    assert chunks[5] == {
+        "object": "kotoyose.event", "kind": "tool_call_update", "tool_call_id": "call",
+        "title": "tool", "tool_kind": "other", "status": "completed",
+    }
+    assert chunks[6] == {
+        "object": "kotoyose.event", "kind": "tool_call_update", "tool_call_id": "use",
+        "tool_kind": "execute", "status": "failed",
+    }
+    chunks = chunks[:6] + chunks[7:]
+    assert chunks[6]["usage"]["prompt_tokens"] == 5
+    assert chunks[6]["usage"]["cost_usd"] == 0.1

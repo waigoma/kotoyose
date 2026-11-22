@@ -3,6 +3,8 @@
 import re
 from dataclasses import dataclass
 
+from .delegation import TOKEN_PATTERN
+
 
 @dataclass(frozen=True, slots=True)
 class Finding:
@@ -28,6 +30,7 @@ _PATTERNS = (
     ("openai_api_key", r"sk-(?<![A-Za-z0-9_]sk-)[A-Za-z0-9]{40,}"),
     ("google_oauth_access", r"ya29\.[A-Za-z0-9_-]{24,}"),
     ("google_oauth_refresh", r"1//0[A-Za-z0-9_-]{24,}"),
+    ("kotoyose_delegation_token", TOKEN_PATTERN),
     ("cursor_api_key", r"crsr_[A-Za-z0-9_-]{24,}"),
     ("xai_api_key", r"xai-[A-Za-z0-9_-]{32,}"),
     # A header alone is sufficient, including PKCS#8 and OpenSSH variants.

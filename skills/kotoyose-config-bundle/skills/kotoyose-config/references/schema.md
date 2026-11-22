@@ -11,7 +11,6 @@
 | `mcps` | `dict[str, McpDefinition]` | 共有 MCP server 定義。`mcp_refs` で参照 |
 | `prompt_files` | `dict[str, PromptFileDefinition]` | 共有 system prompt file。`prompt_file_refs` で参照 |
 | `skill_definitions` | `dict[str, SkillDefinition]` | 共有 Skill 定義。`skill_refs` で参照 |
-| `agent_definitions` | `dict[str, AgentPreset]` | 共有 subagent 定義。`agent_refs` で参照 |
 | `runtime_models` | `dict[str, RuntimeModelDefinition]` | provider + model + 接続先の組。`runtime_ref` で参照 |
 | `settings` | `HarnessSettings` | provider 認証情報。Admin UI の Settings 画面が書き込む |
 
@@ -63,9 +62,11 @@ inline の `plugins` は skill_refs 由来ではないので残る。
 本文は `resolve_prompt_texts` が連結して system prompt へ append する。
 **存在しないファイルは黙ってスキップされる** (`config.py:766-784`)。
 
-### `agent_refs` — `config.py:594-602`
+### 別 alias への委譲
 
-参照名がそのまま subagent 名になる。記載順に合成し、**同名の inline `agents` が勝つ**。
+provider の subagent (`agent_definitions` / `agent_refs` / inline `agents`) は撤去した。
+設定に残っていると load が失敗する。委譲は `mcp_refs: [kotoyose]` と `delegates` で行う。
+Claude の Task / Agent ツールは常に無効。
 
 ### `runtime_ref` — `config.py:522-564`
 
@@ -98,7 +99,7 @@ preset が `null` のときだけ definition の値が使われる。
 |---|---|---|---|
 | `bare` | `bool` | `true` | `--bare`。CLAUDE.md / MCP / skills / agents / commands の自動検出を無効化 |
 | `tools` | `list[str] \| null` | `null` | built-in tool の allowlist。`null` = 全部、`[]` = built-in 無し (MCP tool は別枠で影響なし) |
-| `deny` | `list[str]` | `[]` | `disallowed_tools`。`tools` と併用可 |
+| `deny` | `list[str]` | `[]` | `disallowed_tools`。`tools` と併用可。Claude では `Task` と `Agent` が常に追加される |
 | `permission_mode` | `default` \| `acceptEdits` \| `bypassPermissions` \| `plan` \| `dontAsk` | `bypassPermissions` | |
 | `setting_sources` | `list["user"\|"project"\|"local"] \| null` | `null` | `null` は `build_options` で `["project"]` へ落ちる。`[]` = 一切読まない |
 | `require_isolation` | `bool` | `false` | `true` かつ `bare: false` なら `setting_sources: []` を強制 |
@@ -112,9 +113,9 @@ preset が `null` のときだけ definition の値が使われる。
 
 | キー | 型 | 既定 | 備考 |
 |---|---|---|---|
-| `mcp_refs` / `prompt_file_refs` / `skill_refs` / `agent_refs` | `list[str]` | `[]` | 同一リスト内の重複は ValidationError |
+| `mcp_refs` / `prompt_file_refs` / `skill_refs` | `list[str]` | `[]` | 同一リスト内の重複は ValidationError。`mcp_refs: [kotoyose]` は組み込みの委譲 MCP |
+| `delegates` | `list[str]` | `[]` | 委譲先 alias。`mcp_refs: [kotoyose]` と組で使う |
 | `mcp_servers` | `dict[str, dict]` | `{}` | inline 定義。§6 のスキーマ検証あり |
-| `agents` | `dict[str, AgentPreset]` | `{}` | inline 定義 |
 | `plugins` | `list[str]` | `[]` | 束ディレクトリ。存在と `.claude-plugin/plugin.json` を起動時に検証 |
 | `skills` | `list[str]` \| `"all"` \| `null` | `null` | §3 の 4 番 |
 | `required_request_headers` | `list[str]` | `[]` | MCP header の `{{header:X}}` を使うなら宣言必須 |
@@ -144,15 +145,6 @@ hook 自体は commit `d1e51c5` で撤去済み。YAML の round-trip 維持の�
 | `antigravity` | `runtime/antigravity_sdk.py` | `sdk` 内の `api_key_env`, `vertex`, `project`, `location`, `timeout_seconds` |
 
 ## 5. サブ定義のスキーマ
-
-### `AgentPreset` (`config.py:75-81`)
-
-| キー | 型 | 既定 |
-|---|---|---|
-| `description` | `str` | 必須 |
-| `prompt` | `str` | 必須 |
-| `tools` | `list[str] \| null` | `null` = **親の全ツールを継承 (Bash 含む)**。read-only 用途では必ず明示 |
-| `model` | `haiku` \| `sonnet` \| `opus` \| `inherit` | `inherit` |
 
 ### `SkillDefinition`
 

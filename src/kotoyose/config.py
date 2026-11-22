@@ -26,6 +26,7 @@ from .agent_spec import (
     DataPolicy, PlaceName, SurfaceName, driver_manifest, execution_environment_error, explicit_sandbox_error,
     host_sandbox_default, native_execution_error, output_schema_error,
 )
+from .delegation import KEY_PREFIX, MCP_NAME, inject_delegation_server
 from .data_policy import TrainingCapability, alias_data_policy, configured_capabilities
 from .compatibility_config import CompatibilityConfig, NativeAliasSettings, load_compatibility_config
 from .registry import registry
@@ -380,13 +381,22 @@ class AgentRoute(BaseModel):
         return value
 
 
-class AgentPreset(BaseModel):
-    """Claude SDK の AgentDefinition へ変換する設定上の subagent 定義。"""
+_REMOVED_ALIAS_SUBAGENT_KEYS = ("agent_refs", "agents")
+_REMOVED_ROOT_SUBAGENT_KEYS = ("agent_definitions",)
 
-    description: str
-    prompt: str
-    tools: list[str] | None = None
-    model: Literal["haiku", "sonnet", "opus", "inherit"] = "inherit"
+
+def _reject_removed_subagent_config(value: object, keys: tuple[str, ...]) -> None:
+    """旧 subagent キーは extra=forbid より先に、委譲の置き換え先を示して拒否する。"""
+    if not isinstance(value, Mapping):
+        return
+    present = [key for key in keys if key in value]
+    if not present:
+        return
+    listed = ", ".join(present)
+    verb = "was" if len(present) == 1 else "were"
+    raise ValueError(
+        f"{listed} {verb} removed; delegate with mcp_refs: [kotoyose] and delegates"
+    )
 
 
 AllowCapability = Literal["web", "browser", "desktop"]
@@ -423,6 +433,10 @@ class AliasAllow(BaseModel):
 class ModelPreset(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    description: str = Field(default="", exclude_if=lambda value: not value)
+    delegates: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
+    # False の alias は委譲の先 (list_agents / ask_agent / delegates) にならない。人格や個人の記憶を持つ alias 向け。
+    delegable: bool = Field(default=True, exclude_if=lambda value: value is True)
     execution: Literal["direct", "native"] = "direct"
     # Placement is independent of the chat execution mode. An absent choice preserves
     # existing routing, SDK defaults, and serialized configuration digests.
@@ -559,14 +573,6 @@ class ModelPreset(BaseModel):
     # plugins で読み込んだ束の中から名前で絞る。
     skills: list[str] | Literal["all"] | None = None
 
-    agent_refs: list[str] = Field(default_factory=list)  # HarnessConfig.agent_definitions の参照名
-
-    # Claude SDK にプログラマティック定義として渡す subagent 群。
-    # bare:true でもファイル自動検出に頼らず明示的に注入できるため、
-    # 信頼境界を保ったまま preset ごとの補助 agent を構成できる。
-    # agent_refs との合成は HarnessConfig.resolve_agents が担い、同名は inline を優先する。
-    agents: dict[str, AgentPreset] = Field(default_factory=dict)
-
     # Opt-in, locally validated final JSON. Unsupported execution paths fail closed.
     output_schema: dict[str, object] | None = None
 
@@ -617,6 +623,7 @@ class ModelPreset(BaseModel):
     @classmethod
     def _reject_runtime_ref(cls, value: object) -> object:
         """runtime_ref は route に置き換えた。黙って捨てると、接続先が消えたように見える。"""
+        _reject_removed_subagent_config(value, _REMOVED_ALIAS_SUBAGENT_KEYS)
         if isinstance(value, dict):
             if "runtime_ref" in value:
                 raise ValueError("runtime_ref comes from route")
@@ -637,9 +644,32 @@ class ModelPreset(BaseModel):
     def _validate_on(cls, value: str) -> str:
         return _validate_no_whitespace(value, label="on")
 
+    @property
+    def is_direct_host_chat(self) -> bool:
+        return (
+            self.execution == "direct" and self.place != "jail"
+            and self.execution_environment != "isolated"
+            and (self.agent is None or self.agent.place != "isolated")
+        )
+
+    @property
+    def is_jailed(self) -> bool:
+        return (
+            self.place == "jail" or self.execution_environment == "isolated"
+            or (self.agent is not None and self.agent.place == "isolated")
+        )
+
+    @property
+    def is_jailed_read(self) -> bool:
+        return self.agent is not None and self.agent.place == "isolated" and self.agent.surface == "read"
+
     @model_validator(mode="after")
     def _validate_execution_axes(self) -> "ModelPreset":
         """place='host' では allow.full=True 以外で作業場アクセスや egress を許さない。"""
+        if MCP_NAME in self.mcp_refs and not (self.is_direct_host_chat or self.is_jailed):
+            raise ValueError("mcp_refs: kotoyose requires a direct host chat or jail alias")
+        if (self.fixed_conversation_key or "").startswith(KEY_PREFIX):
+            raise ValueError("fixed_conversation_key: delegate: is reserved")
         if self.place == "host" and self.allow is not None and not self.allow.full:
             if self.allow.workspace != "none":
                 raise ValueError("place='host' cannot set allow.workspace other than 'none' unless allow.full=True")
@@ -678,7 +708,7 @@ class ModelPreset(BaseModel):
     def expand_cwd(cls, v: str) -> str:
         return os.path.expanduser(v)
 
-    @field_validator("skill_refs", "mcp_refs", "prompt_file_refs", "agent_refs")
+    @field_validator("skill_refs", "mcp_refs", "prompt_file_refs")
     @classmethod
     def _reject_duplicate_profiles(cls, value: list[str]) -> list[str]:
         """同じ参照の二重指定による plugin / skill の重複注入を拒否する。"""
@@ -702,6 +732,8 @@ class ModelPreset(BaseModel):
         - url がある場合は type が 'http' または 'sse' のいずれかでなければならない
           (`url` だけ書いて `type` を忘れる事故が一番多い)
         """
+        if MCP_NAME in v:
+            raise ValueError("mcp_servers: kotoyose is reserved")
         for name, srv in v.items():
             if not isinstance(srv, dict):
                 raise ValueError(f"mcp_servers['{name}'] は dict でなければなりません")
@@ -1129,11 +1161,20 @@ class HarnessConfig(BaseModel):
     # API clients and their authorization / execution boundaries. Empty is omitted on save.
     clients: dict[str, Client] = Field(default_factory=dict, exclude_if=lambda value: not value)
     skill_definitions: dict[str, SkillDefinition] = Field(default_factory=dict)
-    agent_definitions: dict[str, AgentPreset] = Field(default_factory=dict)
     mcps: dict[str, McpDefinition] = Field(default_factory=dict)
     prompt_files: dict[str, PromptFileDefinition] = Field(default_factory=dict)
     settings: HarnessSettings = Field(default_factory=HarnessSettings)
     _compatibility_config: CompatibilityConfig | None = PrivateAttr(default=None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reserve_delegation_server(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            for field in ("mcps", "mcp_definitions"):
+                definitions = value.get(field)
+                if isinstance(definitions, Mapping) and MCP_NAME in definitions:
+                    raise ValueError(f"{field}: kotoyose is reserved")
+        return value
 
     @field_validator("clients")
     @classmethod
@@ -1155,6 +1196,7 @@ class HarnessConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _reject_replaced_models(cls, value: object) -> object:
+        _reject_removed_subagent_config(value, _REMOVED_ROOT_SUBAGENT_KEYS)
         if isinstance(value, dict) and "runtime_models" in value:
             raise ValueError("runtime_models has been replaced by routes")
         models = value.get("models") if isinstance(value, dict) else None
@@ -1370,6 +1412,13 @@ class HarnessConfig(BaseModel):
                     )
 
         for preset_name, preset in self.models.items():
+            for target in preset.delegates:
+                if target == preset_name or target not in self.models:
+                    raise ValueError(f"{preset_name}.delegates: invalid target '{target}' (self or unknown alias)")
+                if not self.models[target].delegable:
+                    raise ValueError(f"{preset_name}.delegates: '{target}' is not delegable (delegable: false)")
+                if preset.is_jailed and not self.models[target].is_jailed_read:
+                    raise ValueError(f"{preset_name}.delegates: '{target}' must be a jail read alias")
             if preset.route is not None and preset.route not in self.routes:
                 raise ValueError(f"{preset_name}.route: 不明な route '{preset.route}' です")
             if preset.agent is not None and preset.route is None:
@@ -1391,6 +1440,11 @@ class HarnessConfig(BaseModel):
                     raise ValueError(
                         f"{preset_name}.agent.place={preset.agent.place!r} は {manifest.driver} では使えません"
                     )
+            if (
+                MCP_NAME in preset.mcp_refs and preset.route is not None
+                and manifest.unmapped_backend == "print_cli" and (preset.is_jailed or route.driver != "cli.acp")
+            ):
+                raise ValueError(f"{preset_name}.mcp_refs: kotoyose requires an MCP-capable chat runtime")
             provider = route_provider if route_provider is not None else preset.provider
             if preset.execution == "native" and provider != "claude":
                 raise ValueError("execution='native' is supported only for claude aliases")
@@ -1410,11 +1464,8 @@ class HarnessConfig(BaseModel):
             for resource_name in preset.skill_refs:
                 if resource_name not in self.skill_definitions:
                     raise ValueError(f"{preset_name}.skill_refs: 不明な Skill '{resource_name}' です")
-            for resource_name in preset.agent_refs:
-                if resource_name not in self.agent_definitions:
-                    raise ValueError(f"{preset_name}.agent_refs: 不明な agent '{resource_name}' です")
             for resource_name in preset.mcp_refs:
-                if resource_name not in self.mcps:
+                if resource_name != MCP_NAME and resource_name not in self.mcps:
                     raise ValueError(f"{preset_name}.mcp_refs: 不明な MCP '{resource_name}' です")
             for resource_name in preset.prompt_file_refs:
                 if resource_name not in self.prompt_files:
@@ -1521,7 +1572,8 @@ class HarnessConfig(BaseModel):
             if skills != "all":
                 skills = [*(skills or []), resource.skill]
         for resource_name in preset.mcp_refs:
-            mcp_servers[resource_name] = dict(self.mcps[resource_name].server)
+            if resource_name != MCP_NAME:
+                mcp_servers[resource_name] = dict(self.mcps[resource_name].server)
 
         plugins.extend(preset.plugins)
         if preset.skills == "all" or preset.skills == []:
@@ -1534,16 +1586,6 @@ class HarnessConfig(BaseModel):
     def resolve_prompt_files(self, preset: ModelPreset) -> list[str]:
         """個別 prompt file を選択順で解決する。"""
         return [self.prompt_files[name].path for name in preset.prompt_file_refs]
-
-    def resolve_agents(self, preset: ModelPreset) -> dict[str, AgentPreset]:
-        """agent_refs を記載順で合成し、最後に inline agents を適用する。
-
-        参照名がそのまま subagent 名になる (mcp_refs と同じ流儀)。同名の inline 定義が
-        あれば inline を優先し、位置は最初に現れた順を保つ。
-        """
-        agents = {name: self.agent_definitions[name] for name in preset.agent_refs}
-        agents.update(preset.agents)
-        return agents
 
 
 def _find_claude_subscription_connection(
@@ -1889,6 +1931,7 @@ def build_options(
     request_headers: dict[str, str] | None = None,
     resolved_secrets: Mapping[str, str] | None = None,
     *, config: HarnessConfig | None = None,
+    effort_override: str | None = None,
 ) -> ClaudeAgentOptions:
     """モデル名に対応する ClaudeAgentOptions を返す。
 
@@ -1918,6 +1961,7 @@ def build_options(
                             **({"config": active} if config is not None else {})),
         session_store=get_default_store(),
         resolved_secrets=resolved_secrets,
+        effort_override=effort_override,
     )
 
 
@@ -2036,7 +2080,7 @@ async def resolve_preset_secrets_async(
 
 
 def _inject_mcp_request_headers(
-    mcp_servers: dict[str, dict], request_headers: dict[str, str],
+    mcp_servers: dict[str, dict], request_headers: dict[str, str], *, builtin_delegation: bool = False,
 ) -> dict[str, dict]:
     """MCP 設定中の request header テンプレートを接続時にだけ解決する。
 
@@ -2064,4 +2108,6 @@ def _inject_mcp_request_headers(
         headers = server.get("headers")
         if isinstance(headers, dict):
             server["headers"] = {key: replace(value) for key, value in headers.items()}
+    if builtin_delegation:
+        inject_delegation_server(resolved)
     return resolved

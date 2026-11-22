@@ -18,28 +18,17 @@ from .base import RuntimeEvent, RuntimePrompt, RuntimeResult, RuntimeTurnError, 
 from .translation import TranslatedRuntimeConfig, translate_runtime_config
 
 
-_TOOL_MAP = {
-    "Read": "view_file",
-    "Glob": "find_file",
-    "Grep": "search_directory",
-    "Bash": "run_command",
-    "Write": "create_file",
-    "Edit": "edit_file",
-    "WebSearch": "search_web",
-    "WebFetch": "read_url_content",
-}
-
-
 # Kotoyose owns these snapshots. Never call SDK read_only/default/all_tools helpers:
 # new SDK tools must not silently gain authority or outlive an HTTP turn.
+# invoke_subagent は provider subagent。委譲は Kotoyose MCP だけが行う。
 _SDK_VERSION = "0.1.23"
 _READ_ONLY_TOOLS = ("view_file", "read_url_content", "finish")
 _AUTONOMOUS_TOOLS = (
-    "view_file", "create_file", "edit_file", "run_command", "invoke_subagent",
+    "view_file", "create_file", "edit_file", "run_command",
     "generate_image", "search_web", "read_url_content", "finish",
 )
 _LIFESPAN_TOOLS = ("schedule", "manage_task")
-_COMMON_MODEL_ALIASES = frozenset({"haiku", "sonnet", "opus", "flash", "pro"})
+_DENIED_PROVIDER_TOOLS = ("invoke_subagent",)
 
 
 @dataclass(slots=True)
@@ -299,7 +288,7 @@ def _build_sdk_config_kwargs(
         "workspaces": [cwd],
         "mcp_servers": _build_sdk_mcp_servers(types, translated.mcp_servers),
         "skills_paths": [str(Path(skill.path).parent) for skill in translated.skills],
-        "subagents": _build_sdk_subagents(types, translated.agents, config.get("subagent_models")),
+        "subagents": [],
     }
     if translated.instructions:
         kwargs["system_instructions"] = translated.instructions
@@ -314,6 +303,10 @@ def _build_sdk_config_kwargs(
     policy = sdk["policy"]
     # Specific denies outrank the wildcard allow, including in allow_all mode.
     policies = [policy.deny(name, reason="Kotoyose does not support tasks beyond the request lifespan") for name in _LIFESPAN_TOOLS]
+    policies.extend(
+        policy.deny(name, reason="Kotoyose delegates through mcp_refs: [kotoyose] and delegates")
+        for name in _DENIED_PROVIDER_TOOLS
+    )
     policies.append(policy.deny("run_command", when=_requests_daemon, reason="Kotoyose does not permit daemon commands"))
     if config.get("allow_all"):
         policies.append(policy.allow_all())
@@ -387,45 +380,6 @@ def _requests_daemon(arguments: dict[str, Any]) -> bool:
     return any(arguments.get(key) not in (None, False, 0, "", "false", "False") for key in (
         "IsDaemon", "is_daemon", "enable_daemons", "background", "run_in_background",
     ))
-
-
-def _build_sdk_subagents(types: Any, agents: dict[str, Any], model_overrides: Any = None) -> list[Any]:
-    if model_overrides is None:
-        model_overrides = {}
-    if not isinstance(model_overrides, dict) or set(model_overrides) - set(agents):
-        raise ValueError("antigravity.sdk.subagent_models must map configured agent names to SDK model IDs")
-    result: list[Any] = []
-    for raw_name, agent in agents.items():
-        kwargs: dict[str, Any] = {
-            "name": _sdk_safe_name(raw_name),
-            "description": agent.description,
-            "system_instructions": agent.prompt,
-        }
-        model = model_overrides.get(raw_name, getattr(agent, "model", "inherit"))
-        if raw_name in model_overrides and (not isinstance(model, str) or not model.strip() or model == "inherit"):
-            raise ValueError("antigravity.sdk.subagent_models values must be explicit SDK model IDs")
-        if model in _COMMON_MODEL_ALIASES:
-            raise ValueError(
-                f"Antigravity SDK subagent '{raw_name}' requires an explicit model ID in antigravity.sdk.subagent_models"
-            )
-        if model not in (None, "inherit"):
-            if not isinstance(model, str) or not model.strip():
-                raise ValueError("Antigravity SDK subagent model must be a nonempty SDK model ID")
-            kwargs["model"] = model
-        enabled = [types.BuiltinTools(name) for name in _READ_ONLY_TOOLS]
-        if agent.tools is not None:
-            enabled = []
-            for raw_tool in agent.tools:
-                mapped = _TOOL_MAP.get(raw_tool)
-                if mapped is None:
-                    raise ValueError(f"Antigravity SDK subagent '{raw_name}' has an unsupported tool: {raw_tool}")
-                enabled.append(types.BuiltinTools(mapped))
-        kwargs["capabilities"] = types.SubagentCapabilities(
-            enabled_tools=enabled,
-            run_command_config=types.RunCommandConfig(enable_daemons=False),
-        )
-        result.append(types.SubagentConfig(**kwargs))
-    return result
 
 
 def _normalize_usage(usage: Any) -> dict | None:

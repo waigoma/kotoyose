@@ -88,6 +88,34 @@ def test_checker_reports_only_locations_and_kinds(tmp_path, monkeypatch):
         assert value not in result.stdout + result.stderr
 
 
+def test_release_automation_is_on_the_allow_list_and_in_the_snapshot(tmp_path, monkeypatch):
+    exported = (".github/workflows/github-release.yml", "scripts/release-notes.py")
+    manifest = (ROOT / "release/public-paths.txt").read_text(encoding="utf-8")
+    allowed = [line.strip() for line in manifest.splitlines() if line.strip() and not line.strip().startswith("#")]
+    for relative in exported:
+        assert relative in allowed
+    spec = importlib.util.spec_from_file_location("public_export_release", EXPORT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    repo = tmp_path / "source"
+    (repo / "release").mkdir(parents=True)
+    shutil.copyfile(ROOT / "release/public-paths.txt", repo / "release/public-paths.txt")
+    for relative in exported:
+        destination = repo / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+
+    def ls_files(command):
+        assert command == ["git", "-C", str(repo), "ls-files", "-z", "--cached"]
+        return b"\0".join(os.fsencode(name) for name in (*exported, ""))
+
+    monkeypatch.setattr(module.subprocess, "check_output", ls_files)
+    out = tmp_path / "out"
+    module.export(repo, out)
+    for relative in exported:
+        assert (out / relative).read_bytes() == (ROOT / relative).read_bytes()
+
+
 def test_checker_accepts_scoped_fake_ip_and_public_email(tmp_path, monkeypatch):
     monkeypatch.delenv("PUBLIC_DENYLIST", raising=False)
     tools = tmp_path / "tools"

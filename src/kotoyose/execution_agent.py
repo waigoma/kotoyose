@@ -207,7 +207,8 @@ class AgentExecutor:
         return getattr(self, {'claude': 'runtime', 'codex': 'codex_runtime'}[provider])
 
     async def execute(self, attempt: dict, cancel: asyncio.Event, *, worker: CommandWorker | None = None,
-                      interaction: AgentInteraction | None = None, runtime_entry: RuntimeEntry | None = None):
+                      interaction: AgentInteraction | None = None, runtime_entry: RuntimeEntry | None = None,
+                      delegation_call=None):
         """実行時計を runtime の寿命に結び付け、委譲境界を runtime_entry に記録する。"""
         snapshot = attempt["snapshot"]
         runtime_entry = runtime_entry if runtime_entry is not None else RuntimeEntry()
@@ -219,7 +220,7 @@ class AgentExecutor:
         prestart_rejected = False
         try:
             result = await self._execute(attempt, cancel, worker=worker, interaction=interaction, tracker=tracker,
-                                         runtime_entry=runtime_entry)
+                                         runtime_entry=runtime_entry, delegation_call=delegation_call)
             return result
         except AgentStartRejected:
             prestart_rejected = True
@@ -247,7 +248,7 @@ class AgentExecutor:
                 finally:
                     self.work_clocks.pop(attempt["id"], None)
 
-    async def _execute(self, attempt, cancel, *, worker, interaction, tracker, runtime_entry):
+    async def _execute(self, attempt, cancel, *, worker, interaction, tracker, runtime_entry, delegation_call):
         """Credential を永続 snapshot に含めず、各実操作を intent の保存後に開始する。"""
         snapshot = attempt["snapshot"]
         if alias := snapshot.get("alias"):
@@ -394,7 +395,7 @@ class AgentExecutor:
                 await authorize_provider()
             else:
                 await self.store.resource(attempt["principal"], attempt["request"]["execution_grant_ref"])
-                if snapshot.get('agent_activation'):
+                if snapshot.get('agent_activation') or snapshot.get('parent_attempt_id'):
                     await self.store.authorize_provider_request(attempt['id'], attempt['principal'])
                 current = await self.store.attempt(attempt["principal"], attempt["id"])
                 if current["status"] != "running":
@@ -482,7 +483,12 @@ class AgentExecutor:
 
         definition = snapshot["definition"]
         instructions, prompt, images = await self._render_inputs(attempt)
+        delegation_specs = snapshot.get("delegation_tools", [])
+        delegation_refs = {spec["resource_ref"] for spec in delegation_specs}
+
         async def external_tool_call(tool_ref, arguments):
+            if tool_ref in delegation_refs:
+                return await delegation_call(tool_ref, arguments, remaining_seconds)
             if any(item['tool_ref'] == tool_ref for item in snapshot.get('mcp_tools', [])):
                 return await self.mcp_broker.call(attempt['principal'], attempt['id'], tool_ref, dict(arguments), cancel)
             deadline = (self.agent_execution_leases.call_deadline(self._agent_exec_key(snapshot)) if snapshot.get('agent_activation')
@@ -529,7 +535,7 @@ class AgentExecutor:
             output_limit_bytes=budget["output_limit_bytes"], tool_refs=tuple(snapshot["tool_refs"]),
             codex_egress_limits=egress_limits,
             image_inputs=tuple(images),
-            client_tool_specs=tuple([*snapshot.get("client_tools", []), *external_specs]),
+            client_tool_specs=tuple([*snapshot.get("client_tools", []), *external_specs, *delegation_specs]),
             approval_bindings=tuple(snapshot.get("approval_bindings", [])),
             client_tool_call=external_tool_call,
             compression_event=compression_event,
@@ -642,7 +648,7 @@ class AgentExecutor:
                 raise ExecutionError("request_conflict", "Unexpected container identity for host print CLI", 409)
             await self.store.record_process(operation_id, identity)
             await self.store.resource(attempt["principal"], attempt["request"]["execution_grant_ref"])
-            if snapshot.get("agent_activation"):
+            if snapshot.get("agent_activation") or snapshot.get("parent_attempt_id"):
                 await self.store.authorize_provider_request(attempt["id"], attempt["principal"])
             current_attempt = await self.store.attempt(attempt["principal"], attempt["id"])
             if current_attempt["status"] != "running":

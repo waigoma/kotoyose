@@ -101,6 +101,16 @@ def acp_usage(usage: object) -> dict[str, int]:
     }
 
 
+def _tool_payload(tool_id: object, title: object) -> dict | None:
+    """tool call の ID と、agent が付けた題名 (例: 実行するコマンド) を進捗のイベントに残す。"""
+    if not isinstance(tool_id, str):
+        return None
+    payload = {"tool_call_id": tool_id[:256]}
+    if isinstance(title, str) and title:
+        payload["title"] = title[:200]
+    return payload
+
+
 @dataclass(slots=True)
 class AcpTurn:
     """turn の出力上限、イベント、usage と部分応答を管理する。"""
@@ -144,7 +154,7 @@ class AcpTurn:
                 kind=kind,
                 tool_name=tool_kind if isinstance(tool_kind, str) and tool_kind in _TOOL_KINDS else None,
                 summary=status if isinstance(status, str) and status in _TOOL_STATUS else None,
-                payload={"tool_call_id": tool_id[:256]} if isinstance(tool_id, str) else None,
+                payload=_tool_payload(tool_id, call.get("title")),
             ))
         elif kind == "usage_update":
             # ACP v1 の usage_update は会話全体のコンテキスト使用量。

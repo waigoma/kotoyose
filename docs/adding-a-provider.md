@@ -6,7 +6,7 @@ Kotoyose v1.0 では、provider を組み込みとして追加する。
 ## 実行インターフェースを選ぶ
 
 - **公式 SDK** を優先する。新しい SDK driver には `RuntimeSession` を実装し、`ask`、`stream`、`disconnect` を備える。実行 API を提供する場合は、driver の許可表と実行経路も実装する。 [RuntimeSession](../src/kotoyose/runtime/base.py) · [builder 登録](../src/kotoyose/session.py)
-- **ACP 対応 CLI** は `PrintCliProfile.acp` に起動引数と専用 home で使える認証方式を宣言し、`cli.acp` route に同じ profile ID を指定する。初期化、セッション、MCP、許可応答、取消は共通クライアントが扱う。 [ACP driver の設計](design/acp-driver.md)
+- **ACP 対応 CLI** は `PrintCliProfile.acp` に起動引数と専用 home で使える認証方式を宣言し、`cli.acp` route に同じ profile ID を指定する。初期化、セッション、MCP、許可応答、取消は共通クライアントが扱う。
 - **ACP 非対応 CLI** は `cli.print` を明示指定する。print モードの起動引数、パーサー、名前付きフックを profile に追加する。
 - **Anthropic 互換 endpoint** は、`provider: claude`、`kind: endpoint` の接続に `endpoint` と `secret` を指定し、`claude.agent-sdk` の route から参照する。
   `secret` には登録済み secret の名前または `env:変数名` を指定する。
@@ -85,4 +85,3 @@ SDK driver や新しい能力まで追加するときは、以下の該当箇所
 | [agent_sanction.py](../src/kotoyose/agent_sanction.py#L21) | 新しいモデル系統を識別できるよう `model_family` を更新し、driver との組み合わせに対する route の許可判定を確認する。 |
 
 手編集箇所を減らすのは v1.0 後の計画である。
-ACP の設計と provider 追加の経緯は、[ACP driver の設計](design/acp-driver.md) と [プラグイン設計記録](design/plugin-architecture-2026-11.md) を参照。

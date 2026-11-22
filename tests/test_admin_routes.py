@@ -58,8 +58,7 @@ def config_path(tmp_path, monkeypatch):
 def _unrelated(_data=None):
     """保存は設定を全体として書き直す (既定値も書く) ので、意味で比べる。"""
     dumped = get_config().model_dump(mode="json")
-    return {key: dumped[key] for key in ("mcps", "settings", "skill_definitions", "agent_definitions",
-                                         "prompt_files")}
+    return {key: dumped[key] for key in ("mcps", "settings", "skill_definitions", "prompt_files")}
 
 
 # ── routes CRUD ─────────────────────────────────────────────────────────
@@ -299,7 +298,7 @@ def test_config_exposes_driver_and_pool_catalog_from_the_tables(config_path):
     catalog = client.get("/admin/config").json()["catalog"]
     claude = catalog["drivers"]["claude.agent-sdk"]
     assert claude["provider"] == "claude" and list(claude["places"]) == ["isolated"]
-    assert "read" not in claude["places"]["isolated"] and "write" in claude["places"]["isolated"]
+    assert {"read", "write"}.issubset(claude["places"]["isolated"])
     assert set(catalog["drivers"]["codex.app-server"]["places"]) == {"host", "isolated"}
     assert list(catalog["drivers"]["cursor.sdk"]["places"]) == ["host"]
     assert catalog["pool"]["strategies"] == ["balanced", "first_available"]

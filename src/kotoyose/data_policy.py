@@ -30,8 +30,6 @@ def training_digest(config, alias: str, capabilities) -> str:
         "policy": connection_data_policy(connection),
         "capabilities": sorted(set(capabilities)),
         "resources": config.resolve_resources(preset),
-        "agents": {name: agent.model_dump(mode="json")
-                   for name, agent in config.resolve_agents(preset).items()},
     }
     if route.profile is not None:
         from .print_cli_profiles import get_print_cli_profile
@@ -80,9 +78,9 @@ def configured_capabilities(preset) -> set[str]:
     capabilities = set()
     if not preset.bare or preset.setting_sources:
         capabilities.update(("workspace", "tools", "mcp", "skills"))
-    if preset.tools or preset.agents or preset.agent_refs:
+    if preset.tools:
         capabilities.add("tools")
-    if set(preset.tools or ()) - _TOOLS_WITHOUT_WORKSPACE or preset.agents or preset.agent_refs:
+    if set(preset.tools or ()) - _TOOLS_WITHOUT_WORKSPACE:
         capabilities.add("workspace")
     if preset.mcp_refs or preset.mcp_servers:
         capabilities.add("mcp")

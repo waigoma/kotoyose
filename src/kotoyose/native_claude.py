@@ -45,6 +45,7 @@ from .execution_images import (
     MAX_IMAGE_BYTES, MAX_IMAGE_COUNT, MAX_IMAGE_TOTAL_BYTES, NativeImageInput, image_signature_valid,
 )
 from .client_tool_bridge import ClientToolCallOutcome
+from .execution_delegation import TOOL_SPECS
 from .native_compression import NativeCompressionObserver
 from .execution_contract import ResumeMode
 from .execution_limits import ProviderUsageLimit
@@ -53,6 +54,7 @@ from .provider_usage_limits import normalize_provider_usage_limit
 from .runtime.resume import ResumeSupport
 from .runtime.base import RuntimeEvent
 from .runtime.claude import _summarize, _truncate
+from .runtime.claude_options import claude_disallowed_tools
 from .runtime.claude_observations import OBSERVATION_MESSAGES, claude_observation
 
 
@@ -672,8 +674,11 @@ class NativeClaudeWorker:
                         invocation.owner.cancel()
                     return _tool_error("tool_denied")
                 if outcome.state != "succeeded":
-                    return {"content": [{"type": "text", "text": json.dumps({"error": outcome.state, "call_id": outcome.call_id})}], "isError": True}
-                payload = outcome.result or {}
+                    error = {"error": outcome.state, "call_id": outcome.call_id}
+                    if tool_ref in TOOL_SPECS and isinstance(outcome.result, dict):
+                        error.update(outcome.result)
+                    return {"content": [{"type": "text", "text": json.dumps(error)}], "isError": True}
+                payload = outcome.result if outcome.result is not None else {}
                 return {"content": [{"type": "text", "text": json.dumps(payload, sort_keys=True)}]}
             finally:
                 invocation.callbacks -= 1
@@ -840,6 +845,7 @@ def _build_options(
         extra_args={},
         hooks=None,
         agents=None,
+        disallowed_tools=claude_disallowed_tools(()),
         setting_sources=[],
         skills=[],
         plugins=[],

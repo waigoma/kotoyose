@@ -155,7 +155,7 @@ def test_launch_spec_binds_network_env_and_argv_parity(
     )
     assert read_spec.workspace_readonly is True
     read_argv = AgentContainer(instance="test")._create_argv(read_spec)
-    assert f"type=bind,src={ws},dst=/workspace,readonly" in read_argv
+    assert f"type=bind,src={ws},dst=/workspace,readonly,bind-propagation=rprivate,bind-recursive=readonly" in read_argv
 
     # Env: allowlist + HOME=/home/agent + proxy vars only; sentinel secrets absent
     expected_allow = {k: os.environ[k] for k in AGY_PROFILE.env_allowlist if k in os.environ}
@@ -196,7 +196,7 @@ def test_launch_spec_binds_network_env_and_argv_parity(
 
 
 @pytest.mark.parametrize(("surface", "flags", "workspace_suffix"), [
-    ("read", ["--mode", "ask", "--trust"], ",readonly"),
+    ("read", ["--mode", "ask", "--trust"], ",readonly,bind-propagation=rprivate,bind-recursive=readonly"),
     ("write", ["--force", "--trust"], ""),
 ])
 def test_cursor_container_plan_mounts_versioned_bundle(tmp_path, surface, flags, workspace_suffix):

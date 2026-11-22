@@ -12,8 +12,6 @@ import asyncio
 import json
 import os
 import re
-import shutil
-import tempfile
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -251,11 +249,8 @@ class CodexRuntimeSession:
     skills: tuple[RuntimeSkill, ...] = ()
     effort: str | None = None
     output_schema: dict[str, Any] | None = None
-    agents: dict[str, Any] = field(default_factory=dict)
-    agent_models: dict[str, str] = field(default_factory=dict)
     # preset.codex_home を展開したもの。指定時は CODEX_HOME としてのみ渡す。
     codex_home: str | None = None
-    _agent_role_dir: str | None = field(default=None, init=False, repr=False)
     _codex: Any = field(default=None, init=False, repr=False)  # AsyncCodex
     _thread: Any = field(default=None, init=False, repr=False)  # AsyncThread
 
@@ -269,9 +264,6 @@ class CodexRuntimeSession:
         finally:
             self._codex = None
             self._thread = None
-            if self._agent_role_dir is not None:
-                shutil.rmtree(self._agent_role_dir, ignore_errors=True)
-                self._agent_role_dir = None
 
     async def ask(self, prompt: RuntimePrompt) -> RuntimeResult:
         """stream() の最終結果を非ストリーミング呼び出しへ集約する (cursor.py の ask と同型)。"""
@@ -470,53 +462,11 @@ class CodexRuntimeSession:
                 overrides.append(f"{key}={value}")
 
         overrides.extend(_model_provider_overrides(self.config))
-        overrides.extend(self._agent_config_overrides())
+        # Codex 自身の multi-agent は使わない。委譲は Kotoyose の MCP だけ。
+        # 末尾に置いて、preset の config テーブルより後に効かせる。
+        overrides.append("agents.enabled=false")
 
         return tuple(overrides)
-
-    def _agent_config_overrides(self) -> list[str]:
-        """共通 agent 定義を Codex の role file + config override へ変換する。"""
-        if not self.agents:
-            return []
-        if self._agent_role_dir is None:
-            self._agent_role_dir = tempfile.mkdtemp(prefix="kotoyose-codex-agents-")
-
-        overrides: list[str] = []
-        for name, agent in self.agents.items():
-            if not _PROVIDER_ID_PATTERN.match(name):
-                raise ValueError(
-                    f"codex agent 名 {name!r} は英数字 / '_' / '-' で指定してください"
-                )
-            role_file = Path(self._agent_role_dir) / f"{name}.toml"
-            sandbox_mode = _codex_agent_sandbox(agent.tools)
-            role_file.write_text(
-                _codex_agent_role_toml(
-                    name,
-                    agent.prompt,
-                    model=self.agent_models.get(name),
-                    sandbox_mode=sandbox_mode,
-                ),
-                encoding="utf-8",
-            )
-            overrides.extend(
-                [
-                    f"agents.{name}.description={_tomlish_value(agent.description)}",
-                    f"agents.{name}.config_file={_tomlish_value(str(role_file))}",
-                ]
-            )
-            if agent.tools and sandbox_mode is None:
-                log.warning(
-                    "codex.agent.tools_unsupported",
-                    agent=name,
-                    tools=agent.tools,
-                )
-            if agent.model != "inherit" and name not in self.agent_models:
-                log.warning(
-                    "codex.agent.model_alias_unsupported",
-                    agent=name,
-                    model=agent.model,
-                )
-        return overrides
 
 
 def build_codex_session(
@@ -524,6 +474,8 @@ def build_codex_session(
     cwd_override: str | None,
     session_id: str | None,
     request_headers: dict[str, str] | None = None,
+    *,
+    effort_override: str | None = None,
 ) -> CodexRuntimeSession:
     """ModelPreset から CodexRuntimeSession を構築する。
 
@@ -533,7 +485,9 @@ def build_codex_session(
 
     cwd = os.path.expanduser(cwd_override) if cwd_override is not None else preset.cwd
     cfg = get_config()
-    translated = translate_runtime_config(cfg, preset, request_headers)
+    translated = translate_runtime_config(
+        cfg, preset, request_headers, effort_override=effort_override,
+    )
     if translated.plugin_paths:
         log.warning(
             "codex.plugin_partially_translated",
@@ -561,8 +515,6 @@ def build_codex_session(
         skills=translated.skills,
         effort=translated.effort,
         output_schema=preset.output_schema,
-        agents=translated.agents,
-        agent_models=_resolve_codex_agent_models(cfg, translated.agents),
         codex_home=(
             str(Path(preset.codex_home).expanduser()) if preset.codex_home else None
         ),
@@ -667,55 +619,6 @@ def _tomlish_value(value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     return json.dumps(value, ensure_ascii=False)
-
-
-def _codex_agent_role_toml(
-    name: str,
-    prompt: str,
-    *,
-    model: str | None = None,
-    sandbox_mode: str | None = None,
-) -> str:
-    """Codex agent role file を安全な TOML 文字列として組み立てる。"""
-    lines = (
-        f"name = {_tomlish_value(name)}\n"
-        f"developer_instructions = {_tomlish_value(prompt)}\n"
-    )
-    if model is not None:
-        lines += f"model = {_tomlish_value(model)}\n"
-    if sandbox_mode is not None:
-        lines += f"sandbox_mode = {_tomlish_value(sandbox_mode)}\n"
-    return lines
-
-
-_READ_ONLY_AGENT_TOOLS = frozenset({"Read", "Grep", "Glob", "WebFetch", "WebSearch"})
-
-
-def _codex_agent_sandbox(tools: list[str] | None) -> str | None:
-    """共通 tool allowlist が読取専用なら Codex の filesystem 境界で強制する。"""
-    if tools is not None and set(tools) <= _READ_ONLY_AGENT_TOOLS:
-        return "read-only"
-    return None
-
-
-_CODEX_AGENT_ROUTE_NAMES = {
-    "haiku": "codex-luna",
-    "sonnet": "codex-terra",
-    "opus": "codex-sol",
-}
-
-
-def _resolve_codex_agent_models(config: Any, agents: dict[str, Any]) -> dict[str, str]:
-    """provider 共通の agent tier を Codex route 定義へ解決する。"""
-    resolved: dict[str, str] = {}
-    for name, agent in agents.items():
-        if agent.model == "inherit":
-            continue
-        route_name = _CODEX_AGENT_ROUTE_NAMES[agent.model]
-        definition = config.routes.get(route_name)
-        if definition is not None and definition.driver == "codex.app-server":
-            resolved[name] = definition.model
-    return resolved
 
 
 _MCP_DENY_PATTERN = re.compile(r"^mcp__(?P<server>.+?)__(?P<tool>.+)$")

@@ -114,12 +114,10 @@ codex:
 
 **対処**: prompt file を足したら、実際にファイルが存在することを自分で確かめる。
 
-## 10. `agents` / `agent_definitions` の `tools` 省略は全権継承
+## 10. `agents` / `agent_definitions` / `agent_refs` は撤去済み
 
-`AgentPreset.tools` が `null` (既定) の subagent は、**親セッションの全ツールを継承する**
-(Bash を含む)。読み取り専用のつもりの調査係が書き込めてしまう。
-
-**対処**: read-only 用途では `tools` を必ず明示列挙する。
+これらのキーが config に残っていると load が失敗する。別 alias へ渡すときは
+`mcp_refs: [kotoyose]` と `delegates` を使う。Claude の Task / Agent ツールは常に無効。
 
 ## 11. `skills: []` と `skill_refs` は同時に書けない
 

@@ -34,7 +34,7 @@ class ClientToolCallOutcome:
     """provider callback が扱う durable call の結果。"""
 
     state: ClientCallState
-    result: dict[str, Any] | None = None
+    result: dict[str, Any] | list[dict] | None = None
     required_action: dict[str, str] | None = None
     call_id: str | None = None
 

@@ -233,6 +233,7 @@ async def test_minimal_session_builds_restricted_options_and_reports_usage(tmp_p
     assert options.plugins == []
     assert options.skills == []
     assert options.agents is None
+    assert options.disallowed_tools == ["Task", "Agent"]
     assert options.max_buffer_size > 1024
     assert options.cwd != tmp_path
     assert options.env == {

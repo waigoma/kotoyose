@@ -65,7 +65,6 @@ def owner(tmp_path, monkeypatch):
             "setting_sources": ["project"], "strict_mcp_config": True,
             "system_prompt_snapshot": False, "skills": ["synthetic-skill"],
             "thinking": "adaptive", "effort": "high", "timeout_seconds": 30,
-            "agents": {"helper": {"description": "Synthetic helper", "prompt": "Help PM", "model": "inherit"}},
         }},
         "mcps": {"memory-taskhub": {"server": {
             "type": "http", "url": "https://memory.invalid/mcp",
@@ -152,11 +151,11 @@ def test_pin_retains_full_pm_recipe_and_actual_auth_convention(owner, monkeypatc
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://unapproved.invalid")
     pinned = pin_pm_saved_preset(owner, request(), HEADERS)
     options = pinned.options
-    assert options.tools == ["Read", "Grep", "Agent"] and options.disallowed_tools == ["Bash"]
+    assert options.tools == ["Read", "Grep", "Agent"] and options.disallowed_tools == ["Bash", "Task", "Agent"]
     assert options.mcp_servers["memory-taskhub"]["headers"]["Authorization"] == "Bearer synthetic-project-token"
     assert options.system_prompt["append"] == "Synthetic TaskHub PM instructions.\nSynthetic Memory Gateway discipline."
     assert options.system_prompt["snapshot"] is False
-    assert options.skills == ["synthetic-skill"] and options.agents["helper"].model == "inherit"
+    assert options.skills == ["synthetic-skill"] and options.agents is None
     assert options.setting_sources == ["project"] and options.strict_mcp_config is True
     assert options.model == "synthetic/pm-model" and options.fallback_model is None
     assert options.env == {

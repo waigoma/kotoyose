@@ -7,7 +7,6 @@ import json
 import pytest
 
 from kotoyose.config import (
-    AgentPreset,
     HarnessConfig,
     McpDefinition,
     ModelPreset,
@@ -49,15 +48,11 @@ def test_translate_runtime_config_resolves_all_common_resources(tmp_path):
             )
         },
         prompt_files={"role": PromptFileDefinition(path=str(prompt))},
-        agent_definitions={
-            "reviewer": AgentPreset(description="review", prompt="review carefully")
-        },
     )
     preset = ModelPreset(
         skill_refs=["debug"],
         mcp_refs=["memory"],
         prompt_file_refs=["role"],
-        agent_refs=["reviewer"],
         required_request_headers=["X-Token"],
         effort="high",
         timeout_seconds=42,
@@ -70,7 +65,6 @@ def test_translate_runtime_config_resolves_all_common_resources(tmp_path):
     assert [(skill.name, skill.path) for skill in translated.skills] == [
         ("debug", str((bundle / "skills" / "debug" / "SKILL.md").resolve()))
     ]
-    assert list(translated.agents) == ["reviewer"]
     assert translated.effort == "high"
     assert translated.timeout_seconds == 42
 

@@ -1,5 +1,6 @@
 """Resume の停止証拠と互換性を照合する。fresh Handoff の選択は Caller に委ねる。"""
 
+import json
 from .execution_contract import ResumeManifest, ResumeReason, ResumeRequest
 from .execution_resources import ExecutionError, content_digest, pinned_codex_egress_limits
 from .runtime.resume import ResumeSupport
@@ -22,7 +23,13 @@ def resume_request_digest(attempt_id: str, request: ResumeRequest) -> str:
 
 def check_predecessor(previous: dict) -> None:
     """終端と実停止・副作用確定を独立に検査し、同じ旧 Attempt の分岐再開を拒否する。"""
+    snapshot = previous["snapshot"]
+    if isinstance(snapshot, str):
+        # DB の行は jsonb を文字列で返すことがある。
+        snapshot = json.loads(snapshot)
     conditions: tuple[tuple[bool, ResumeReason], ...] = (
+        # 共有の作業場を読むだけの子は、親と一緒に終わる。単独で再開させない。
+        (not snapshot.get("parent_attempt_id"), "execution_kind_unsupported"),
         (previous["finished_at"] is not None and previous["status"] in TERMINAL, "attempt_not_terminal"),
         (previous["stop_confirmation"] == "confirmed", "stop_unconfirmed"),
         (previous["side_effect_resolution"] == "resolved", "effects_unresolved"),

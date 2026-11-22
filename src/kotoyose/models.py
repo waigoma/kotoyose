@@ -146,6 +146,9 @@ class ChatCompletionRequest(BaseModel):
     # per-request cwd 上書き。preset の allow_cwd_override=True の場合のみ有効。
     # OpenAI 互換クライアントはこのフィールドを送らないだけで、既存動作は変わらない。
     cwd: str | None = None
+    # この turn だけ alias の effort を上書きする。未対応の runtime と、
+    # 判明している候補の外の値は 422 になる。
+    reasoning_effort: str | None = None
     # Kotoyose 専用 metadata は strict に検証し、未知の保証要求を落とさない。
     metadata: ChatMetadata | None = None
 

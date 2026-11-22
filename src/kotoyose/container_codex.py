@@ -17,6 +17,7 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
+from .execution_delegation import TOOL_SPECS, only_delegation_tools
 from . import native_codex as _native
 from .agent_spec import admitted_execution_cell, runtime_for
 from .codex_coding_policy import (
@@ -86,7 +87,7 @@ def _validate_job(worker, job: NativeAgentJob, settings) -> list[dict]:
         CodexEgressLimits.model_validate(job.codex_egress_limits)
     resolve_codex_sandbox(job.codex_execution_mode, job.codex_sandbox)
     subscription = job.credential_name == AUTH_NAME
-    if not subscription or set(job.tool_refs) != set(cell.tool_refs):
+    if not subscription or set(job.tool_refs) - TOOL_SPECS.keys() != set(cell.tool_refs):
         raise ValueError("invalid_job")
     external = validate_coding_policy(
         job.execution_environment, job.codex_sandbox_policy, job.codex_tool_policy_digest,
@@ -100,7 +101,9 @@ def _validate_job(worker, job: NativeAgentJob, settings) -> list[dict]:
         job.codex_protected_workspace is not None) else protected_workspace_entries(job.workspace, optional=True)
     if (job.credential_value or job.codex_auth_file is None or not job.codex_auth_file.is_absolute()
             or job.codex_auth_file.name != "auth.json" or not job.codex_auth_identity
-            or job.base_url is not None or job.client_tool_specs or job.approval_bindings
+            or job.base_url is not None or job.approval_bindings
+            or not only_delegation_tools(job.client_tool_specs, job.tool_refs, job.client_tool_call)
+            or (job.client_tool_specs and not external)
             or (job.resume_mode == "native" or job.provider_session_ref is not None) and worker.sessions is None
             or not job.model or "\x00" in job.model or not job.cli_binary.is_absolute()
             or job.output_contract not in {"text", "json"}

@@ -111,6 +111,7 @@ async def test_handshake_auth_mcp_streaming_and_reuse(tmp_path):
             ("tool_call", "pending"), ("permission", "allowed"),
             ("permission", "denied"), ("tool_call_update", "completed"),
         ]
+        assert events[0].payload == {"tool_call_id": "1", "title": "Read"}
         assert (await runtime.ask("next")).text == result.text
     finally:
         await runtime.disconnect()

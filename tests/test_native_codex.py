@@ -650,3 +650,49 @@ async def test_codex_quota_error_is_typed_and_turns_are_attempt_local(provider, 
     rejected.feed_http(b'HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n')
     rejected.finish()
     assert server_error.value() is None
+
+
+async def test_jail_codex_delegation_dynamic_tools_dispatch_and_keep_tool_errors_local(tmp_path):
+    from kotoyose.client_tool_bridge import ClientToolCallOutcome
+    from kotoyose.execution_delegation import ASK_AGENT, LIST_AGENTS, TOOL_SPECS
+    from kotoyose.native_codex import _CONFIG
+
+    rpc = Mock(image_uris=(), turn_id=None)
+    rpc.send = AsyncMock()
+    rpc.request = AsyncMock(side_effect=[
+        {},
+        {"thread": {"id": "thread"}, "model": "gpt-6-luna", "modelProvider": "kotoyose_native"},
+        {"turn": {"id": "turn"}},
+    ])
+    rpc.next = AsyncMock(side_effect=[
+        {"id": "1", "method": "item/tool/call", "params": {"threadId": "thread", "turnId": "turn",
+            "tool": "list_agents", "callId": "list", "arguments": {}}},
+        {"id": "2", "method": "item/tool/call", "params": {"threadId": "thread", "turnId": "turn",
+            "tool": "ask_agent", "callId": "ask", "arguments": {"alias": "reader", "task": "Inspect"}}},
+        {"method": "item/completed", "params": {"threadId": "thread", "turnId": "turn",
+            "item": {"type": "agentMessage", "id": "answer", "text": "answer"}}},
+        {"method": "turn/completed", "params": {"threadId": "thread", "turn": {"id": "turn", "status": "completed"}}},
+    ])
+    dispatch = AsyncMock(side_effect=[
+        ClientToolCallOutcome("succeeded", []), ClientToolCallOutcome("failed", {"error": "delegation failed"}),
+    ])
+    current_job = job(tmp_path, max_turns=4, tool_refs=("builtin:sandbox-exec@1", LIST_AGENTS, ASK_AGENT),
+                      client_tool_specs=tuple(TOOL_SPECS.values()), client_tool_call=dispatch)
+    assert await NativeCodexWorker()._run(rpc, current_job, asyncio.Event(), AsyncMock(), {}, {}, dict(_CONFIG)) == b"answer"
+    params = rpc.request.await_args_list[1].args[1]
+    assert [tool["name"] for tool in params["dynamicTools"]] == ["sandbox_exec", "list_agents", "ask_agent"]
+    assert [entry.args for entry in dispatch.await_args_list] == [(LIST_AGENTS, {}), (ASK_AGENT, {"alias": "reader", "task": "Inspect"})]
+    assert rpc.send.await_args_list[-1].args[0]["result"]["success"] is False
+
+
+async def test_codex_still_rejects_arbitrary_client_tools(provider, tmp_path):
+    from kotoyose.execution_delegation import LIST_AGENTS, TOOL_SPECS
+
+    fake = {**TOOL_SPECS[LIST_AGENTS], "resource_ref": "resource:client-tool"}
+    started = AsyncMock()
+    result = await provider.execute(
+        job(tmp_path, tool_refs=("resource:client-tool",), client_tool_specs=(fake,), client_tool_call=AsyncMock()),
+        asyncio.Event(), AsyncMock(), on_process_started=started,
+    )
+    assert (result.status, result.reason) == ("failed", "invalid_job")
+    started.assert_not_awaited()

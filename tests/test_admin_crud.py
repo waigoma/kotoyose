@@ -415,88 +415,6 @@ def test_individual_skill_crud_and_model_selection(isolated_config, tmp_path):
     assert client.delete("/admin/skills/debug").status_code == 200
 
 
-def test_individual_agent_crud_and_model_selection(isolated_config):
-    """個別 agent は CRUD でき、Model から参照でき、参照中は削除を拒否する。"""
-    payload = {
-        "description": "調査担当",
-        "prompt": "リポジトリを調べて要点だけ返す",
-        "tools": ["Read", "Grep"],
-        "model": "sonnet",
-    }
-    assert client.post("/admin/agents/researcher", json=payload).status_code == 200
-    assert client.post("/admin/agents/researcher", json=payload).status_code == 409
-    assert client.put(
-        "/admin/agents/researcher", json={**payload, "description": "更新後"}
-    ).status_code == 200
-    assert client.put("/admin/agents/ghost", json=payload).status_code == 404
-
-    assert client.post("/admin/models", json={
-        "model_id": "agent-model", "preset": {"agent_refs": ["researcher"]},
-    }).status_code == 200
-    config = client.get("/admin/config").json()
-    assert config["agent_definitions"]["researcher"]["description"] == "更新後"
-    assert config["agent_definitions"]["researcher"]["tools"] == ["Read", "Grep"]
-    assert config["models"]["agent-model"]["agent_refs"] == ["researcher"]
-
-    assert client.delete("/admin/agents/researcher").status_code == 409
-    assert client.delete("/admin/models/agent-model").status_code == 200
-    assert client.delete("/admin/agents/researcher").status_code == 200
-    assert client.delete("/admin/agents/researcher").status_code == 404
-
-
-def test_model_with_unknown_agent_ref_is_rejected_without_saving(isolated_config):
-    """未定義 agent への agent_refs 参照は 422 とし、不正な Model を保存しない。"""
-    response = client.post(
-        "/admin/models",
-        json={"model_id": "broken", "preset": {"agent_refs": ["missing"]}},
-    )
-
-    assert response.status_code == 422
-    assert "broken" not in client.get("/admin/config").json()["models"]
-
-
-def test_agent_rename_updates_all_references_atomically(isolated_config):
-    """agent rename は定義と全 preset の agent_refs を 1 回の保存で書き換える。"""
-    payload = {"description": "調査担当", "prompt": "調べる"}
-    assert client.post("/admin/agents/researcher", json=payload).status_code == 200
-    assert client.post("/admin/models", json={"model_id": "alternate", "preset": {"agent_refs": ["researcher"]}}).status_code == 200
-    assert client.post("/admin/models", json={
-        "model_id": "coding", "preset": {"agent_refs": ["researcher"]},
-    }).status_code == 200
-
-    response = client.post(
-        "/admin/agents/researcher/rename",
-        json={"new_name": "explorer", "prompt": "深く調べる"},
-    )
-
-    assert response.status_code == 200
-    config = client.get("/admin/config").json()
-    assert "researcher" not in config["agent_definitions"]
-    assert config["agent_definitions"]["explorer"]["prompt"] == "深く調べる"
-    # 送っていない field は元の定義を維持する。
-    assert config["agent_definitions"]["explorer"]["description"] == "調査担当"
-    assert config["models"]["alternate"]["agent_refs"] == ["explorer"]
-    assert config["models"]["coding"]["agent_refs"] == ["explorer"]
-    with open(isolated_config) as file:
-        saved = yaml.safe_load(file)
-    assert saved["models"]["alternate"]["agent_refs"] == ["explorer"]
-    assert saved["models"]["coding"]["agent_refs"] == ["explorer"]
-
-
-def test_agent_rename_validates_names_and_allows_noop(isolated_config):
-    """agent rename は存在・重複・空白を判定し、同名は成功扱いにする。"""
-    payload = {"description": "調査担当", "prompt": "調べる"}
-    assert client.post("/admin/agents/researcher", json=payload).status_code == 200
-    assert client.post("/admin/agents/reviewer", json=payload).status_code == 200
-    assert client.post("/admin/agents/missing/rename", json={"new_name": "new"}).status_code == 404
-    assert client.post("/admin/agents/researcher/rename", json={"new_name": "reviewer"}).status_code == 409
-    assert client.post("/admin/agents/researcher/rename", json={"new_name": "  "}).status_code == 422
-    assert client.post("/admin/agents/researcher/rename", json={"new_name": "nested/name"}).status_code == 422
-    response = client.post("/admin/agents/researcher/rename", json={"new_name": "researcher"})
-    assert response.status_code == 200
-    assert client.get("/admin/config").json()["agent_definitions"]["researcher"]["prompt"] == "調べる"
-
-
 def test_prompt_file_content_is_created_only_below_managed_root(isolated_config, tmp_path):
     """新規 prompt は config と同階層の prompts directory に安全に作成する。"""
     managed = tmp_path / "prompts" / "identity.md"
@@ -760,86 +678,16 @@ def test_create_model_with_memory_fields(isolated_config):
     assert saved["memory_force"] is True
 
 
-def test_create_model_with_agents_round_trip(isolated_config):
-    """POST /admin/models で agents を保存・取得できる。"""
+def test_create_model_rejects_removed_agent_refs(isolated_config):
+    """alias の agent_refs は保存せず、委譲への置き換えを返す。"""
     res = client.post("/admin/models", json={
-        "model_id": "task-agent",
-        "preset": {
-            "model": "cc/claude-sonnet-5",
-            "bare": True,
-            "cwd": "/tmp",
-            "agents": {
-                "researcher": {
-                    "description": "read-only research agent",
-                    "prompt": "summarize findings",
-                    "tools": ["Read", "Grep", "Glob", "WebFetch", "WebSearch"],
-                    "model": "haiku",
-                },
-            },
-        },
-    })
-    assert res.status_code == 200
-
-    saved = client.get("/admin/config").json()["models"]["task-agent"]
-    assert saved["agents"]["researcher"]["model"] == "haiku"
-    assert saved["agents"]["researcher"]["tools"] == [
-        "Read",
-        "Grep",
-        "Glob",
-        "WebFetch",
-        "WebSearch",
-    ]
-
-
-def test_update_model_with_agents_round_trip(isolated_config):
-    """PUT /admin/models/{model_id} で agents を更新できる。"""
-    client.post("/admin/models", json={
-        "model_id": "task-agent",
-        "preset": {
-            "model": "cc/claude-sonnet-5",
-            "bare": True,
-            "cwd": "/tmp",
-        },
-    })
-
-    res = client.put("/admin/models/task-agent", json={
-        "model": "cc/claude-sonnet-5",
-        "bare": True,
-        "cwd": "/tmp",
-        "agents": {
-            "researcher": {
-                "description": "read-only research agent",
-                "prompt": "summarize findings",
-                "model": "haiku",
-            },
-        },
-    })
-    assert res.status_code == 200
-
-    saved = client.get("/admin/config").json()["models"]["task-agent"]
-    assert saved["agents"]["researcher"]["model"] == "haiku"
-    assert saved["agents"]["researcher"]["tools"] is None
-
-
-def test_create_model_rejects_invalid_agent_model(isolated_config):
-    """agents.*.model の不正値は admin POST で 422 にする。"""
-    res = client.post("/admin/models", json={
-        "model_id": "broken-agent",
-        "preset": {
-            "model": "cc/claude-sonnet-5",
-            "bare": True,
-            "cwd": "/tmp",
-            "agents": {
-                "researcher": {
-                    "description": "bad model",
-                    "prompt": "noop",
-                    "model": "banana",
-                },
-            },
-        },
+        "model_id": "broken",
+        "preset": {"agent_refs": ["researcher"]},
     })
     assert res.status_code == 422
-    assert "researcher" in res.json()["error"]["message"]
+    assert "agent_refs was removed" in res.json()["error"]["message"]
+    assert "mcp_refs: [kotoyose]" in res.json()["error"]["message"]
+    assert "broken" not in client.get("/admin/config").json()["models"]
 
 
 def test_create_model_rejects_url_without_type(isolated_config):

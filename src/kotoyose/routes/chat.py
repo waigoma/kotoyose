@@ -7,6 +7,7 @@
 どちらのパスも get_or_resume_client(lookup_key, model) に統合されている。
 """
 
+import asyncio
 import functools
 import time
 import uuid
@@ -15,6 +16,7 @@ import structlog
 from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from .. import delegation
 from ..activity import bind_event_queue, start_event_writer, stream_activity
 from ..execution_http import authorize_execution, enforce_model_scope
 from ..output_guard import CredentialLeakSuspected, LEAK_REASON, check_answer, guard_enabled, redact_event
@@ -32,7 +34,12 @@ from ..chat_policy import (
     validate_cwd,
     validate_required_headers,
 )
-from ..chat_request import RequestPreparationPorts, prepare_chat_request
+from ..chat_request import (
+    RequestPreparationPorts,
+    ensure_reasoning_effort,
+    prepare_chat_request,
+    prompt_for_resolved_session,
+)
 from ..data_policy import alias_data_policy, configured_capabilities, request_capabilities, training_binding
 from ..chat_selection import pin_pm_saved_preset
 from ..config import (
@@ -71,12 +78,14 @@ from ..models import (
     ErrorDetail,
     ErrorResponse,
 )
-from ..runtime.acp import acp_binding
+from ..runtime.acp import AcpPrompt, acp_binding
 from ..runtime.base import RuntimeTurnError
 from ..session import (
     SDKConnectionError,
     _cache_identity,
     ask_claude,
+    delegation_identity,
+    discard_runtime,
     get_or_resume_client,
     stream_claude,
 )
@@ -124,6 +133,8 @@ def _sanction_gate(request: Request, model: str, request_id: str) -> JSONRespons
 @router.get("/v1/conversations/{conversation_key}/events/stream")
 async def stream_conversation_events(conversation_key: str, request: Request, after_seq: int = -1):
     """進行中、または最新の interaction activity を SSE で返す。"""
+    if conversation_key.startswith(delegation.KEY_PREFIX):
+        raise ExecutionError("permission_denied", "Reserved conversation key", 403)
     interaction = await get_interaction_for_conversation(conversation_key, api_key_name=request.state.api_key_name)
     # interaction が無いときは、Native 無効時と同じく空の stream を返す (最初の要求前に
     # 購読する direct chat client を 501 にしない)。Native alias の会話だけ Attempt events へ誘導する。
@@ -186,6 +197,8 @@ async def chat_completions(
     response: Response,
     x_conversation_key: str | None = Header(default=None),
 ):
+    if (x_conversation_key or "").startswith(delegation.KEY_PREFIX):
+        raise ExecutionError("permission_denied", "Reserved conversation key", 403)
     enforce_model_scope(request, req.model)
     resolved = None
     cfg = get_config()
@@ -224,7 +237,18 @@ async def _resolve_pool_model(request: Request, req: ChatCompletionRequest):
     return req.model_copy(update={"model": ordered[0]}), ordered[0]
 
 
-async def _chat_completions(req, request, response, x_conversation_key):
+async def delegated_chat_turn(
+    request: Request, alias: str, task: str, conversation_key: str, metadata: dict,
+):
+    enforce_model_scope(request, alias)
+    preset = get_config().models.get(alias)
+    if preset is None or not preset.is_direct_host_chat:
+        raise ExecutionError("unsupported_capability", "Delegation requires a direct host chat alias", 501)
+    req = ChatCompletionRequest(model=alias, messages=[ChatMessage(role="user", content=task)])
+    return await _chat_completions(req, request, Response(), conversation_key, delegation_metadata=metadata)
+
+
+async def _chat_completions(req, request, response, x_conversation_key, *, delegation_metadata=None):
     request_id = getattr(request.state, "request_id", "unknown")
 
     if (refused := _sanction_gate(request, req.model, request_id)) is not None:
@@ -247,7 +271,12 @@ async def _chat_completions(req, request, response, x_conversation_key):
             reason_code="data_policy_restricted",
         )
     if native_chat:
+        if delegation_metadata is not None:
+            raise ExecutionError("unsupported_capability", "Delegation requires a direct host chat alias", 501)
         return await native_chat_response(request, req, x_conversation_key)
+
+    if req.reasoning_effort is not None and req.model in cfg.models:
+        ensure_reasoning_effort(cfg, req.model, req.reasoning_effort)
 
     if req.metadata is not None and req.metadata.kotoyose is not None:
         missing = unsupported_capabilities(req.metadata.kotoyose.required_capabilities)
@@ -276,6 +305,9 @@ async def _chat_completions(req, request, response, x_conversation_key):
     except ChatPolicyViolation as exc:
         return _invalid_request_error(str(exc), request_id)
     provider = preset.provider
+    delegation_client = None
+    if delegation_metadata is None and delegation.MCP_NAME in preset.mcp_refs:
+        delegation_client = getattr(request.state, "api_key_caller", None)
 
     if provider in {"print_cli", "cli_acp"} and "attachments" in request_capabilities(req):
         driver = "cli.acp" if provider == "cli_acp" else "cli.print"
@@ -338,14 +370,26 @@ async def _chat_completions(req, request, response, x_conversation_key):
                 ).model_dump(),
             )
 
-    resolve_identity = _cache_identity
+    identity_kwargs = {}
+    if req.reasoning_effort is not None:
+        identity_kwargs["reasoning_effort"] = req.reasoning_effort
+    resolve_identity = functools.partial(_cache_identity, **identity_kwargs)
     if decision.restricted:
-        resolve_identity = functools.partial(_cache_identity, training_binding=training_binding(cfg, req.model))
+        resolve_identity = functools.partial(
+            _cache_identity, training_binding=training_binding(cfg, req.model), **identity_kwargs,
+        )
     elif provider == "cli_acp":
         resolve_identity = functools.partial(
             _cache_identity, acp_scope=acp_binding(cfg, preset, req.cwd),
             execution_environment=preset.execution_environment,
+            **identity_kwargs,
         )
+
+    if delegation_client:
+        base_identity = resolve_identity
+
+        def resolve_identity(*args, **kwargs):
+            return delegation_identity(base_identity(*args, **kwargs), delegation_client)
 
     try:
         prepared = prepare_chat_request(
@@ -357,13 +401,18 @@ async def _chat_completions(req, request, response, x_conversation_key):
                 is_cache_hit=is_session_cache_hit,
             ),
             conversation_key=x_conversation_key,
-            **({"session_identity": selection.identity} if selection is not None else {}),
+            **({"session_identity": (
+                delegation_identity(selection.identity, delegation_client)
+                if delegation_client else selection.identity
+            )} if selection is not None else {}),
             **({"secret_versions": secret_versions} if secret_versions else {}),
         )
     except ChatPolicyViolation as exc:
         return _invalid_request_error(str(exc), request_id)
 
-    latest_prompt = prepared.prompt
+    base_prompt = prepared.prompt
+    if delegation_metadata is not None and isinstance(base_prompt, AcpPrompt):
+        base_prompt = AcpPrompt(prepared.latest_text, prepared.latest_text)
     lookup_key = prepared.lookup_key
 
     log.debug(
@@ -371,7 +420,7 @@ async def _chat_completions(req, request, response, x_conversation_key):
         lookup_key=lookup_key,
         source="header" if x_conversation_key else "hash",
         history_count=len(req.messages) - 1 if len(req.messages) > 1 else 0,
-        first_msg_preview=req.messages[0].text_content()[:80] if req.messages else "",
+        first_msg_preview=delegation.redact_token(req.messages[0].text_content())[:80] if req.messages else "",
     )
     # interactions 記録: 受付時 INSERT
     interaction_id = await record_received(
@@ -380,9 +429,10 @@ async def _chat_completions(req, request, response, x_conversation_key):
         provider=provider,
         model=req.model,
         source=request.headers.get("x-memory-source"),
-        prompt=prepared.audit_text,
+        prompt=delegation.redact_token(prepared.audit_text),
         streamed=req.stream,
         api_key_name=getattr(request.state, "api_key_name", None),
+        **({"metadata": delegation_metadata} if delegation_metadata is not None else {}),
     )
 
     # ── セッション取得 ──────────────────────────────────────────
@@ -400,7 +450,23 @@ async def _chat_completions(req, request, response, x_conversation_key):
             client_kwargs["execution_settings"] = getattr(
                 getattr(request.app.state, "execution_service", None), "config", None,
             )
-        client, was_resumed = await get_or_resume_client(lookup_key, req.model, **client_kwargs)
+        if req.reasoning_effort is not None:
+            client_kwargs["reasoning_effort"] = req.reasoning_effort
+        if delegation_metadata is not None:
+            client_kwargs.update(delegated=True, config_snapshot=cfg)
+        elif delegation_client:
+            client_kwargs["config_snapshot"] = cfg
+            models = request.state.execution_policy.models
+            targets = frozenset(alias for alias in preset.delegates if "*" in models or alias in models)
+            client_kwargs["delegation_parent"] = delegation.DelegationParent(
+                delegation_client, request.state.api_key_name, targets,
+            )
+        async with delegation.serialize_conversation(lookup_key if delegation_client else None):
+            client, was_resumed = await get_or_resume_client(lookup_key, req.model, **client_kwargs)
+    except asyncio.CancelledError:
+        if delegation_metadata is not None or delegation_client is not None:
+            await record_failed(interaction_id, "Chat turn cancelled")
+        raise
     except SDKConnectionError as e:
         log.error("sdk.connection_error", error=str(e))
         await record_failed(interaction_id, str(e))
@@ -445,6 +511,14 @@ async def _chat_completions(req, request, response, x_conversation_key):
     # 注入された response の header が効くのは pydantic を返す同期成功パスだけ。
     # Response を直接返す streaming / エラーパスには個別に headers= を渡す。
     response.headers[SESSION_EVENT_HEADER] = session_event
+    # Prompt は session 解決の前に組まれる。新規 SDK session かどうかは
+    # cache hit と was_resumed が決まってからでないと分からない。
+    runtime_prompt = prompt_for_resolved_session(
+        req.messages,
+        provider,
+        base_prompt,
+        fresh=not prepared.cache_hit and not was_resumed,
+    )
 
     turn_context = TurnContext(
         client=client,
@@ -472,8 +546,9 @@ async def _chat_completions(req, request, response, x_conversation_key):
             stream_chat_response(
                 StreamContext(
                     turn=turn_context,
-                    prompt=latest_prompt,
-                    inspect_output=guard_enabled(),
+                    prompt=runtime_prompt,
+                    inspect_output=guard_enabled() or delegation_client is not None,
+                    include_events=request.headers.get("x-kotoyose-events") == "1",
                 ),
                 StreamingPorts(
                     stream_runtime=stream_claude,
@@ -492,11 +567,18 @@ async def _chat_completions(req, request, response, x_conversation_key):
     runtime_session_id: str | None = None
     try:
         with bind_event_queue(event_queue):
-            answer, usage, runtime_session_id = await ask_claude(client, latest_prompt)
-        if guard_enabled():
+            answer, usage, runtime_session_id = await ask_claude(client, runtime_prompt)
+        if guard_enabled() or delegation_client is not None:
             check_answer(answer)
+    except asyncio.CancelledError:
+        if delegation_metadata is not None or delegation_client is not None:
+            discard_runtime(lookup_key, client)
+            await _safe_disconnect_client(client)
+            await record_failed(interaction_id, "Chat turn cancelled")
+        raise
     except Exception as e:
-        message = redact_event(str(e)) if guard_enabled() else str(e)
+        error_text = delegation.redact_token(str(e))
+        message = redact_event(error_text) if guard_enabled() else error_text
         leak = isinstance(e, CredentialLeakSuspected)
         log.error("sdk.error", error=message)
         if is_auth_failure_error(e):

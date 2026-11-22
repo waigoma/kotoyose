@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import asyncpg
 
+from .execution_delegation import MAX_CONCURRENT, MAX_PER_ATTEMPT, require_live_parent
 from .execution_resources import ExecutionError, Resource, canonical_json, content_digest, RESOURCE_ADAPTER
 from .execution_artifacts import CapturedArtifact
 from .artifact_file import ArtifactFile
@@ -297,6 +298,7 @@ class ExecutionStore:
 
     async def admit(self, principal: str, request: dict, snapshot: dict, max_concurrent: int, *, agent_execution: AgentExecutionAdmission | None = None) -> tuple[dict, bool]:
         """排他・取消・期限を再照合し、dispatch intent と最初の event を同時に保存する。"""
+        parent_id = snapshot.get("parent_attempt_id")
         resume = ResumeManifest.model_validate(snapshot["resume_manifest"]) if "resume_manifest" in snapshot else None
         operation = "agent_activation" if agent_execution is not None else "resume" if resume else "dispatch"
         digest = resume.request_digest if resume else content_digest(request)
@@ -335,14 +337,35 @@ class ExecutionStore:
                         or (agent_execution is None and datetime.fromisoformat(snapshot["deadline"]) <= datetime.now(timezone.utc))):
                     raise unsafe("grant_mismatch")
                 await lock_predecessor(conn, resume)
+            if parent_id is not None:
+                parent = await conn.fetchrow(
+                    "SELECT * FROM kotoyose.execution_attempts WHERE id=$1 AND principal=$2 FOR UPDATE",
+                    parent_id, principal,
+                )
+                if parent is None or resume or agent_execution is not None:
+                    raise ExecutionError("request_conflict", "Shared workspace parent is unavailable", 409)
+                require_live_parent(_decoded(parent), snapshot)
+                counts = await conn.fetchrow(
+                    "SELECT count(*) AS total, count(*) FILTER (WHERE side_effect_resolution <> 'resolved') AS active "
+                    "FROM kotoyose.execution_attempts WHERE workspace_id=$1 AND snapshot->>'parent_attempt_id'=$2",
+                    snapshot["workspace_id"], parent_id,
+                )
+                if counts["active"] >= MAX_CONCURRENT or counts["total"] >= MAX_PER_ATTEMPT:
+                    raise ExecutionError("delegation_limit", "Delegation call limit reached", 429)
             workspace = await conn.fetchrow(
                 "SELECT * FROM kotoyose.execution_workspaces WHERE id=$1 AND principal=$2 FOR UPDATE",
                 snapshot["workspace_id"], principal,
             )
-            if workspace is None or workspace["lifecycle_state"] != "active" or workspace["generation"] != snapshot["generation"] or workspace["writer_attempt"]:
+            if workspace is None or workspace["lifecycle_state"] != "active" or workspace["generation"] != snapshot["generation"] or workspace["writer_attempt"] != parent_id:
                 if resume:
                     raise unsafe("workspace_mismatch")
                 raise ExecutionError("request_conflict", "Workspace writer or generation changed", 409)
+            if parent_id is None and await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM kotoyose.execution_attempts WHERE workspace_id=$1 "
+                "AND snapshot ? 'parent_attempt_id' AND side_effect_resolution <> 'resolved')",
+                workspace["id"],
+            ):
+                raise ExecutionError("request_conflict", "Shared workspace child stop is unconfirmed", 409)
             if resume:
                 await verify_workspace(conn, resume, workspace)
             active = await count_admission_reservations(conn, principal)
@@ -394,16 +417,18 @@ class ExecutionStore:
                 await conn.execute(
                     "UPDATE kotoyose.execution_input_artifacts SET pin_count=pin_count+1 WHERE ref=$1", artifact_ref,
                 )
-            await conn.execute(
-                "UPDATE kotoyose.execution_workspaces SET writer_attempt=$2 WHERE id=$1",
-                workspace["id"], attempt_id,
-            )
+            if parent_id is None:
+                await conn.execute(
+                    "UPDATE kotoyose.execution_workspaces SET writer_attempt=$2 WHERE id=$1",
+                    workspace["id"], attempt_id,
+                )
             await conn.execute(
                 "INSERT INTO kotoyose.execution_operations(id,attempt_id,kind,state) VALUES($1,$2,'local_execution','prepared')",
                 "execution:" + attempt_id, attempt_id,
             )
             await self._event(conn, attempt_id, "dispatched", {
                 "workspace_ref": request["workspace_ref"],
+                **({key: snapshot[key] for key in ("parent_attempt_id", "delegated_by", "depth")} if parent_id else {}),
                 **({"memory_snapshots": snapshot["memory_snapshots"]}
                    if snapshot.get("memory_snapshots") else {}),
                 **({"predecessor_attempt_id": resume.predecessor_attempt_id,
@@ -487,7 +512,9 @@ class ExecutionStore:
         async with self.pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "SELECT a.* FROM kotoyose.execution_attempts a JOIN kotoyose.execution_workspaces w ON w.id=a.workspace_id "
-                "WHERE a.id=$1 AND a.status='dispatched' AND a.generation=w.generation AND w.writer_attempt=a.id FOR UPDATE OF a", attempt_id,
+                "WHERE a.id=$1 AND a.status='dispatched' AND a.generation=w.generation AND (w.writer_attempt=a.id OR (w.writer_attempt=a.snapshot->>'parent_attempt_id' AND EXISTS ("
+                "SELECT 1 FROM kotoyose.execution_attempts p WHERE p.id=w.writer_attempt AND p.status='running'))) "
+                "FOR UPDATE OF a", attempt_id,
             )
             if row is None:
                 return False
@@ -533,7 +560,7 @@ class ExecutionStore:
     async def prepare_operation(self, attempt_id: str, kind: str) -> str:
         """Agent tool / provider の起動 intent を、取消・世代照合の後に保存する。"""
         async with self.pool.acquire() as conn, conn.transaction():
-            await authorize_operation(conn, attempt_id)
+            await authorize_operation(conn, attempt_id, shared_provider=kind == "provider_process")
             operation_id = str(uuid4())
             await conn.execute(
                 "INSERT INTO kotoyose.execution_operations(id,attempt_id,kind,state) VALUES($1,$2,$3,'prepared')",
@@ -545,7 +572,7 @@ class ExecutionStore:
     async def authorize_provider_request(self, attempt_id: str, principal: str) -> None:
         """推論要求直前にも共通 Grant・workspace 世代/writer・未解決操作を照合する。"""
         async with self.pool.acquire() as conn, conn.transaction():
-            await authorize_operation(conn, attempt_id, principal)
+            await authorize_operation(conn, attempt_id, principal, shared_provider=True)
 
     async def record_process(self, operation_id: str, identity: dict) -> None:
         """Provider に task を送る前に、停止照合できる process identity を記録する。"""
