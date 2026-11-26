@@ -26,7 +26,8 @@ docs/example-prompt.md
 docs/example-coding-verification.md
 docs/example-coding-git.md
 docs/standards/
-.github/workflows/ci.yml
+# ci.yml runs on the owner's self-hosted runner and stays private. The public repository gets public-ci.yml (GitHub-hosted).
+.github/workflows/public-ci.yml
 .github/workflows/github-release.yml
 skills/README.md
 skills/example-bundle/

@@ -104,9 +104,14 @@ def test_public_release_step_passes_the_built_in_token_to_gh():
 
 
 def test_installer_builds_on_linux_and_release_assets_use_the_tag():
-    ci = load_workflow(WORKFLOWS / "ci.yml")["jobs"]["rust"]
     release = load_workflow(WORKFLOWS / "github-release.yml")["jobs"]["release"]
-    for job in (ci, release):
+    jobs = [release]
+    # ci.yml is private-only (self-hosted runner); the public snapshot has only public-ci.yml.
+    for name in ("ci.yml", "public-ci.yml"):
+        if (WORKFLOWS / name).exists():
+            jobs.insert(0, load_workflow(WORKFLOWS / name)["jobs"]["rust"])
+    assert (WORKFLOWS / "public-ci.yml").exists()
+    for job in jobs:
         runs_on = job["runs-on"]
         # GitHub の hosted runner (ubuntu-*) か、self-hosted の Linux runner。
         assert (isinstance(runs_on, str) and runs_on.startswith("ubuntu-")) or (
@@ -149,3 +154,31 @@ def test_publish_uses_only_tools_the_self_hosted_runner_has():
     publish = load_workflow(RELEASE_PUBLIC)["jobs"]["publish"]
     script = "\n".join(step.get("run") or "" for step in publish["steps"])
     assert "jq " not in script and "rsync" not in script
+
+
+def test_no_public_workflow_targets_a_self_hosted_runner():
+    """Self-hosted jobs run only in the private repository, and the export never carries them."""
+    exported = {
+        line.strip() for line in (ROOT / "release/public-paths.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    } if (ROOT / "release/public-paths.txt").exists() else None
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        relative = path.relative_to(ROOT).as_posix()
+        for name, job in load_workflow(path)["jobs"].items():
+            runs_on = job["runs-on"]
+            if isinstance(runs_on, list) and "self-hosted" in runs_on:
+                assert exported is None or relative not in exported, relative
+                if path.name == "ci.yml":
+                    assert job.get("if") == "github.event.repository.private == true", name
+
+
+def test_public_ci_runs_only_in_the_public_repository_on_hosted_runners():
+    """public-ci.yml mirrors ci.yml for the public repository, where hosted runners are free."""
+    document = load_workflow(WORKFLOWS / "public-ci.yml")
+    assert document["permissions"] == {"contents": "read"}
+    assert set(document["jobs"]) == {"check", "rust"}
+    for job in document["jobs"].values():
+        assert job["if"] == "github.event.repository.private == false"
+        assert isinstance(job["runs-on"], str) and job["runs-on"].startswith("ubuntu-")
+        assert all(step.get("with", {}).get("persist-credentials") is False
+                   for step in job["steps"] if str(step.get("uses", "")).startswith("actions/checkout@"))
