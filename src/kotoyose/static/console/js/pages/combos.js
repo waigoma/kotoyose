@@ -4,6 +4,7 @@ import { api } from "../api.js";
 import { dot, el, errorLine, rowMeta } from "../dom.js";
 import { timeLabel } from "../format.js";
 import { createDirtyTracker, openPeek } from "../peek.js";
+import { aliasChildBadge, loadChildConnectionBadges, statusChip } from "../provider-ui.js";
 
 const NEW = "new";
 
@@ -41,7 +42,7 @@ function candidateStateMap(poolState, poolName) {
   return map;
 }
 
-function comboRow(name, pool, stateMap, selected) {
+function comboRow(name, pool, stateMap, selected, childBadgeFor) {
   const candidates = pool.candidates || [];
   const requires = pool.requires || [];
   return el("a", {
@@ -55,17 +56,19 @@ function comboRow(name, pool, stateMap, selected) {
     candidates.length
       ? el("div", { class: "chips chips-top" }, candidates.map((alias) => {
           const state = describeCandidateState(stateMap.get(alias));
-          return el("span", { class: "chip chip-state", title: state.label },
+          const childBadge = childBadgeFor(alias);
+          return el("span", { class: "chip chip-state", title: state.label === "unknown" ? childBadge?.label : state.label },
             dot(state.tone),
             alias,
-            state.label !== "unknown" ? el("span", { class: "small muted" }, state.label) : null);
+            state.label !== "unknown" ? el("span", { class: "small muted" }, state.label) : null,
+            statusChip(childBadge));
         }))
       : null),
   el("span", { class: "row-sub" },
     `${candidates.length} ${candidates.length === 1 ? "candidate" : "candidates"}`));
 }
 
-function listCard(config, poolState, poolStateError, selected) {
+function listCard(config, poolState, poolStateError, selected, childBadgeFor) {
   const pools = config.pools || {};
   const names = Object.keys(pools).sort();
   return el("section", { class: "card", "aria-label": "Combo list" },
@@ -79,7 +82,7 @@ function listCard(config, poolState, poolStateError, selected) {
     names.length === 0
       ? el("p", { class: "card-body muted" }, "No combos yet. Create one to group aliases under a policy.")
       : el("div", { class: "rows" }, names.map((name) => comboRow(
-        name, pools[name], candidateStateMap(poolState, name), name === selected))));
+        name, pools[name], candidateStateMap(poolState, name), name === selected, childBadgeFor))));
 }
 
 function field(label, control, { wide = false, hint = null } = {}) {
@@ -115,7 +118,7 @@ function deleteControl(name, setBusy, status, onDeleted) {
   return button;
 }
 
-function comboForm(config, poolState, name, pool, refresh, tracker) {
+function comboForm(config, poolState, name, pool, refresh, tracker, childBadgeFor) {
   const isNew = name === null;
   const start = isNew ? { candidates: [], policy: "", requires: [] } : pool;
   const catalogPool = (config.catalog && config.catalog.pool) || {};
@@ -215,7 +218,8 @@ function comboForm(config, poolState, name, pool, refresh, tracker) {
               el("span", { class: "mono small muted" }, `${index + 1}.`),
               dot(state.tone),
               el("span", { class: "item-name" }, alias)),
-            rowMeta(subParts)),
+            rowMeta(subParts),
+            statusChip(childBadgeFor(alias))),
           el("div", { class: "candidate-actions" }, up, down, remove));
       }));
     }
@@ -312,7 +316,7 @@ function comboForm(config, poolState, name, pool, refresh, tracker) {
   return form;
 }
 
-function openComboPeek(config, poolState, selected, refresh) {
+function openComboPeek(config, poolState, selected, refresh, childBadgeFor) {
   if (selected === null) return;
   const onClose = () => { location.hash = "#/combos"; };
   const isNew = selected === NEW;
@@ -335,7 +339,7 @@ function openComboPeek(config, poolState, selected, refresh) {
   openPeek({
     title: isNew ? "New combo" : selected,
     subtitle: sub,
-    body: comboForm(config, poolState, isNew ? null : selected, pool, refresh, tracker),
+    body: comboForm(config, poolState, isNew ? null : selected, pool, refresh, tracker, childBadgeFor),
     onClose,
     isDirty: tracker.isDirty,
   });
@@ -343,6 +347,7 @@ function openComboPeek(config, poolState, selected, refresh) {
 
 export async function renderCombos(main, { config, rest, refresh }) {
   const selected = rest[0] || null;
+  const badges = loadChildConnectionBadges(config);
   let poolState = { pools: {} };
   let poolStateError = null;
   try {
@@ -350,6 +355,8 @@ export async function renderCombos(main, { config, rest, refresh }) {
   } catch (error) {
     poolStateError = error;
   }
+  const childBadges = await badges;
+  const childBadgeFor = (alias) => aliasChildBadge(config, config.models?.[alias], childBadges);
   if (!main.isConnected) return;
 
   main.append(
@@ -358,7 +365,7 @@ export async function renderCombos(main, { config, rest, refresh }) {
         el("h1", { class: "page-title" }, "Combos"),
         el("p", { class: "page-sub" }, "Ordered groups of agent aliases with a selection policy and fallback.")),
       el("a", { class: "btn btn-primary", href: `#/combos/${NEW}` }, "New combo")),
-    listCard(config, poolState, poolStateError, selected),
+    listCard(config, poolState, poolStateError, selected, childBadgeFor),
   );
-  openComboPeek(config, poolState, selected, refresh);
+  openComboPeek(config, poolState, selected, refresh, childBadgeFor);
 }

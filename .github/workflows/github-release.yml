@@ -22,7 +22,7 @@ jobs:
   release:
     if: "github.event.repository.private == false"
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -94,3 +94,33 @@ jobs:
             fi
             echo "Created release ${tag}."
           done
+      - name: Build installer from the release tag
+        if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          test "$TAG" = "v$version"
+          sudo apt-get update -q
+          sudo apt-get install -y -q nsis gcc-mingw-w64-x86-64 python3-venv
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup target add x86_64-pc-windows-gnu
+          python3 -m venv "$RUNNER_TEMP/child-build-venv"
+          source "$RUNNER_TEMP/child-build-venv/bin/activate"
+          python -m pip install --disable-pip-version-check uv==0.10.6
+          scripts/build-child-installer.sh
+          scripts/test-child-installer-wine.sh "dist/KotoyoseChild-Setup-$version.exe"
+          scripts/build-child-linux.sh
+      - name: Attach installer, Linux package and checksums
+        if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          installer="dist/KotoyoseChild-Setup-${TAG#v}.exe"
+          linux="dist/kotoyose-child-${TAG#v}-linux-x64.tar.gz"
+          (cd dist && sha256sum --check "${installer##*/}.sha256" && sha256sum --check "${linux##*/}.sha256")
+          gh release upload "$TAG" "$installer" "$installer.sha256" "$linux" "$linux.sha256" --repo "$GITHUB_REPOSITORY" --clobber

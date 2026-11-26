@@ -1,6 +1,8 @@
 // Providers: manage Connections (accounts & endpoints) and inspect installed machine drivers.
 
 import { api } from "../api.js";
+import { workspacePolicyFields } from "../child-workspace.js";
+import { mountDeclarationCatalog } from "../provider-declarations.js";
 import { pathField } from "../path-picker.js";
 import { dot, el, errorLine, svgEl } from "../dom.js";
 import {
@@ -14,7 +16,7 @@ import {
 } from "../format.js";
 import { createDirtyTracker, createSettingsDisclosure, openPeek } from "../peek.js";
 
-import { KNOWN_PROVIDERS, orderedProviderIds, providerPanelHead, cliVersionLabel } from "../provider-ui.js";
+import { KNOWN_PROVIDERS, childConnectionBadge, orderedProviderIds, providerPanelHead, cliVersionLabel, statusChip } from "../provider-ui.js";
 
 const NEW_CONNECTION = "new";
 const DRIVERS_OPEN_KEY = "kotoyose.console.providers.drivers-open";
@@ -36,12 +38,8 @@ function saveDriversOpen(open) {
 }
 const CONNECTION_KIND_LABELS = { subscription: "subscription", api_key: "api key", endpoint: "endpoint" };
 const CONNECTION_KINDS = ["subscription", "api_key", "endpoint"];
+const ENDPOINT_ONLY_PROVIDERS = new Set(["openai_compat"]);
 const CLAUDE_SUBSCRIPTION_PROVIDERS = new Set(["claude", "anthropic"]);
-const PRINT_CLI_CONNECTIONS = new Map([
-  ["antigravity", { profile: "agy", binary: "agy", loginHome: "~/.local/share/kotoyose/agy-home" }],
-  ["grok", { profile: "grok", binary: "grok", loginHome: "~/.local/share/kotoyose/grok-home" }],
-  ["cursor", { profile: "cursor", binary: "agent", loginHome: "~/.local/share/kotoyose/cursor-home" }],
-]);
 const COLLAPSED_STORAGE_KEY = "kotoyose.console.providers.collapsed";
 
 export const PROVIDER_TO_FAMILY = {
@@ -74,8 +72,9 @@ function isClaudeSubscription(provider, kind) {
   return kind === "subscription" && CLAUDE_SUBSCRIPTION_PROVIDERS.has(String(provider || "").trim().toLowerCase());
 }
 
-function isPrintCliLogin(provider, kind) {
-  return kind === "subscription" && PRINT_CLI_CONNECTIONS.has(String(provider || "").trim().toLowerCase());
+function cliConnection(catalog, provider, kind) {
+  const key = String(provider || "").trim().toLowerCase();
+  return kind === "subscription" && Object.hasOwn(catalog, key) ? catalog[key] : null;
 }
 
 function filterQueryString(filter = {}) {
@@ -180,11 +179,12 @@ export function normalizeConnections(config, connResponse) {
     }));
 }
 
-export function connectionBody(values) {
+export function connectionBody(values, catalog = {}) {
   const body = {
     provider: values.provider.trim(),
     kind: values.kind,
   };
+  const cli = cliConnection(catalog, body.provider, body.kind);
   if (values.kind === "subscription") {
     if (isClaudeSubscription(body.provider, values.kind)) {
       const mode = values.claudeAuthMode;
@@ -198,10 +198,10 @@ export function connectionBody(values) {
         if (configDir) body.config_dir = configDir;
         if (secret) body.secret = secret;
       }
-    } else if (isPrintCliLogin(body.provider, values.kind)) {
+    } else if (cli?.profile) {
       const configDir = (values.configDir || "").trim();
       if (configDir) body.config_dir = configDir;
-      body.profile = values.profile || PRINT_CLI_CONNECTIONS.get(body.provider.toLowerCase()).profile;
+      body.profile = values.profile || cli.profile;
       const home = (values.home || "").trim();
       if (home) body.home = home;
     } else {
@@ -384,6 +384,8 @@ function isKeyOrEndpointConnection(conn) {
 
 export function connectionAuthBadge(conn, setSecretNames) {
   const state = (conn && conn.state) || {};
+  const childBadge = childConnectionBadge(state);
+  if (childBadge) return childBadge;
   const auth = state.auth || "unknown";
   if (isKeyOrEndpointConnection(conn)) {
     if (auth === "ok") {
@@ -400,7 +402,8 @@ export function connectionAuthBadge(conn, setSecretNames) {
     }
     return { tone: authTone(auth), label: authLabel(state) };
   }
-  const isClaudeSecret = isClaudeSubscription(conn.provider, conn.kind) && !conn.config_dir;
+  const isClaudeSecret = !String(conn.on || "").startsWith("child:")
+    && isClaudeSubscription(conn.provider, conn.kind) && !conn.config_dir;
   if (isClaudeSecret && auth === "unknown") {
     const isEnv = Boolean(conn.secret && conn.secret.startsWith("env:"));
     const configured = isEnv || Boolean(conn.secret && setSecretNames && setSecretNames.has(conn.secret));
@@ -431,7 +434,11 @@ export function connectionAttention(conn, setSecretNames = new Set()) {
     }
   };
 
-  if (
+  if (state.child_state && badge.tone === "warning" && state.child_state !== "online") {
+    flag("warning", badge.label);
+  } else if (state.child_state === "revoked") {
+    flag("negative", badge.label);
+  } else if (
     auth === "expired"
     || auth === "logged_out"
     || auth === "login_required"
@@ -491,7 +498,6 @@ function probeConnectionControl(id, refresh, statusEl) {
 }
 
 function connectionRow(conn, selected, filterState) {
-  const { tone, label } = conn.badge;
   return el("a", {
     class: "connection-row",
     href: connectionHash(conn.id, filterState),
@@ -499,7 +505,7 @@ function connectionRow(conn, selected, filterState) {
   },
   el("span", { class: "connection-kind small muted" }, CONNECTION_KIND_LABELS[conn.kind] || conn.kind),
   el("span", { class: "connection-name" }, conn.id),
-  el("span", { class: `state-chip mono small${tone ? ` is-${tone}` : ""}` }, dot(tone), label),
+  statusChip(conn.badge),
   el("span", { class: "connection-chevron", "aria-hidden": "true" }, "›"));
 }
 
@@ -571,8 +577,9 @@ function providerSection(entry, config, machine, machineOk, {
   const status = ["negative", "warning", "", "positive"].find((tone) =>
     connections.some((conn) => (conn.attention.severity || conn.badge.tone) === tone));
   const signedOut = connections.some((conn) => ["logged_out", "login_required", "expired"].includes(conn.state?.auth));
-  const statusLabel = signedOut ? "Logged out"
-    : { negative: "Needs attention", warning: "Needs attention", positive: "OK" }[status] || "Unknown";
+  const childBadge = connections.length === 1 && childConnectionBadge(connections[0].state);
+  const statusLabel = childBadge?.label || (signedOut ? "Logged out"
+    : { negative: "Needs attention", warning: "Needs attention", positive: "OK" }[status] || "Unknown");
   const cliVersion = connections.find((conn) => conn.state?.cli_version)?.state.cli_version
     || [...drivers.keys()].filter((driver) => driver !== "cli.print")
       .map((driver) => machine?.drivers?.[driver]?.cli_version).find(Boolean);
@@ -780,10 +787,12 @@ export function suggestConnectionId(provider, kind, claudeAuthMode, connections)
 
 function connectionForm(conn, isNew, secretNames, connections, refresh, tracker, {
   onError = null,
+  catalog = {},
   defaultProvider = "",
   filterState = {},
 } = {}) {
   const start = isNew ? { provider: defaultProvider || "claude", kind: "subscription", home: "default" } : conn;
+  const childPlacement = String(start.on || "").startsWith("child:") ? start.on : null;
   const status = el("p", { class: "error", role: "alert" });
   let claudeAuthMode = (!isNew && start.secret && !start.config_dir) ? "secret" : "config_dir";
 
@@ -803,7 +812,7 @@ function connectionForm(conn, isNew, secretNames, connections, refresh, tracker,
     idUserEdited = true;
   });
 
-  const providerOptions = [...new Set([...KNOWN_PROVIDERS, ...(start.provider ? [start.provider] : [])])];
+  const providerOptions = [...new Set([...KNOWN_PROVIDERS, ...Object.keys(catalog), ...(start.provider ? [start.provider] : [])])];
   const providerSelect = el("select", { class: "input", "aria-label": "Provider" },
     providerOptions.map((p) => el("option", { value: p }, p)));
   providerSelect.value = start.provider || "claude";
@@ -923,6 +932,12 @@ function connectionForm(conn, isNew, secretNames, connections, refresh, tracker,
 
   const syncVisibility = () => {
     const p = providerSelect.value.trim().toLowerCase();
+    const endpointOnly = ENDPOINT_ONLY_PROVIDERS.has(p);
+    kindSelect.disabled = endpointOnly;
+    if (endpointOnly) {
+      kindSelect.value = "endpoint";
+      if (!dataPolicySelect.value) dataPolicySelect.value = "unknown";
+    }
     const k = kindSelect.value;
     if (isNew) {
       const suggested = suggestConnectionId(p, k, claudeAuthMode, connections);
@@ -935,18 +950,19 @@ function connectionForm(conn, isNew, secretNames, connections, refresh, tracker,
     telemetryHint.hidden = p !== "antigravity";
     const claudeSub = isClaudeSubscription(p, k);
     const codexSub = k === "subscription" && p === "codex";
-    const printCliSub = isPrintCliLogin(p, k);
+    const cli = cliConnection(catalog, p, k);
+    const printCliSub = Boolean(cli?.profile);
     const otherSub = k === "subscription" && !claudeSub && !codexSub && !printCliSub;
 
-    authModeField.hidden = !claudeSub;
-    configDirField.hidden = !((claudeSub && claudeAuthMode === "config_dir") || printCliSub);
-    homeField.hidden = !(codexSub || otherSub);
+    authModeField.hidden = Boolean(childPlacement) || !claudeSub;
+    configDirField.hidden = Boolean(childPlacement) || !((claudeSub && claudeAuthMode === "config_dir") || printCliSub);
+    homeField.hidden = Boolean(childPlacement) || !(codexSub || otherSub);
     homeHint.textContent = codexSub ? "Codex home directory (default: default)" : "Account profile label (default: default)";
-    authFileField.hidden = !codexSub;
+    authFileField.hidden = Boolean(childPlacement) || !codexSub;
     endpointField.hidden = k !== "endpoint";
-    secretField.hidden = !(k === "api_key" || k === "endpoint" || (claudeSub && claudeAuthMode === "secret"));
+    secretField.hidden = !(k === "api_key" || k === "endpoint" || (!childPlacement && claudeSub && claudeAuthMode === "secret"));
 
-    const loginHome = PRINT_CLI_CONNECTIONS.get(p)?.loginHome;
+    const loginHome = cli?.login_home;
     if (isNew && !configDirUserEdited && configDirInput.value === autoConfigDir) {
       autoConfigDir = printCliSub ? loginHome : "";
       configDirInput.value = autoConfigDir;
@@ -955,7 +971,7 @@ function connectionForm(conn, isNew, secretNames, connections, refresh, tracker,
       ? loginHome
       : "/srv/operator/.local/share/kotoyose/claude-host";
 
-    configDirInput.required = Boolean(printCliSub || (claudeSub && claudeAuthMode === "config_dir"));
+    configDirInput.required = !configDirField.hidden;
     endpointInput.required = !endpointField.hidden;
     secretInput.required = !secretField.hidden;
 
@@ -1032,7 +1048,8 @@ function connectionForm(conn, isNew, secretNames, connections, refresh, tracker,
       quotaFrom: quotaFromSelect.value,
       dataPolicy: dataPolicySelect.value,
       showQuota: showQuotaInput.checked,
-    });
+    }, catalog);
+    if (childPlacement) body.on = childPlacement;
     setBusy(true);
     try {
       if (isNew) {
@@ -1601,21 +1618,22 @@ function claudeTokenSection(conn, setSecretNames, refresh, tracker) {
   return section;
 }
 
-function cliConfigDirSection(conn, state, { isPrintCli = false } = {}) {
-  const printCli = PRINT_CLI_CONNECTIONS.get(conn.provider.toLowerCase());
-  const cursor = isPrintCli && printCli?.profile === "cursor";
-  const grok = isPrintCli && printCli?.profile === "grok";
-  const quote = (value) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
-  const cmd = cursor
-    ? `HOME=${quote(conn.config_dir)} CURSOR_CONFIG_DIR=${quote(conn.config_dir + "/.cursor")} NO_OPEN_BROWSER=1 agent login`
-    : isPrintCli
-    ? `HOME=${conn.config_dir} ${printCli.binary}`
-    : `CLAUDE_CONFIG_DIR=${conn.config_dir} claude`;
+function cliConfigDirSection(conn, state, cli) {
+  const isPrintCli = Boolean(cli?.profile);
+  const terminal = cli?.terminal;
+  const quote = (value) => "'" + value.replaceAll("'", `'"'"'`) + "'";
+  const cmd = terminal && [
+    ...Object.entries(terminal.env_paths).map(([key, path]) => {
+      const resolved = path === "." ? conn.config_dir : `${conn.config_dir}/${path}`;
+      return `${key}=${quote(resolved)}`;
+    }),
+    ...Object.entries(terminal.env).map(([key, value]) => `${key}=${quote(value)}`),
+    ...terminal.argv,
+  ].join(" ");
   const heading = isPrintCli ? "CLI login" : "Claude CLI login";
   const intro = isPrintCli
     ? "Click Log in above to sign in through the official CLI."
     : "Click Log in above to sign in through the official Claude Code CLI.";
-  const slashHint = isPrintCli ? "/usage" : "/login";
   const footer = isPrintCli
     ? "The official CLI stores credentials in its dedicated login home."
     : "The official Claude Code CLI manages credentials inside its own config directory; Kotoyose only acts as a terminal for login and runs /usage.";
@@ -1643,11 +1661,11 @@ function cliConfigDirSection(conn, state, { isPrintCli = false } = {}) {
         dot(authTone(state.auth)),
         authLabel(state))),
     el("p", { class: "small" }, intro),
-    grok ? null : el("p", { class: "hint" },
+    !cmd ? null : el("p", { class: "hint" },
       "Fallback (terminal): ",
       el("code", { class: "mono" }, cmd),
-      cursor ? null : " then ",
-      cursor ? null : el("code", { class: "mono" }, slashHint),
+      terminal.follow_up ? " then " : null,
+      terminal.follow_up ? el("code", { class: "mono" }, terminal.follow_up) : null,
       " ",
       copyBtn,
       " ",
@@ -1655,7 +1673,7 @@ function cliConfigDirSection(conn, state, { isPrintCli = false } = {}) {
     el("p", { class: "hint" }, footer));
 }
 
-function openConnectionPeek(connections, selectedConnId, secretNames, setSecretNames, refresh, filterState = {}) {
+function openConnectionPeek(connections, selectedConnId, secretNames, setSecretNames, refresh, filterState, catalog) {
   if (selectedConnId === null) return;
   const backHash = providersHash(filterState);
   const onClose = () => { location.hash = backHash; };
@@ -1678,6 +1696,7 @@ function openConnectionPeek(connections, selectedConnId, secretNames, setSecretN
   const tokenTracker = createDirtyTracker();
   let settingsDisclosure = null;
   const form = connectionForm(conn, isNew, secretNames, connections, refresh, formTracker, {
+    catalog,
     defaultProvider: filterState.defaultProvider || "",
     filterState,
     onError: () => {
@@ -1698,24 +1717,27 @@ function openConnectionPeek(connections, selectedConnId, secretNames, setSecretN
     const badge = connectionAuthBadge(conn, setSecretNames);
     headerBadge = badge;
     const checkStatus = el("p", { class: "error small", role: "alert" });
+    const isChild = String(conn.on || "").startsWith("child:");
     const isCodexSub = conn.provider === "codex" && conn.kind === "subscription";
     const isClaudeSub = isClaudeSubscription(conn.provider, conn.kind);
-    const usesConfigDir = Boolean(isClaudeSub && conn.config_dir);
-    const usesPrintCliLogin = Boolean(isPrintCliLogin(conn.provider, conn.kind) && conn.config_dir);
-    const usesSecretStore = Boolean(isClaudeSub && !usesConfigDir && conn.secret && !conn.secret.startsWith("env:"));
-    const codexLogin = isCodexSub ? codexLoginSection(conn, refresh, checkStatus) : null;
-    const claudeFlow = usesConfigDir
-      ? claudeAuthFlow(conn, "login", refresh, checkStatus)
-      : (usesSecretStore
-          ? claudeAuthFlow(conn, "setup_token", refresh, checkStatus)
-          : (usesPrintCliLogin ? claudeAuthFlow(conn, "cli_login", refresh, checkStatus) : null));
+    const usesConfigDir = Boolean(!isChild && isClaudeSub && conn.config_dir);
+    const cli = cliConnection(catalog, conn.provider, conn.kind);
+    const usesPrintCliLogin = Boolean(!isChild && cli?.profile && cli.child_login && conn.config_dir);
+    const usesSecretStore = Boolean(!isChild && isClaudeSub && !usesConfigDir && conn.secret && !conn.secret.startsWith("env:"));
+    const codexLogin = isCodexSub && !isChild ? codexLoginSection(conn, refresh, checkStatus) : null;
+    const childLogin = isChild && cli?.child_login;
+    let loginMode = null;
+    if (childLogin || usesPrintCliLogin) loginMode = "cli_login";
+    else if (usesConfigDir) loginMode = "login";
+    else if (usesSecretStore) loginMode = "setup_token";
+    const claudeFlow = loginMode ? claudeAuthFlow(conn, loginMode, refresh, checkStatus) : null;
 
     const headControls = el("div", { class: "chips" },
       probeConnectionControl(conn.id, refresh, checkStatus),
-      isCodexSub ? refreshConnectionControl(conn.id, refresh, checkStatus) : null,
+      isCodexSub && !isChild ? refreshConnectionControl(conn.id, refresh, checkStatus) : null,
       codexLogin ? codexLogin.loginButton : null,
       claudeFlow ? claudeFlow.button : null);
-    const claudeSecretStatus = isClaudeSub && !usesConfigDir
+    const claudeSecretStatus = !isChild && isClaudeSub && !usesConfigDir
       ? [
         el("dt", {}, "Secret configured"),
         el("dd", { class: "mono" },
@@ -1742,9 +1764,12 @@ function openConnectionPeek(connections, selectedConnId, secretNames, setSecretN
       el("dl", { class: "kv" },
         el("dt", {}, "Auth"),
         el("dd", { class: "mono" },
-          el("span", { class: "row-status" }, dot(badge.tone), badge.label)),
+          el("span", { class: "row-status" }, dot(badge.tone), badge.label),
+          badge.detail && state.child_state === "disconnected"
+            ? el("span", { class: "small muted" }, ` · ${badge.detail}`) : null),
         claudeSecretStatus,
         claudeDirStatus,
+        isChild ? workspacePolicyFields(state.workspace_policy) : null,
         el("dt", {}, "Data policy"),
         el("dd", {}, dataPolicy),
         el("dt", {}, "Expires at"),
@@ -1760,12 +1785,12 @@ function openConnectionPeek(connections, selectedConnId, secretNames, setSecretN
         state.last_error
           ? [el("dt", {}, "Last error"), el("dd", { class: "error small" }, state.last_error)]
           : null),
-      renderQuotaRows(state.quota, { via: quotaVia })));
-    if (usesConfigDir) {
-      sections.push(cliConfigDirSection(conn, state, { isPrintCli: false }));
-    } else if (usesPrintCliLogin) {
-      sections.push(cliConfigDirSection(conn, state, { isPrintCli: true }));
-    } else if (isClaudeSub) {
+      renderQuotaRows(state.quota, { via: quotaVia })
+        || (state.child_state === "online" && state.child_quota_shared === false
+          ? el("p", { class: "small muted" }, "Quota not shared") : null)));
+    if (usesConfigDir || usesPrintCliLogin) {
+      sections.push(cliConfigDirSection(conn, state, cli));
+    } else if (!isChild && isClaudeSub) {
       sections.push(claudeTokenSection(conn, setSecretNames, refresh, tokenTracker));
     }
     sections.push(el("div", { class: "sub-section" },
@@ -1898,7 +1923,9 @@ function groupByProvider(connections, drivers, tools, config, setSecretNames) {
     if (!entries.has(id)) entries.set(id, { id, connections: [], drivers: new Map(), tools: [] });
     return entries.get(id);
   }
-  for (const id of KNOWN_PROVIDERS) entryFor(id);
+  for (const id of KNOWN_PROVIDERS) {
+    if (!ENDPOINT_ONLY_PROVIDERS.has(id)) entryFor(id);
+  }
   for (const conn of connections) {
     const badge = connectionAuthBadge(conn, setSecretNames);
     if (isExpiredByTimestamp(conn.state)) {
@@ -1953,7 +1980,9 @@ export async function renderProviders(main, { config, rest, query, refresh }) {
   const secretsList = secretResult.status === "fulfilled"
     ? ((secretResult.value && secretResult.value.secrets) || [])
     : [];
-  const tools = toolsResult.status === "fulfilled" ? (toolsResult.value?.tools || []) : [];
+  const toolCatalog = toolsResult.status === "fulfilled" ? toolsResult.value : null;
+  const tools = toolCatalog?.tools || [];
+  const catalog = toolCatalog?.connections || {};
   const secretNames = secretsList.map((s) => s.name);
   const setSecretNames = new Set(secretsList.filter((s) => s.set !== false).map((s) => s.name));
 
@@ -1999,6 +2028,14 @@ export async function renderProviders(main, { config, rest, query, refresh }) {
     ];
 
   list.append(...bodyNodes);
+  let declarations = null;
+  try {
+    declarations = await api.providerDeclarations();
+  } catch (error) {
+    declarations = { error: error.message || "Could not load data declarations.", declarations: [] };
+  }
+  const declarationHost = el("div");
+  declarationHost.append(mountDeclarationCatalog(declarationHost, declarations));
   main.append(
     el("header", { class: "page-head" },
       el("div", {},
@@ -2009,10 +2046,11 @@ export async function renderProviders(main, { config, rest, query, refresh }) {
     providersToolbar(totalAttention, filterState),
     orderStatus,
     list,
+    declarationHost,
   );
 
   if (selectedConnId !== null) {
-    openConnectionPeek(connections, selectedConnId, secretNames, setSecretNames, refresh, filterState);
+    openConnectionPeek(connections, selectedConnId, secretNames, setSecretNames, refresh, filterState, catalog);
   } else if (selectedDriver !== null) {
     openDriverPeek(drivers, selectedDriver, config, machine, machineError, filterState);
   }

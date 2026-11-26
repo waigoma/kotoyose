@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import stat
+from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import date, datetime
 from collections.abc import Callable, Iterable, Mapping
@@ -21,7 +23,11 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, PrivateAttr, 
 import structlog
 import yaml
 
+from .alias_mcp import (
+    is_host_mcp_reference, mcp_reference, require_child_for_scoped_reference, valid_public_name, validate_mcp_references,
+)
 from . import process_env
+from .child_registry import child_on_name
 from .agent_spec import (
     DataPolicy, PlaceName, SurfaceName, driver_manifest, execution_environment_error, explicit_sandbox_error,
     host_sandbox_default, native_execution_error, output_schema_error,
@@ -29,6 +35,7 @@ from .agent_spec import (
 from .delegation import KEY_PREFIX, MCP_NAME, inject_delegation_server
 from .data_policy import TrainingCapability, alias_data_policy, configured_capabilities
 from .compatibility_config import CompatibilityConfig, NativeAliasSettings, load_compatibility_config
+from .execution_resources import ClientPlace
 from .registry import registry
 from .pool_strategies import KNOWN_REQUIRES, get_strategy
 from .print_cli_profiles import (
@@ -175,6 +182,14 @@ def _validate_connection_secret_ref(value: str | None) -> str | None:
 _CLAUDE_SUBSCRIPTION_PROVIDERS = frozenset({"claude", "anthropic"})
 
 
+def _validate_on_axis(value: str) -> str:
+    """行き先は host の `local` か、登録名を付けた `child:<名前>` だけ。"""
+    cleaned = _validate_no_whitespace(value, label="on")
+    if cleaned == "local" or child_on_name(cleaned):
+        return cleaned
+    raise ValueError("on must be 'local' or 'child:<name>'")
+
+
 def _validate_no_whitespace(value: str, *, label: str) -> str:
     """Reject empty or whitespace-containing identifier strings cleanly."""
     if not value.strip() or any(ch.isspace() for ch in value):
@@ -189,9 +204,10 @@ def missing_data_policy_message(connection_id: str) -> str:
 class Connection(BaseModel):
     """1 つのアカウント login または接続先 endpoint。秘密の値そのものは持たない。"""
 
-    model_config = ConfigDict(extra="forbid")
+    # 不正な endpoint 入力には URL の認証情報が含まれ得る。
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     provider: str = Field(min_length=1)
-    kind: Literal["subscription", "api_key", "endpoint"]
+    kind: Literal["subscription", "api_key", "endpoint", "local_llm"]
     data_policy: DataPolicy
     profile: str | None = Field(default=None, exclude_if=lambda value: value is None)
     home: str | None = Field(default=None, exclude_if=lambda value: value is None or value == "default")
@@ -199,6 +215,7 @@ class Connection(BaseModel):
     config_dir: Path | None = Field(default=None, exclude_if=lambda value: value is None)
     quota_from: str | None = Field(default=None, exclude_if=lambda value: value is None)
     endpoint: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    local_llm: str | None = Field(default=None, exclude_if=lambda value: value is None)
     secret: str | None = Field(default=None, exclude_if=lambda value: value is None)
     show_quota: bool = Field(default=True, exclude_if=lambda value: value is True)
     on: str = Field(default="local", min_length=1, exclude_if=lambda value: value == "local")
@@ -223,7 +240,7 @@ class Connection(BaseModel):
     @field_validator("on")
     @classmethod
     def _validate_on(cls, value: str) -> str:
-        return _validate_no_whitespace(value, label="on")
+        return _validate_on_axis(value)
 
     @field_validator("endpoint")
     @classmethod
@@ -259,13 +276,51 @@ class Connection(BaseModel):
             raise ValueError("quota_from は空白を含まない接続 ID を指定してください")
         return cleaned
 
+    @model_validator(mode="before")
+    @classmethod
+    def _default_openai_compat_policy(cls, value: object) -> object:
+        if isinstance(value, Mapping) and value.get("provider") == "openai_compat" and "data_policy" not in value:
+            return {**value, "data_policy": "unknown"}
+        return value
+
     @model_validator(mode="after")
     def _validate_kind_fields(self) -> "Connection":
+        if self.kind == "local_llm":
+            from .child_local_llm import LOCAL_LLM_CONNECTION_FIELDS, valid_local_llm_name
+
+            if self.provider != "openai_compat" or child_on_name(self.on) is None:
+                raise ValueError("local_llm requires provider: openai_compat and on: child:<name>")
+            if not valid_local_llm_name(self.local_llm):
+                raise ValueError("local_llm requires a valid child connection ID")
+            if self.model_fields_set - LOCAL_LLM_CONNECTION_FIELDS:
+                raise ValueError("local_llm connection accepts only provider, kind, on, data_policy, and local_llm")
+            return self
+        if self.local_llm is not None:
+            raise ValueError("local_llm can only be specified with kind: local_llm")
+        if self.provider == "openai_compat":
+            if self.kind != "endpoint":
+                raise ValueError("openai_compat requires kind: endpoint")
+            if child_on_name(self.on):
+                raise ValueError("openai_compat connections require on: local")
+            endpoint = urlsplit(self.endpoint or "")
+            if endpoint.query or endpoint.fragment:
+                raise ValueError("openai_compat endpoint cannot specify a query or fragment")
+            if endpoint.scheme == "http" and endpoint.hostname != "localhost":
+                try:
+                    address = ipaddress.ip_address(endpoint.hostname or "")
+                except ValueError:
+                    address = None
+                if address != ipaddress.IPv6Address("::1") and not (
+                    isinstance(address, ipaddress.IPv4Address) and address.is_loopback
+                ):
+                    raise ValueError("openai_compat endpoint requires HTTPS except on loopback hosts")
         if self.profile is not None:
             try:
                 profile = get_print_cli_profile(self.profile)
             except KeyError as exc:
                 raise ValueError(str(exc)) from exc
+            if profile.data_declaration is not None and self.config_dir is not None:
+                raise ValueError("data providers use the normal OS login location")
             if self.kind != "subscription":
                 validate_print_cli_connection(profile, self)
             elif self.provider != profile.provider:
@@ -278,7 +333,9 @@ class Connection(BaseModel):
                     raise ValueError("claude subscription connection cannot specify auth_file")
                 if self.secret and self.config_dir is not None:
                     raise ValueError("claude subscription connection cannot specify both secret and config_dir")
-                if not self.secret and self.config_dir is None:
+                # child の subscription は、その OS user の CLI login を使う。
+                # host 側に secret も config_dir も要らない。
+                if not self.secret and self.config_dir is None and child_on_name(self.on) is None:
                     raise ValueError("claude subscription connection requires secret or config_dir")
             elif self.provider.lower() in {p.provider.lower() for p in list_print_cli_profiles()}:
                 if self.auth_file is not None:
@@ -367,6 +424,8 @@ class AgentRoute(BaseModel):
                 profile = get_print_cli_profile(self.profile)
             except KeyError as exc:
                 raise ValueError(f"unknown print CLI profile: {self.profile}") from exc
+            if profile.data_declaration is not None and self.driver != profile.data_declaration.driver:
+                raise ValueError("data provider route does not match its declared driver")
             if self.driver == "cli.acp" and profile.acp is None:
                 raise ValueError(f"profile '{profile.id}' does not support ACP")
         elif self.profile is not None:
@@ -438,6 +497,7 @@ class ModelPreset(BaseModel):
     # False の alias は委譲の先 (list_agents / ask_agent / delegates) にならない。人格や個人の記憶を持つ alias 向け。
     delegable: bool = Field(default=True, exclude_if=lambda value: value is True)
     execution: Literal["direct", "native"] = "direct"
+    approval: Literal["server", "client"] = Field(default="server", exclude_if=lambda value: value == "server")
     # Placement is independent of the chat execution mode. An absent choice preserves
     # existing routing, SDK defaults, and serialized configuration digests.
     execution_environment: Literal["isolated", "host"] | None = Field(
@@ -450,7 +510,7 @@ class ModelPreset(BaseModel):
     allow: AliasAllow | None = Field(default=None, exclude_if=lambda value: value is None)
     # direct でも検証・保存し、Native への切替時に設定値を復元できるようにする。
     native: NativeAliasSettings | None = None
-    provider: Literal["claude", "codex", "cursor", "antigravity"] = "claude"
+    provider: Literal["claude", "codex", "cursor", "antigravity", "cli_acp", "print_cli"] = "claude"
     model: str | None = None  # SDK に渡す Claude モデル ID (例: "claude-sonnet-4-5-20241022")
     anthropic_base_url: str | None = None
     anthropic_auth_token_env: str | None = None
@@ -546,6 +606,7 @@ class ModelPreset(BaseModel):
     #     ["project"]         — プロジェクト設定のみ (デフォルト相当)
     #     []                  — 設定ファイルを一切読まない (隔離モード)
     setting_sources: list[Literal["user", "project", "local"]] | None = None
+    repository_skills: Literal["include", "exclude"] | None = Field(default=None, exclude_if=lambda value: value is None)
 
     # True は preset が明示した MCP だけを使い、user/project の自動 MCP 読込を拒否する。
     strict_mcp_config: bool = False
@@ -642,7 +703,7 @@ class ModelPreset(BaseModel):
     @field_validator("on")
     @classmethod
     def _validate_on(cls, value: str) -> str:
-        return _validate_no_whitespace(value, label="on")
+        return _validate_on_axis(value)
 
     @property
     def is_direct_host_chat(self) -> bool:
@@ -663,10 +724,24 @@ class ModelPreset(BaseModel):
     def is_jailed_read(self) -> bool:
         return self.agent is not None and self.agent.place == "isolated" and self.agent.surface == "read"
 
+    @property
+    def has_delegation_mcp(self) -> bool:
+        return any(mcp_reference(ref)[1] == MCP_NAME for ref in self.mcp_refs)
+
     @model_validator(mode="after")
     def _validate_execution_axes(self) -> "ModelPreset":
         """place='host' では allow.full=True 以外で作業場アクセスや egress を許さない。"""
-        if MCP_NAME in self.mcp_refs and not (self.is_direct_host_chat or self.is_jailed):
+        if child_on_name(self.on) and not _child_mcp_projection.get():
+            # Bare `kotoyose` is the host chat form. A child names the built-in relay as `host:kotoyose`.
+            if any(mcp_reference(ref)[1] == MCP_NAME and mcp_reference(ref)[0] != "host" for ref in self.mcp_refs):
+                raise ValueError("mcp_refs: kotoyose is not available on a child alias")
+            if self.mcp_servers:
+                raise ValueError("child aliases cannot set mcp_servers; name the child catalog with mcp_refs")
+        if any(
+            mcp_reference(ref)[0] and mcp_reference(ref)[1] in self.mcp_servers for ref in self.mcp_refs
+        ):
+            raise ValueError("mcp_refs: an explicit MCP reference cannot also be defined in mcp_servers")
+        if self.has_delegation_mcp and not (self.is_direct_host_chat or self.is_jailed or child_on_name(self.on)):
             raise ValueError("mcp_refs: kotoyose requires a direct host chat or jail alias")
         if (self.fixed_conversation_key or "").startswith(KEY_PREFIX):
             raise ValueError("fixed_conversation_key: delegate: is reserved")
@@ -708,7 +783,12 @@ class ModelPreset(BaseModel):
     def expand_cwd(cls, v: str) -> str:
         return os.path.expanduser(v)
 
-    @field_validator("skill_refs", "mcp_refs", "prompt_file_refs")
+    @field_validator("mcp_refs")
+    @classmethod
+    def _validate_mcp_references(cls, value: list[str]) -> list[str]:
+        return validate_mcp_references(value)
+
+    @field_validator("skill_refs", "prompt_file_refs")
     @classmethod
     def _reject_duplicate_profiles(cls, value: list[str]) -> list[str]:
         """同じ参照の二重指定による plugin / skill の重複注入を拒否する。"""
@@ -839,6 +919,8 @@ class ModelPreset(BaseModel):
         未信頼 cwd の project スコープ設定 (CLAUDE.md / .claude/agents / project MCP) を
         読み込むため禁止。bare:true 下では --bare が自動検出を無効化するため対象外とする。
         """
+        if self.require_isolation and self.repository_skills == "include":
+            raise ValueError("repository_skills: include conflicts with require_isolation")
         if self.require_isolation and not self.bare and self.setting_sources != []:
             raise ValueError(
                 "require_isolation=True の preset は bare=false のとき setting_sources: [] を"
@@ -905,6 +987,31 @@ class McpDefinition(BaseModel):
 
     description: str = ""
     server: dict[str, object]
+    publish_to_children: bool = Field(default=False, exclude_if=lambda value: not value)
+    publication_revision: str = Field(default="", max_length=128, exclude_if=lambda value: not value)
+
+    @model_validator(mode="after")
+    def _validate_publication(self) -> "McpDefinition":
+        if self.publish_to_children:
+            from urllib.parse import urlsplit
+
+            server = self.server
+            if server.get("type") == "stdio" or "command" in server:
+                command = server.get("command")
+                args = server.get("args") or []
+                env = server.get("env") or {}
+                if (not isinstance(command, str) or not command or len(command) > 4096
+                        or any(ord(char) < 32 for char in command)
+                        or not isinstance(args, list) or any(not isinstance(arg, str) for arg in args)
+                        or not isinstance(env, dict) or any(not isinstance(key, str) or "=" in key or "\x00" in key for key in env)):
+                    raise ValueError("publish_to_children requires a Streamable HTTP MCP URL or a stdio command")
+                return self
+            url = server.get("url")
+            endpoint = urlsplit(url) if isinstance(url, str) else None
+            if (server.get("type") != "http" or endpoint is None
+                    or endpoint.scheme not in {"http", "https"} or not endpoint.hostname or endpoint.fragment):
+                raise ValueError("publish_to_children requires a Streamable HTTP MCP URL or a stdio command")
+        return self
 
     @field_validator("server")
     @classmethod
@@ -1046,7 +1153,7 @@ class Client(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     models: list[str] = Field(default_factory=list)
-    places: list[PlaceName] = Field(default_factory=lambda: ["isolated"])
+    places: list[ClientPlace] = Field(default_factory=lambda: ["isolated"])
     max_surface: SurfaceName | None = Field(default=None, exclude_if=lambda value: value is None)
     allow_full: bool = Field(default=False, exclude_if=lambda value: not value)
     workspace_roots: list[Path] = Field(default_factory=list)
@@ -1081,7 +1188,7 @@ class Client(BaseModel):
 
     @field_validator("places")
     @classmethod
-    def _validate_places(cls, value: list[PlaceName]) -> list[PlaceName]:
+    def _validate_places(cls, value: list[ClientPlace]) -> list[ClientPlace]:
         return list(dict.fromkeys(value))
 
     @field_validator("workspace_roots")
@@ -1145,7 +1252,7 @@ class Client(BaseModel):
 class HarnessConfig(BaseModel):
     """Model preset と再利用可能な個別リソースを保持する。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     credential_leak_guard: bool = Field(default=True, exclude_if=lambda value: value)
     models: dict[str, ModelPreset] = {}
@@ -1165,6 +1272,12 @@ class HarnessConfig(BaseModel):
     prompt_files: dict[str, PromptFileDefinition] = Field(default_factory=dict)
     settings: HarnessSettings = Field(default_factory=HarnessSettings)
     _compatibility_config: CompatibilityConfig | None = PrivateAttr(default=None)
+    _startup_warnings: tuple[str, ...] = PrivateAttr(default=())
+    _child_mcp_projection: bool = PrivateAttr(default=False)
+
+    @property
+    def startup_warnings(self) -> tuple[str, ...]:
+        return self._startup_warnings
 
     @model_validator(mode="before")
     @classmethod
@@ -1172,8 +1285,16 @@ class HarnessConfig(BaseModel):
         if isinstance(value, Mapping):
             for field in ("mcps", "mcp_definitions"):
                 definitions = value.get(field)
-                if isinstance(definitions, Mapping) and MCP_NAME in definitions:
+                if isinstance(definitions, Mapping) and MCP_NAME in definitions and not _child_mcp_projection.get():
                     raise ValueError(f"{field}: kotoyose is reserved")
+        return value
+
+    @field_validator("mcps")
+    @classmethod
+    def _validate_published_mcp_names(cls, value: dict[str, McpDefinition]) -> dict[str, McpDefinition]:
+        published = [name for name, definition in value.items() if definition.publish_to_children]
+        if len(published) > 64 or any(len(name) > 128 or not valid_public_name(name) for name in published):
+            raise ValueError("mcps: publish at most 64 MCPs with valid names of at most 128 characters")
         return value
 
     @field_validator("clients")
@@ -1189,7 +1310,11 @@ class HarnessConfig(BaseModel):
     def _require_connection_data_policies(cls, connections: object) -> object:
         if isinstance(connections, Mapping):
             for conn_id, connection in connections.items():
-                if isinstance(connection, Mapping) and "data_policy" not in connection:
+                if (
+                    isinstance(connection, Mapping)
+                    and connection.get("provider") != "openai_compat"
+                    and "data_policy" not in connection
+                ):
                     raise ValueError(missing_data_policy_message(conn_id))
         return connections
 
@@ -1343,6 +1468,20 @@ class HarnessConfig(BaseModel):
             return get_print_cli_profile(route_profiles.pop())
         return None
 
+    @staticmethod
+    def _validate_openai_chat_alias(name: str, preset: ModelPreset) -> None:
+        disallowed = {
+            "tools": preset.tools is not None,
+            "mcp_refs": bool(preset.mcp_refs),
+            "mcp_servers": bool(preset.mcp_servers),
+            "agent": preset.agent is not None,
+            "place: jail": preset.place == "jail",
+            "execution: native": preset.execution == "native",
+            "execution_environment: isolated": preset.execution_environment == "isolated",
+        }
+        if fields := [field for field, present in disallowed.items() if present]:
+            raise ValueError(f"{name}: openai.chat does not support {', '.join(fields)}")
+
     @model_validator(mode="after")
     def _validate_profile_references(self) -> "HarnessConfig":
         """全 preset の参照と request header template 契約を起動時に検証する。"""
@@ -1352,6 +1491,8 @@ class HarnessConfig(BaseModel):
                 raise ValueError(f"routes.{route_name}.connection: 不明な connection '{route.connection}' です")
             manifest = driver_manifest(route.driver)
             driver_provider = manifest.provider
+            if conn.kind == "local_llm" and manifest.driver != "openai.chat":
+                raise ValueError(f"routes.{route_name}: local_llm requires openai.chat")
             if manifest.unmapped_backend == "print_cli":
                 assert route.profile is not None
                 cli_profile = get_print_cli_profile(route.profile)
@@ -1424,16 +1565,69 @@ class HarnessConfig(BaseModel):
             if preset.agent is not None and preset.route is None:
                 raise ValueError(f"{preset_name}: agent には route が必要です")
             route_provider = None
+            cli_profile = None
             if preset.route is not None:
                 manifest = driver_manifest(self.routes[preset.route].driver)
                 route_provider = manifest.provider
                 route = self.routes[preset.route]
                 conn = self.connections[route.connection]
+                if conn.kind in {"subscription", "local_llm"} and conn.on != preset.on:
+                    raise ValueError(
+                        f"{preset_name}: {conn.kind} connection '{route.connection}' on '{conn.on}' "
+                        f"must equal alias on '{preset.on}'"
+                    )
+                if child_on_name(preset.on) and conn.kind in {"api_key", "endpoint"}:
+                    raise ValueError(
+                        f"{preset_name}: api_key and endpoint connections cannot be used when on is {preset.on}"
+                    )
+                if child_on_name(preset.on) and any(ref.startswith("host:") for ref in preset.mcp_refs):
+                    if route_provider not in {"claude", "codex"} and route.driver != "cli.acp":
+                        raise ValueError(f"{preset_name}.mcp_refs: host MCP references require Claude, Codex, or data-declared ACP")
+                if manifest.driver == "openai.chat":
+                    self._validate_openai_chat_alias(preset_name, preset)
+                    if conn.kind == "local_llm" and (
+                        preset.required_request_headers or preset.anthropic_base_url is not None
+                        or preset.anthropic_auth_token_env is not None or preset.anthropic_auth_token_secret is not None
+                    ):
+                        raise ValueError(f"{preset_name}: local_llm cannot specify URLs, credentials, or request headers")
                 if manifest.unmapped_backend == "print_cli":
                     placement = ("jail" if preset.place == "jail" or preset.execution_environment == "isolated"
                                  else preset.agent.place if preset.agent is not None else "host")
                     try:
-                        validate_print_cli_connection(get_print_cli_profile(route.profile), conn, placement=placement)
+                        profile = cli_profile = get_print_cli_profile(route.profile)
+                        validate_print_cli_connection(profile, conn, placement=placement)
+                        if (child_on_name(preset.on) and any(ref.startswith("host:") for ref in preset.mcp_refs)
+                                and profile.data_declaration is None):
+                            raise ValueError("host MCP references require data-declared ACP")
+                        if declaration := profile.data_declaration:
+                            from .child_identity import valid_data_mcp_name
+                            from .provider_data import UNRESTRICTED, require_unrestricted_alias
+
+                            if not all(valid_data_mcp_name(mcp_reference(ref)[1]) for ref in preset.mcp_refs):
+                                raise ValueError("data provider MCP names in mcp_refs must match ^[A-Za-z0-9][A-Za-z0-9-]*$")
+
+                            surface = preset.agent.surface if preset.agent is not None else "read"
+                            on_child = child_on_name(preset.on) is not None
+                            if surface == "write" and not on_child:
+                                raise ValueError("data provider write requires on: child:<name>")
+                            unrestricted = declaration.supports(UNRESTRICTED)
+                            full = preset.allow is not None and preset.allow.full
+                            if unrestricted and (not declaration.supports("read") or (on_child and surface == "write" and full)):
+                                require_unrestricted_alias(preset.on, surface, full, route.driver, tools=preset.tools, deny=preset.deny)
+                            if surface == "write" and (route.driver != "cli.acp" or not (
+                                declaration.supports("write") or unrestricted and full
+                            )):
+                                raise ValueError("data provider write requires a sandboxed ACP write_argv")
+                            if surface == "write" and placement != "host":
+                                raise ValueError("data provider write requires agent.place: host on the child")
+                            if on_child and surface not in {"read", "write"}:
+                                raise ValueError("child data provider aliases require a read or write surface")
+                            if on_child and preset.mcp_servers:
+                                raise ValueError("child data provider aliases cannot set inline mcp_servers")
+                            if preset.mcp_refs and not (on_child and surface == "write" and (
+                                declaration.supports("mcp") or unrestricted and full
+                            )):
+                                raise ValueError("data provider mcp_refs require on: child:<name>, agent.surface: write, and MCP capability")
                     except ValueError as exc:
                         raise ValueError(f"{preset_name}: {exc}") from exc
                 if preset.agent is not None and preset.agent.place not in manifest.places:
@@ -1441,11 +1635,15 @@ class HarnessConfig(BaseModel):
                         f"{preset_name}.agent.place={preset.agent.place!r} は {manifest.driver} では使えません"
                     )
             if (
-                MCP_NAME in preset.mcp_refs and preset.route is not None
+                preset.has_delegation_mcp and preset.route is not None
                 and manifest.unmapped_backend == "print_cli" and (preset.is_jailed or route.driver != "cli.acp")
             ):
                 raise ValueError(f"{preset_name}.mcp_refs: kotoyose requires an MCP-capable chat runtime")
             provider = route_provider if route_provider is not None else preset.provider
+            if preset.repository_skills is not None:
+                from .repository_skills import validate_repository_skills
+
+                validate_repository_skills(preset_name, preset, provider, cli_profile)
             if preset.execution == "native" and provider != "claude":
                 raise ValueError("execution='native' is supported only for claude aliases")
             preset.validate_execution_environment(provider)
@@ -1464,16 +1662,21 @@ class HarnessConfig(BaseModel):
             for resource_name in preset.skill_refs:
                 if resource_name not in self.skill_definitions:
                     raise ValueError(f"{preset_name}.skill_refs: 不明な Skill '{resource_name}' です")
-            for resource_name in preset.mcp_refs:
-                if resource_name != MCP_NAME and resource_name not in self.mcps:
+            on_child = child_on_name(preset.on) is not None
+            for ref in preset.mcp_refs:
+                try:
+                    require_child_for_scoped_reference(ref, on_child=on_child)
+                except ValueError as exc:
+                    raise ValueError(f"{preset_name}.{exc}") from exc
+                resource_name = mcp_reference(ref)[1]
+                if is_host_mcp_reference(ref, on_child=on_child) and resource_name != MCP_NAME and resource_name not in self.mcps:
                     raise ValueError(f"{preset_name}.mcp_refs: 不明な MCP '{resource_name}' です")
             for resource_name in preset.prompt_file_refs:
                 if resource_name not in self.prompt_files:
                     raise ValueError(f"{preset_name}.prompt_file_refs: 不明な prompt file '{resource_name}' です")
 
-            # 個別リソース / inline の優先順位を反映した後の MCP 設定を検査する。
-            # 実行時にはここで見つかる template だけが request header を参照する。
-            _, _, mcp_servers = self.resolve_resources(preset)
+            # 子機のローカル定義は、子機側でのみ解決する。
+            mcp_servers = self._resolve_mcps(preset, host_only=on_child)
             decision = alias_data_policy(self, preset_name)
             if message := decision.refusal(configured_capabilities(preset)):
                 raise ValueError(message)
@@ -1562,26 +1765,36 @@ class HarnessConfig(BaseModel):
         self, preset: ModelPreset
     ) -> tuple[list[str], list[str] | Literal["all"] | None, dict[str, dict]]:
         """個別リソース参照 (skill_refs/mcp_refs) を記載順で合成し、最後に inline 設定を適用する。"""
+        plugins, skills = self.resolve_skill_resources(preset)
+        root_catalog_only = child_on_name(preset.on) is not None and not self._child_mcp_projection
+        return plugins, skills, self._resolve_mcps(preset, host_only=root_catalog_only)
+
+    def _resolve_mcps(self, preset: ModelPreset, *, host_only: bool = False) -> dict[str, dict]:
+        mcp_servers = {
+            name: dict(self.mcps[name].server)
+            for ref in preset.mcp_refs
+            if is_host_mcp_reference(ref, on_child=host_only)
+            and ((name := mcp_reference(ref)[1]) != MCP_NAME or self._child_mcp_projection)
+        }
+        mcp_servers.update(preset.mcp_servers)
+        return mcp_servers
+
+    def resolve_skill_resources(self, preset: ModelPreset) -> tuple[list[str], list[str] | Literal["all"] | None]:
+        """skill_refs と inline 設定からプラグインとスキル選択を解決する。未定義の参照は KeyError。"""
         plugins: list[str] = []
-        skills: list[str] | Literal["all"] | None = None
-        mcp_servers: dict[str, dict] = {}
+        skills: list[str] = []
 
         for resource_name in preset.skill_refs:
             resource = self.skill_definitions[resource_name]
             plugins.append(resource.plugin)
-            if skills != "all":
-                skills = [*(skills or []), resource.skill]
-        for resource_name in preset.mcp_refs:
-            if resource_name != MCP_NAME:
-                mcp_servers[resource_name] = dict(self.mcps[resource_name].server)
+            skills.append(resource.skill)
 
         plugins.extend(preset.plugins)
         if preset.skills == "all" or preset.skills == []:
-            skills = preset.skills
-        elif preset.skills is not None:
-            skills = [*(skills if isinstance(skills, list) else []), *preset.skills]
-        mcp_servers.update(preset.mcp_servers)
-        return plugins, skills, mcp_servers
+            return plugins, preset.skills
+        if preset.skills is not None:
+            skills.extend(preset.skills)
+        return plugins, skills or None
 
     def resolve_prompt_files(self, preset: ModelPreset) -> list[str]:
         """個別 prompt file を選択順で解決する。"""
@@ -1615,30 +1828,105 @@ def _find_claude_subscription_connection(
     return None
 
 
-def _load_yaml_config() -> HarnessConfig:
+class _ConfigLoader(yaml.SafeLoader):
+    """config.yml を YAML 1.2 の真偽値の規則で読む。
+
+    PyYAML の既定 (YAML 1.1) は on / off / yes / no を真偽値にするため、`on: child:dev` のキーが True になる。
+    真偽値は true / false だけにする。bool の欄に書かれた yes などは pydantic が受け付ける。
+    """
+
+
+_ConfigLoader.yaml_implicit_resolvers = {
+    first: [(tag, regexp) for tag, regexp in resolvers if tag != "tag:yaml.org,2002:bool"]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_ConfigLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:bool", re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"), list("tTfF"),
+)
+
+
+def load_config_yaml(stream) -> dict:
+    """config.yml の YAML を dict にする。Kotoyose の読み込みはすべてこれを通す。"""
+    return yaml.load(stream, Loader=_ConfigLoader) or {}
+
+
+def _load_yaml_config(*, startup: bool = False) -> HarnessConfig:
     """KOTOYOSE_CONFIG 環境変数 (デフォルト: ./config.yml または XDG config) からロード。"""
     from .config_paths import resolve_config_file_path
 
     path = resolve_config_file_path()
-    if os.path.exists(path):
+    data = {}
+    if path != os.devnull and os.path.exists(path):
         with open(path) as f:
-            data = yaml.safe_load(f) or {}
+            data = load_config_yaml(f)
+
+    skipped_aliases: set[str] = set()
+
+    def validate() -> HarnessConfig:
         cfg = HarnessConfig.model_validate(data)
-    else:
-        cfg = HarnessConfig()
-    # 起動・reload 時点で合成を検証し、名前衝突を初回リクエストまで持ち越さない。
-    cfg.compatibility_config
-    store = get_secret_store()
-    if store.is_configured and store._pool is None:
-        cfg.validate_secret_references(store=store)
+        # 起動・reload 時点で合成を検証し、名前衝突を初回リクエストまで持ち越さない。
+        compatibility = cfg.compatibility_config
+        for profiles in compatibility.callers.values():
+            for alias in skipped_aliases:
+                profiles.pop(alias, None)
+        store = get_secret_store()
+        if store.is_configured and store._pool is None:
+            cfg.validate_secret_references(store=store)
+        return cfg
+
+    if path == os.devnull:
+        return validate()
+
+    from .config_startup import omit_unavailable_data_profiles
+    from .provider_data_host import catalog_for_config
+
+    warnings = []
+    with catalog_for_config() as catalog:
+        if startup and isinstance(data, dict):
+            warnings, skipped_aliases = omit_unavailable_data_profiles(data, catalog)
+        cfg = validate()
+    cfg._startup_warnings = tuple(warnings)
+    for warning in warnings:
+        log.warning("config.startup_skipped", reason=warning)
     return cfg
 
 
-_config = _load_yaml_config()
+# The child projects a loopback server into a temporary config. Host config still reserves this name.
+_child_mcp_projection: ContextVar[bool] = ContextVar("kotoyose_child_mcp_projection", default=False)
+
+
+@contextmanager
+def use_child_mcp_projection():
+    token = _child_mcp_projection.set(True)
+    try:
+        yield
+    finally:
+        _child_mcp_projection.reset(token)
+
+
+_config = _load_yaml_config(startup=True)
+_CONFIG_OVERRIDE: ContextVar[HarnessConfig | None] = ContextVar("kotoyose_config_override", default=None)
+
+
+@contextmanager
+def use_config(config: HarnessConfig):
+    """この task の間だけ get_config() を、ファイルを読まない設定へ差し替える。
+
+    child は config.yml を持たない。turn で受け取った定義から組んだ HarnessConfig を
+    既存の runtime builder に見せるための境目。
+    """
+    token = _CONFIG_OVERRIDE.set(config)
+    try:
+        yield config
+    finally:
+        _CONFIG_OVERRIDE.reset(token)
 
 
 def get_config() -> HarnessConfig:
     """現在の HarnessConfig を返す。"""
+    override = _CONFIG_OVERRIDE.get()
+    if override is not None:
+        return override
     return _config
 
 
@@ -1668,6 +1956,8 @@ def save_config(cfg: HarnessConfig) -> None:
     model_validate し直し、不正な設定の永続化 (次回リロードでの起動失敗) を防ぐ関所とする。
     """
     global _config
+    if _config.startup_warnings:
+        raise ValueError("Reload a valid configuration before saving to preserve entries skipped at startup")
     validated = HarnessConfig.model_validate(cfg.model_dump())
     validated.compatibility_config
     store = get_secret_store()
@@ -1696,7 +1986,7 @@ def resolve_prompt_texts(files: list[str], *, strict_limits: tuple[int, int] | N
         texts, total = [], 0
         try:
             for path in files:
-                descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+                descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
                 with os.fdopen(descriptor, "rb") as stream:
                     if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                         raise ValueError("not a regular file")
@@ -1741,7 +2031,7 @@ def strip_frontmatter(text: str) -> str:
 
 
 def resolve_skill_fallback_texts(
-    definitions: dict[str, SkillDefinition], skill_refs: list[str]
+    definitions: dict[str, SkillDefinition], skill_refs: list[str], *, bounded: bool = False,
 ) -> list[tuple[str, str]]:
     """skills 非対応 provider へ前置する (skill 名, 本文) を記載順で返す。
 
@@ -1749,26 +2039,38 @@ def resolve_skill_fallback_texts(
     未解決ぶんは呼び出し側が warning へ出すため、不可視にはならない。
     ただし UTF-8 で読めない file は resolve_prompt_texts と同様 loud に落とす
     (path の綴り誤りと違い、encoding の誤りは黙って劣化させる価値が無い)。
+    bounded では、読み込み前に上限を設け、欠落や空の本文を拒否する。
     """
+    from .child_sdk_skills import MAX_SKILLS_BYTES, read_skill_file
+
     resolved: list[tuple[str, str]] = []
+    remaining = MAX_SKILLS_BYTES
     for name in skill_refs:
         definition = definitions.get(name)
         if definition is None:
             continue
         path = definition.fallback_path()
-        if not path.is_file():
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError as e:
-            raise ValueError(
-                f"skill '{name}' の fallback '{path}' は UTF-8 でエンコードされていません: {e}"
-            ) from e
-        except OSError:
-            continue
+        if bounded:
+            label = "fallback_prompt" if definition.fallback_prompt else "SKILL.md"
+            text = read_skill_file(definition.skill, str(path), remaining, label=label)
+            remaining -= len(text.encode("utf-8"))
+            text = text.replace("\r\n", "\n").replace("\r", "\n")
+        else:
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as e:
+                raise ValueError(
+                    f"skill '{name}' の fallback '{path}' は UTF-8 でエンコードされていません: {e}"
+                ) from e
+            except OSError:
+                continue
         text = strip_frontmatter(text).strip()
         if text:
             resolved.append((name, text))
+        elif bounded:
+            raise ValueError(f"skill '{definition.skill}' has no fallback body")
     return resolved
 
 

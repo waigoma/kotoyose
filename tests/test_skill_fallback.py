@@ -140,7 +140,7 @@ def test_shared_plugin_survives_when_one_skill_fails_to_resolve(
     「注入もされず warning にも出ない」まま消える。実際 config.yml の
     gates-authoring と git-conventions は同じ plugin を共有している。
     """
-    # SKILL.md の欠落は _resolve_skills が loud に弾くため、未解決になるのは
+    # SKILL.md の欠落は resolve_plugin_skills が loud に弾くため、未解決になるのは
     # fallback_prompt を指定してその実体が無い場合。
     (plugin / "skills" / "broken").mkdir(parents=True)
     (plugin / "skills" / "broken" / "SKILL.md").write_text("# Broken\n", encoding="utf-8")

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from openai_codex import SkillInput, TextInput
@@ -203,9 +205,9 @@ def test_build_codex_session_translates_skills_agents_effort_and_timeout(tmp_pat
     monkeypatch.setattr("kotoyose.config._config", cfg)
     session = build_codex_session(preset, None, None)
 
-    assert session.skills == (
-        RuntimeSkill(name="debug", path=str((skill_dir / "SKILL.md").resolve())),
-    )
+    [skill] = session.skill_folders
+    assert skill.name == "debug"
+    assert skill.files == {"SKILL.md": b"# debug"}
     assert session.effort == "xhigh"
     assert session.config["timeout"] == 90
     assert "agents.enabled=false" in session._build_config_overrides()
@@ -319,6 +321,8 @@ class _FakeCodex:
     def __init__(self, config=None) -> None:
         type(self).last_instance = self
         self.config = config
+        self._client = SimpleNamespace(request=AsyncMock())
+        self.__aenter__ = AsyncMock()
         self.closed = False
         self.start_calls: list[dict] = []
         self.resume_calls: list[tuple[str, dict]] = []
@@ -617,6 +621,30 @@ async def test_stream_injects_skills_and_effort_into_turn(patch_async_codex, tmp
         TextInput("find the bug"),
     ]
     assert kwargs["effort"] == "high"
+
+
+async def test_stream_passes_service_tier_to_thread_and_turn(patch_async_codex):
+    """Fast is the Codex thread's serviceTier, on start, resume, and the turn."""
+    _FakeCodex.next_handle = _FakeHandle([_turn_completed(TurnStatus.completed)])
+    session = CodexRuntimeSession(model="gpt-5.1-codex", cwd="/tmp/work", service_tier="priority")
+
+    async for _ in session.stream("hi"):
+        pass
+
+    fake = _FakeCodex.last_instance
+    assert fake.start_calls[0]["service_tier"] == "priority"
+    assert fake.thread.turn_calls[0][1]["service_tier"] == "priority"
+
+    _FakeCodex.next_handle = _FakeHandle([_turn_completed(TurnStatus.completed)])
+    resumed = CodexRuntimeSession(
+        model="gpt-5.1-codex", cwd="/tmp/work", session_id="thread_abc", service_tier="priority",
+    )
+    async for _ in resumed.stream("again"):
+        pass
+
+    resumed_fake = _FakeCodex.last_instance
+    assert resumed_fake.resume_calls[0][1]["service_tier"] == "priority"
+    assert resumed_fake.thread.turn_calls[0][1]["service_tier"] == "priority"
 
 
 async def test_ask_carries_over_usage_from_stream(patch_async_codex):

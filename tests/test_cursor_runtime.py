@@ -246,6 +246,19 @@ def test_builder_maps_cursor_sdk_1_native_options(tmp_path, monkeypatch):
     assert not hasattr(session, "agents")
 
 
+@pytest.mark.parametrize(("mode", "sources", "expected"), [
+    ("include", ["user"], ["user", "project"]),
+    ("exclude", ["project"], []),
+    ("exclude", ["all"], ["user", "team", "mdm", "plugins"]),
+])
+def test_cursor_repository_skills_projects_setting_sources(monkeypatch, mode, sources, expected):
+    from kotoyose.config import HarnessConfig, ModelPreset
+
+    monkeypatch.setattr("kotoyose.config._config", HarnessConfig())
+    preset = ModelPreset(provider="cursor", repository_skills=mode, cursor={"setting_sources": sources})
+    assert build_cursor_session(preset, None, None).setting_sources == expected
+
+
 async def test_sdk_1_options_are_passed_to_agent_create(sdk):
     """session の native option が AgentOptions / LocalAgentOptions まで届く。"""
     _, calls = sdk

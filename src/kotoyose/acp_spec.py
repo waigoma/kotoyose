@@ -17,6 +17,10 @@ class AcpSpec:
 
     def arguments(self, model: str, *, mcp_servers: Sequence[Mapping] = ()) -> tuple[str, ...]:
         """モデル ID を展開し、HTTP MCP に必要な引数を追加する。"""
+        if any("{model}" in arg for arg in self.argv):
+            from .provider_data import reject_option_value
+
+            reject_option_value(model, "model")
         args = tuple(model if arg == "{model}" else arg for arg in self.argv)
         return args + self.http_mcp_args if any(server.get("type") == "http" for server in mcp_servers) else args
 

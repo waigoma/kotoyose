@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 20
     services:
       postgres:
@@ -35,6 +35,23 @@ jobs:
           node-version: '22'
       - name: Console JavaScript syntax
         run: find src/kotoyose/static/console/js -name '*.js' -print0 | xargs -0 -n 1 node --check
+      - name: Rust toolchain manager
+        # self-hosted runner には rustup が無いことがある。無ければ公式の rustup-init を取得し、公開の SHA-256 を確かめてから runner の利用者の home に入れる。
+        run: |
+          if ! command -v rustup >/dev/null 2>&1 && [ ! -x "$HOME/.cargo/bin/rustup" ]; then
+            base=https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu
+            init="$RUNNER_TEMP/rustup-init"
+            curl --proto '=https' --tlsv1.2 -sSfo "$init" "$base/rustup-init"
+            curl --proto '=https' --tlsv1.2 -sSfo "$init.sha256" "$base/rustup-init.sha256"
+            echo "$(cut -d' ' -f1 "$init.sha256")  $init" | sha256sum -c -
+            chmod +x "$init"
+            "$init" -y --profile minimal --default-toolchain none --no-modify-path
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Rust toolchain (tests build the child app)
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
       - name: Install uv
         run: python -m pip install --disable-pip-version-check uv
       - name: Sync
@@ -50,4 +67,96 @@ jobs:
         run: uv run --no-sync pytest
       - name: Ruff
         run: uv run --no-sync ruff check src tests
+      - name: Public export check
+        # release の公開前の検査 (release-public.yml) を PR でも先に流す。denylist は release の secret なので、ここでは使わない。
+        run: |
+          rm -rf public
+          python3 scripts/export-public.py --out public
+          python3 scripts/check-public.py public
+      - name: Public export secret scan
+        # release-public.yml と同じ gitleaks と同じ確認済みの一覧。行がずれて一覧から外れたら、ここで止まる。
+        uses: docker://ghcr.io/gitleaks/gitleaks@sha256:e1b35e12a8c6fa8901f060459cfb6b2fc4c484d3afbe3b029733a3bbfab07055 # v8.24.3
+        with:
+          args: dir public --redact=100 --no-banner --gitleaks-ignore-path release/gitleaks-reviewed.txt
 
+
+  rust:
+    # child の常駐アプリ (child-app/、Rust)。Windows 向けの code も cargo check で型と cfg を確かめる。
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: child-app
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 2
+      - name: Detect installer inputs changed by the PR
+        id: installer
+        if: github.event_name == 'pull_request'
+        run: |
+          if git diff --quiet HEAD^1 HEAD -- . ../.github/workflows/ci.yml ../.github/workflows/github-release.yml \
+              ../scripts/build-child-installer.sh ../scripts/test-child-installer-wine.sh \
+              ../pyproject.toml ../uv.lock ../src/ ../LICENSE ../release/public-paths.txt; then
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'build=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Rust toolchain manager
+        working-directory: .
+        # self-hosted runner には rustup が無いことがある。無ければ公式の rustup-init を取得し、公開の SHA-256 を確かめてから runner の利用者の home に入れる。
+        run: |
+          if ! command -v rustup >/dev/null 2>&1 && [ ! -x "$HOME/.cargo/bin/rustup" ]; then
+            base=https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu
+            init="$RUNNER_TEMP/rustup-init"
+            curl --proto '=https' --tlsv1.2 -sSfo "$init" "$base/rustup-init"
+            curl --proto '=https' --tlsv1.2 -sSfo "$init.sha256" "$base/rustup-init.sha256"
+            echo "$(cut -d' ' -f1 "$init.sha256")  $init" | sha256sum -c -
+            chmod +x "$init"
+            "$init" -y --profile minimal --default-toolchain none --no-modify-path
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Toolchain
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add rustfmt clippy
+          rustup target add x86_64-pc-windows-gnu
+      - name: MinGW and NSIS
+        # self-hosted runner では入っていれば apt を使わない。足りないときだけパスワードなしの sudo で入れる。
+        run: |
+          if command -v makensis >/dev/null && command -v x86_64-w64-mingw32-gcc >/dev/null && python3 -c 'import venv, ensurepip' 2>/dev/null; then
+            echo 'MinGW, NSIS and python3-venv are already installed'
+          else
+            sudo -n apt-get update -q && sudo -n apt-get install -y -q nsis gcc-mingw-w64-x86-64 python3-venv
+          fi
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - name: Kotoyose Python (the app validates provider declarations with it)
+        working-directory: .
+        run: |
+          python -m pip install --disable-pip-version-check uv
+          uv sync --locked
+          echo "KOTOYOSE_CHILD_PYTHON=$GITHUB_WORKSPACE/.venv/bin/python" >> "$GITHUB_ENV"
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --locked -- -D warnings
+      - name: Tests
+        run: cargo test --locked
+      - name: Windows check
+        run: cargo check --locked --target x86_64-pc-windows-gnu
+      - name: Build Windows installer
+        if: steps.installer.outputs.build == 'true'
+        working-directory: .
+        run: |
+          python3 -m venv "$RUNNER_TEMP/child-build-venv"
+          source "$RUNNER_TEMP/child-build-venv/bin/activate"
+          python -m pip install --disable-pip-version-check uv
+          scripts/build-child-installer.sh
+          scripts/test-child-installer-wine.sh dist/KotoyoseChild-Setup-*.exe
+      - name: Audit
+        run: |
+          cargo install cargo-audit --locked --quiet
+          cargo audit

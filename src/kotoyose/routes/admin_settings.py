@@ -10,6 +10,7 @@
 Bearer の agent / caller token では 401 になる。
 """
 
+from collections.abc import Iterable
 from datetime import datetime, timezone
 import asyncio
 from typing import Any, Literal
@@ -33,6 +34,9 @@ from ..claude_login import (
     submit_claude_login_code,
     validate_claude_code,
 )
+from ..child_registry import child_on_name
+from ..child_identity import default_host_child_home
+from ..child_server import ChildHub, active_child_hub
 from ..cli_installer import CliInstallConflict, CliInstallError, install_tool, tool_status
 from ..cli_login import (
     CliLoginConflictError,
@@ -57,13 +61,16 @@ from ..config import AgentRoute, Connection, PoolAlias, ProviderOrder, RiskAck, 
 from ..connection_state_store import default_connection_state, get_connection_state_store
 from ..connections_probe import (
     _CLI_VERSION_CACHE,  # noqa: F401
+    child_connection_view,
     probe_cli_version as _probe_cli_version,
     probe_connection,
 )
 from ..print_cli_home import PrintCliHomeBusyError
+from ..child_catalog import host_connections
 from ..print_cli_profiles import PRINT_CLI_PROFILES
 from .admin import _save_config_or_422, _save_resource
 from .admin_catalog import route_sanction_view
+from .admin_children import child_hub_for
 from .admin_secrets import require_secret_store, write_secret_value
 from .models_api import pool_view
 
@@ -123,21 +130,38 @@ def _connection_routes(cfg, conn_id: str) -> list[str]:
     return sorted(route_name for route_name, route in cfg.routes.items() if route.connection == conn_id)
 
 
+def _connection_hub(request: Request, connections: Iterable[Connection]) -> ChildHub | None:
+    hub = getattr(request.app.state, "child_hub", None) or active_child_hub()
+    if hub is not None:
+        return hub
+    if any(child_on_name(conn.on) for conn in connections) and (default_host_child_home() / "children.json").is_file():
+        return child_hub_for(request)
+    return None
+
+
 def _connection_view(
     cfg,
     conn_id: str,
     conn: Connection,
     state: dict[str, Any] | None = None,
     states: dict[str, dict[str, Any]] | None = None,
+    *,
+    child_hub: ChildHub | None = None,
 ) -> dict[str, Any]:
     data = conn.model_dump(mode="json")
     data["effective_data_policy"] = connection_data_policy(conn)
     if conn.kind == "subscription":
         data.setdefault("home", conn.home or "default")
     data.setdefault("show_quota", conn.show_quota)
-    effective_state = dict(state if state is not None else default_connection_state(conn_id))
+    effective_state = child_connection_view(conn, dict(state or default_connection_state(conn_id)), hub=child_hub)
     if conn.quota_from:
-        source_state = (states or {}).get(conn.quota_from) or default_connection_state(conn.quota_from)
+        source_state = default_connection_state(conn.quota_from)
+        if effective_state.get("child_quota_shared", True):
+            source_view = child_connection_view(
+                cfg.connections[conn.quota_from], (states or {}).get(conn.quota_from) or source_state, hub=child_hub,
+            )
+            if source_view.get("child_quota_shared", True):
+                source_state = source_view
         effective_state["quota"] = list(source_state.get("quota") or [])
         effective_state["quota_source"] = source_state.get("quota_source")
         effective_state["quota_via"] = conn.quota_from
@@ -161,7 +185,10 @@ def _resolve_state_store(request: Request | None):
 
 @router.get("/tools", summary="管理対象の CLI と導入状態")
 def list_tools():
-    return {"tools": [tool_status(profile) for profile in PRINT_CLI_PROFILES.values() if profile.install]}
+    return {
+        "tools": [tool_status(profile) for profile in PRINT_CLI_PROFILES.values() if profile.install],
+        "connections": host_connections(),
+    }
 
 
 @router.post("/tools/{profile}/install", summary="検証済みの CLI を導入する")
@@ -186,9 +213,10 @@ async def list_connections(request: Request):
     cfg = get_config()
     store = _resolve_state_store(request)
     states = await store.list()
+    hub = _connection_hub(request, cfg.connections.values())
     return {
         "connections": [
-            _connection_view(cfg, conn_id, conn, states.get(conn_id), states=states)
+            _connection_view(cfg, conn_id, conn, states.get(conn_id), states=states, child_hub=hub)
             for conn_id, conn in sorted(cfg.connections.items())
         ]
     }
@@ -200,6 +228,7 @@ async def _run_connection_probe(conn_id: str, request: Request, *, force_refresh
     if conn is None:
         raise HTTPException(status_code=404, detail=f"connection '{conn_id}' not found")
     store = _resolve_state_store(request)
+    hub = _connection_hub(request, cfg.connections.values())
     execution_service = getattr(request.app.state, "execution_service", None)
     try:
         state = await probe_connection(
@@ -208,17 +237,15 @@ async def _run_connection_probe(conn_id: str, request: Request, *, force_refresh
             execution_service=execution_service,
             store=store,
             force_refresh=force_refresh,
+            child_hub=hub,
         )
     except PrintCliHomeBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     states = {conn.quota_from: await store.get(conn.quota_from)} if conn.quota_from else None
     clean_states = {k: v for k, v in (states or {}).items() if v is not None}
     log.info("admin.connection.probed", connection=conn_id, auth=state.get("auth"), force_refresh=force_refresh)
-    return {
-        "status": "ok",
-        "connection": _connection_view(cfg, conn_id, conn, state, states=clean_states),
-        "state": state,
-    }
+    view = _connection_view(cfg, conn_id, conn, state, states=clean_states, child_hub=hub)
+    return {"status": "ok", "connection": view, "state": state}
 
 
 @router.post("/connections/{conn_id}/probe", summary="connection の状態を今すぐ確認する")
@@ -529,7 +556,8 @@ async def create_connection(conn_id: str, connection: Connection, request: Reque
     state = await store.get(conn_id)
     conn = cfg.connections[conn_id]
     states = {conn.quota_from: v} if conn.quota_from and (v := await store.get(conn.quota_from)) is not None else None
-    return {**result, "connection": _connection_view(cfg, conn_id, conn, state, states=states)}
+    hub = _connection_hub(request, cfg.connections.values())
+    return {**result, "connection": _connection_view(cfg, conn_id, conn, state, states=states, child_hub=hub)}
 
 
 @router.put("/connections/{conn_id}", summary="connection 更新")
@@ -541,7 +569,8 @@ async def update_connection(conn_id: str, connection: Connection, request: Reque
     state = await store.get(conn_id)
     conn = cfg.connections[conn_id]
     states = {conn.quota_from: v} if conn.quota_from and (v := await store.get(conn.quota_from)) is not None else None
-    return {**result, "connection": _connection_view(cfg, conn_id, conn, state, states=states)}
+    hub = _connection_hub(request, cfg.connections.values())
+    return {**result, "connection": _connection_view(cfg, conn_id, conn, state, states=states, child_hub=hub)}
 
 
 @router.delete("/connections/{conn_id}", summary="connection 削除")

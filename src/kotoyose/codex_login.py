@@ -12,6 +12,7 @@ import uuid
 
 import structlog
 
+from .child_registry import child_on_name
 from .config import HarnessConfig, get_config
 from .connection_state_store import ConnectionStateStore
 from .connections_probe import (
@@ -155,6 +156,8 @@ async def start_codex_device_login(
         raise LoginNotSupportedError(
             "Device-code login is only supported for Codex subscription connections"
         )
+    if child_on_name(conn.on) is not None:
+        raise LoginNotSupportedError("Use child CLI login for a child connection")
     cli_binary = resolve_connection_cli_binary(active_cfg, conn_id, conn, execution_service)
     if cli_binary is None:
         raise LoginNotSupportedError("Codex CLI binary is not configured")

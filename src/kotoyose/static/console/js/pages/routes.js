@@ -1,6 +1,6 @@
 // Routes: the list, and a detail/edit panel for the selected route. Uses the existing /admin/routes endpoints.
 
-import { providerOf, providerPanels } from "../provider-ui.js";
+import { loadChildConnectionBadges, providerOf, providerPanels, statusChip } from "../provider-ui.js";
 import { api } from "../api.js";
 import { el, rowMeta, attachmentTags } from "../dom.js";
 import { sanctionOf, trainingRiskLabel } from "../format.js";
@@ -72,7 +72,7 @@ export function suggestionsFor(provider, connection) {
   return modelCache.get(key);
 }
 
-function routeRow(name, route, sanction, aliases, selected) {
+function routeRow(name, route, sanction, aliases, selected, childBadge) {
   const status = sanctionOf(sanction && sanction.sanction);
   const risk = trainingRiskLabel(sanction && sanction.data_policy);
   return el("a", {
@@ -83,20 +83,22 @@ function routeRow(name, route, sanction, aliases, selected) {
   el("div", { class: "row-main" },
     el("span", { class: "row-title" }, name),
     rowMeta(route.driver, route.model),
+    statusChip(childBadge),
     risk ? el("span", { class: "place-tag" }, risk) : null,
     attachmentTags(aliases)),
   sanction?.sanction === "official" ? null
     : el("span", { class: "state-chip is-warning" }, status.label));
 }
 
-function listCard(config, selected, aliases) {
+function listCard(config, selected, aliases, childBadges) {
   const names = Object.keys(config.routes || {}).sort();
   const sanctions = config.route_sanctions || {};
   return el("section", { class: "families-list", "aria-label": "Route list" },
     names.length === 0
       ? el("p", { class: "card empty-line" }, "No routes yet. Create one to connect an alias to a model.")
       : providerPanels(names, (name) => providerOf(config.routes[name], config), config, ["route", "routes"],
-        (name) => routeRow(name, config.routes[name], sanctions[name], aliases.get(name) || [], name === selected)));
+        (name) => routeRow(name, config.routes[name], sanctions[name], aliases.get(name) || [], name === selected,
+          childBadges.get(config.routes[name].connection))));
 }
 
 function field(label, control, { wide = false, hint = null } = {}) {
@@ -345,7 +347,7 @@ function routeForm(config, name, route, refresh, tracker, { onError = null } = {
   return form;
 }
 
-function routeSummarySection(selected, route, sanction, refresh) {
+function routeSummarySection(selected, route, sanction, refresh, childBadge) {
   return el("div", { class: "sub-section" },
     el("h3", { class: "sub-title" }, "Summary"),
     el("dl", { class: "kv" },
@@ -357,11 +359,12 @@ function routeSummarySection(selected, route, sanction, refresh) {
         el("dt", {}, "Connection"),
         el("dd", {}, el("a", { href: `#/providers/connection/${encodeURIComponent(route.connection)}` }, route.connection)),
       ] : null,
+      childBadge ? [el("dt", {}, "Connection status"), el("dd", {}, statusChip(childBadge))] : null,
       route.subscription_only ? [el("dt", {}, "Subscription only"), el("dd", {}, "Yes")] : null),
     ackBox(selected, sanction, refresh));
 }
 
-function openRoutePeek(config, selected, aliases, refresh) {
+function openRoutePeek(config, selected, aliases, refresh, childBadges) {
   if (selected === null) return;
   const onClose = () => { location.hash = "#/routes"; };
   const isNew = selected === NEW;
@@ -395,7 +398,7 @@ function openRoutePeek(config, selected, aliases, refresh) {
 
   const sections = [];
   if (!isNew) {
-    sections.push(routeSummarySection(selected, route, sanction, refresh));
+    sections.push(routeSummarySection(selected, route, sanction, refresh, childBadges.get(route.connection)));
     sections.push(el("div", { class: "sub-section" },
       el("div", { class: "sub-head" },
         el("h3", { class: "sub-title" }, "Used by"),
@@ -422,13 +425,15 @@ function openRoutePeek(config, selected, aliases, refresh) {
 export async function renderRoutes(main, { config, rest, refresh }) {
   const selected = rest[0] || null;
   const aliases = aliasesByRoute(config);
+  const childBadges = await loadChildConnectionBadges(config);
+  if (!main.isConnected) return;
   main.append(
     el("header", { class: "page-head" },
       el("div", {},
         el("h1", { class: "page-title" }, "Routes"),
         el("p", { class: "page-sub" }, "Where a model call goes: driver, model and connection. Aliases point at a route.")),
       el("a", { class: "btn btn-primary", href: `#/routes/${NEW}` }, "New route")),
-    listCard(config, selected, aliases),
+    listCard(config, selected, aliases, childBadges),
   );
-  openRoutePeek(config, selected, aliases, refresh);
+  openRoutePeek(config, selected, aliases, refresh, childBadges);
 }

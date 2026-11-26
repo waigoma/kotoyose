@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-import fcntl
 import gzip
 import hashlib
 import hmac
@@ -142,11 +142,11 @@ def _extract(payload: Path, artifact: CliArtifact, release: Path, binary: Path) 
         raise CliInstallError("CLI binary member is missing or empty")
 
 
-def tool_status(profile: PrintCliProfile) -> ToolStatus:
+def tool_status(profile: PrintCliProfile, *, tools_root: Path | None = None) -> ToolStatus:
     spec = profile.install
     if spec is None:
         raise CliInstallError("CLI profile has no managed distribution")
-    release, path = managed_install_paths(profile.id, spec, profile.binary)
+    release, path = managed_install_paths(profile.id, spec, profile.binary, tools_root=tools_root)
     version = installed_binary_version(path, release)
     return ToolStatus(profile.id, profile.provider, spec.version, bool(version), str(path) if version else None, version)
 
@@ -162,14 +162,18 @@ def _other_version_running(release: Path, path: Path) -> bool:
         except FileNotFoundError:
             continue
         other_binaries.add((info.st_dev, info.st_ino))
-    if not other_binaries:
+    return _binary_in_use(other_binaries)
+
+
+def _binary_in_use(inodes: set[tuple[int, int]]) -> bool:
+    if not inodes:
         return False
     for exe in Path("/proc").glob("[0-9]*/exe"):
         try:
             info = exe.stat()
         except OSError:
             continue
-        if (info.st_dev, info.st_ino) in other_binaries:
+        if (info.st_dev, info.st_ino) in inodes:
             return True
     return False
 
@@ -209,23 +213,31 @@ def _publish(
     return status
 
 
-def install_tool(profile: PrintCliProfile) -> ToolStatus:
+@contextmanager
+def _install_lock(profile_dir: Path):
+    import fcntl
+
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    with (profile_dir / ".install.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise CliInstallConflict("CLI installation already in progress") from exc
+        yield
+
+
+def install_tool(profile: PrintCliProfile, *, tools_root: Path | None = None) -> ToolStatus:
     """Publish the verified executable and its manifest together on the same filesystem."""
     spec = profile.install
     if spec is None:
         raise CliInstallError("CLI profile has no managed distribution")
-    release, path = managed_install_paths(profile.id, spec, profile.binary)
+    release, path = managed_install_paths(profile.id, spec, profile.binary, tools_root=tools_root)
     profile_dir = release.parent
     try:
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        with (profile_dir / ".install.lock").open("a") as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise CliInstallConflict("CLI installation already in progress") from exc
+        with _install_lock(profile_dir):
             if _other_version_running(release, path):
                 raise CliInstallConflict("A different managed CLI version is in use")
-            status = tool_status(profile)
+            status = tool_status(profile, tools_root=tools_root)
             if status.installed:
                 return status
             if release.exists():
@@ -234,3 +246,21 @@ def install_tool(profile: PrintCliProfile) -> ToolStatus:
                 return _publish(profile, spec, release, path, Path(directory))
     except (OSError, EOFError, httpx.HTTPError, tarfile.TarError, subprocess.SubprocessError) as exc:
         raise CliInstallError(f"CLI installation failed ({type(exc).__name__})") from exc
+
+
+def remove_tool(profile: PrintCliProfile, *, tools_root: Path) -> None:
+    """Remove the current pinned release from the child tools root if it is idle."""
+    spec = profile.install
+    if spec is None:
+        raise CliInstallError("CLI profile has no managed distribution")
+    release, path = managed_install_paths(profile.id, spec, profile.binary, tools_root=tools_root)
+    with _install_lock(release.parent):
+        if not release.exists() and not release.is_symlink():
+            return
+        if release.resolve() != release or not installed_binary_version(path, release):
+            raise CliInstallConflict("CLI version directory is not a managed installation")
+        info = path.stat()
+        if _binary_in_use({(info.st_dev, info.st_ino)}):
+            raise CliInstallConflict("The managed CLI is in use")
+        with TemporaryDirectory(dir=release.parent, prefix=".remove-") as temporary:
+            release.rename(Path(temporary) / "release")

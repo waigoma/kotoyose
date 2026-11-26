@@ -1,6 +1,6 @@
 ---
 name: kotoyose-delegation
-description: Kotoyose の MCP (list_agents / ask_agent) で、別の alias (別の model や別のサブスク) に作業を頼むときに使う。どの alias を選ぶか、頼み方の書き方、続きの頼み方、頼まない方がよい場合を定める。
+description: Kotoyose の MCP (list_agents / ask_agent / start_agent / agent_status / cancel_agent) で、別の alias (別の model や別のサブスク) に作業を頼むときに使う。どの alias を選ぶか、頼み方の書き方、続きの頼み方、待つ依頼と並べる依頼、頼まない方がよい場合を定める。
 ---
 
 # kotoyose-delegation
@@ -12,9 +12,23 @@ alias は、model・prompt・道具・実行場所をまとめた作業環境の
 ## 道具
 
 - `list_agents()`: 頼める alias の一覧を返します。各項目は `alias`・`description`・`model`・`place` です。
-- `ask_agent(alias, task, conversation_id?)`: `alias` に `task` を 1 回頼み、`text` と `conversation_id` と使用量を返します。
+- `ask_agent(alias, task, conversation_id?)`: `alias` に `task` を 1 回頼み、終わるまで待ちます。`text` と `conversation_id` と使用量を返します。
   - 同じ相手に続きを頼むときは、前回の `conversation_id` を渡します。
   - 渡さなければ、新しい会話として始まります。
+- `start_agent(alias, task, conversation_id?)`: 同じ依頼を、待たずに始めます。すぐに `task_id` と `conversation_id` を返します。
+- `agent_status(task_id)`: `running` / `completed` / `failed` / `cancelled` を返します。終わっていれば `text` や `error`、取得できた `usage` も返します。
+- `cancel_agent(task_id)`: 実行中の依頼を止めます。
+
+隔離された実行の中では、使えるのは `list_agents` と `ask_agent` だけです。`start_agent` はそこにありません。
+
+## 待つ依頼と、並べる依頼
+
+- 返事が次の判断に必要なら、`ask_agent` を使います。結果が返るまで待ちます。
+- 互いに依存しない依頼を同時に進めるときは、`start_agent` で先に並べ、自分の作業を続けます。
+- 様子を見るときは `agent_status` を使います。短い間隔で繰り返し呼ばないでください。区切りのとき、または待っている依頼が自分の次の判断を塞いでいるときに確認します。
+- 要らなくなった依頼は `cancel_agent` で止めます。
+
+`start_agent` も `ask_agent` と同じく、同時 4 件、1 時間に 32 件までです。親のセッションが終わると、実行中の非同期の依頼は止まります。
 
 ## 頼む前に
 
@@ -45,4 +59,4 @@ alias は、model・prompt・道具・実行場所をまとめた作業環境の
 - 頼まれた側 (子) は、さらに別の alias に頼めません (孫は作れません)。
 - 同時に頼めるのは 4 件まで、1 時間に 32 件までです。並べて頼むと速く終わりますが、各社の利用枠も同時に使います。
 - 時間の上限は、頼んだ alias の設定に従います。長い仕事は小さく分けて頼みます。
-- 自分の turn を取り消すと、頼んだ仕事も止まります。
+- 自分の turn を取り消すと、待っている `ask_agent` も止まります。`start_agent` で始めた依頼は、親のセッションが終わるまで続きます。終わった結果は 1 時間で捨てます。

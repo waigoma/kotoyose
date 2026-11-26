@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import AliasChoices, Field, PrivateAttr, TypeAdapter, field_validator, model_serializer, model_validator
+from pydantic import AfterValidator, AliasChoices, Field, PrivateAttr, TypeAdapter, field_validator, model_serializer, model_validator
 import structlog
 
 from . import process_env
@@ -21,6 +21,7 @@ from .agent_spec import (
     unmapped_backend, published_agent_execution, surface_exceeds,
 )
 from .execution_contract import ContractModel, Ref
+from .child_registry import child_on_name
 from .codex_preferences import CodexModelPreferences
 from .preset_prompts import PresetPromptSnapshot
 from .execution_artifacts import ArtifactCaptureSpec
@@ -367,14 +368,22 @@ def _reject_replaced_keys(value, replacements: dict[str, str]):
     return value
 
 
+def _validate_client_place(place: str) -> str:
+    if place in {"host", "isolated", "child"} or child_on_name(place):
+        return place
+    raise ValueError("place must be 'host', 'isolated', 'child', or 'child:<name>'")
+
+
+ClientPlace = Annotated[str, Field(strict=True), AfterValidator(_validate_client_place)]
+
+
 class CallerPolicy(ContractModel):
     """HTTP body から変更できない認証主体の権限上限。"""
 
     workspace_roots: list[Path] = Field(default_factory=list)
     agent_models: list[str] = Field(default_factory=list)
     mcp_servers: list[Ref] = Field(default_factory=list, max_length=32)
-    # sandbox の既定天井。host を許す Caller は places に host を書く。
-    places: list[Literal["host", "isolated"]] = Field(default_factory=lambda: ["isolated"])
+    places: list[ClientPlace] = Field(default_factory=lambda: ["isolated"])
     max_surface: Literal["none", "read", "exec", "write"] | None = Field(
         default=None, exclude_if=lambda value: value is None)
     allow_full: bool = Field(default=False, exclude_if=lambda value: not value)
@@ -749,6 +758,8 @@ def resolve_agent_model(alias: str, settings: "NativeExecutionConfig | None" = N
     selected_config = config if config is not None else get_config()
     if alias not in selected_config.models:
         raise ValueError(f"Unknown models alias: {alias}")
+    if child_on_name(getattr(selected_config.models[alias], "on", "local")):
+        raise ValueError("Child aliases run through the chat API")
     preset = selected_config.preset_for(alias, resolve_execution_environment=resolve_preferences)
     if preset.agent is None:
         raise ValueError("alias has no agent binding")
@@ -788,9 +799,44 @@ def agent_profile_allowed(alias: str, authority: CallerPolicy | ExecutionGrant,
         config = get_config()
     pool = getattr(config, "pools", None) or {}
     if alias in pool:
-        # pool alias は候補が共有する place と surface で見る。どれか 1 つでも解ければ許す。
-        return any(_profile_within(candidate, authority, settings, config) for candidate in pool[alias].candidates)
+        return bool(agent_pool_candidates(alias, authority, settings, config))
     return _profile_within(alias, authority, settings, config)
+
+
+def agent_pool_candidates(alias: str, authority: CallerPolicy | ExecutionGrant,
+                          settings: "NativeExecutionConfig | None", config) -> list[str]:
+    """Filter pool candidates by profile ceilings after checking the pool name."""
+    pool = config.pools.get(alias)
+    if pool is None:
+        return []
+    return [candidate for candidate in pool.candidates
+            if _profile_within(candidate, authority, settings, config)]
+
+
+def _blocked_agent_place(alias: str, authority: CallerPolicy | ExecutionGrant,
+                         settings: "NativeExecutionConfig | None", config) -> str | None:
+    preset = (getattr(config, "models", None) or {}).get(alias)
+    places = getattr(authority, "places", None)
+    if places is None or getattr(preset, "agent", None) is None:
+        return None
+    on = getattr(preset, "on", "local")
+    if child_on_name(on):
+        return None if "child" in places or on in places else on
+    place = preset.agent.place
+    if (mode := agent_execution_mode(alias, settings, config=config)) is not None:
+        place = "isolated" if mode == "sandbox" else "host"
+    return place if place not in places else None
+
+
+def agent_place_blockers(alias: str, authority: CallerPolicy,
+                         settings: "NativeExecutionConfig | None", *, config) -> list[str]:
+    """Return the required places when every candidate fails the place gate."""
+    pool = config.pools.get(alias)
+    candidates = pool.candidates if pool is not None else [alias]
+    blocked = [_blocked_agent_place(candidate, authority, settings, config) for candidate in candidates]
+    if any(place is None for place in blocked):
+        return []
+    return list(dict.fromkeys(place for place in blocked if place is not None))
 
 
 def _profile_within(alias: str, authority: CallerPolicy | ExecutionGrant,
@@ -803,16 +849,8 @@ def _profile_within(alias: str, authority: CallerPolicy | ExecutionGrant,
         return False
     if getattr(preset, "agent", None) is None:
         return True
-    places = getattr(authority, "places", None)
-    if places is not None:
-        mode = agent_execution_mode(alias, settings, config=config)
-        if mode is None:
-            # A chat alias can still be in scope when its Agent binding is unavailable.
-            place = preset.agent.place
-        else:
-            place = "isolated" if mode == "sandbox" else "host"
-        if place not in places:
-            return False
+    if _blocked_agent_place(alias, authority, settings, config) is not None:
+        return False
     max_surface = getattr(authority, "max_surface", None)
     if max_surface is not None:
         if surface_exceeds(_alias_surface_ceiling(alias, settings, config=config), max_surface):

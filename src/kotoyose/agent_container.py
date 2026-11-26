@@ -46,6 +46,7 @@ _CONTAINER_HOME = "/home/agent"
 _CONTAINER_WORKSPACE = "/workspace"
 _CONTAINER_AGENT_ROOT = "/opt/agent"
 CONTAINER_RUNTIME_BUNDLE = f"{_CONTAINER_AGENT_ROOT}/runtime"
+CONTAINER_ALIAS_SKILLS = f"{_CONTAINER_AGENT_ROOT}/alias-skills"
 _CONTAINER_EGRESS = "/run/egress"
 _CONTAINER_TMPFS = "/tmp:rw,exec,nosuid,size=2g"
 _TARGET_RE = re.compile(r"/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*")
@@ -98,7 +99,7 @@ class AgentContainerSpec:
     ro_files: Mapping[str, Path] = field(default_factory=dict)
     # container の絶対 path → host の directory。rw。/home/agent の下のみ。
     rw_dirs: Mapping[str, Path] = field(default_factory=dict)
-    # read-only directory mounts at /workspace/<name> or CONTAINER_RUNTIME_BUNDLE.
+    # read-only directories at /workspace/<name> or reserved runtime paths.
     ro_dirs: Mapping[str, Path] = field(default_factory=dict)
     # 閲覧部屋は /workspace を ro にする。home (/home/agent) は別の rw mount のまま。
     workspace_readonly: bool = False
@@ -558,7 +559,7 @@ class AgentContainer:
             claim(target)
             argv.extend(_bind_mount(_canonical_dir(spec.rw_dirs[target], f"rw_dirs {target}"), target, readonly=False))
         for target in sorted(spec.ro_dirs):
-            if target != CONTAINER_RUNTIME_BUNDLE:
+            if target not in {CONTAINER_RUNTIME_BUNDLE, CONTAINER_ALIAS_SKILLS}:
                 _check_target(target, "ro_dirs", (_CONTAINER_WORKSPACE + "/",), single_segment=True)
             claim(target)
             argv.extend(_bind_mount(_canonical_dir(spec.ro_dirs[target], f"ro_dirs {target}"), target, readonly=True,

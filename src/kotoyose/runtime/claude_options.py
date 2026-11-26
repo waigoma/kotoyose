@@ -13,8 +13,7 @@ from claude_agent_sdk.types import (
     ToolsPreset,
 )
 
-from ..claude_cli import bundled_claude_cli
-from ..delegation import MCP_NAME
+from ..claude_cli import bundled_claude_cli, claude_cli_override
 
 if TYPE_CHECKING:
     from ..config import HarnessConfig, ModelPreset
@@ -22,6 +21,12 @@ if TYPE_CHECKING:
 
 # Claude Code の組み込み subagent ツール。委譲は Kotoyose MCP だけが行う。
 CLAUDE_SUBAGENT_TOOLS = ("Task", "Agent")
+
+
+def claude_approval_scope(preset: ModelPreset) -> tuple | None:
+    if preset.approval == "client":
+        return preset.permission_mode, preset.tools, preset.deny
+    return None
 
 
 def claude_disallowed_tools(deny: list[str] | tuple[str, ...]) -> list[str]:
@@ -101,7 +106,11 @@ def build_claude_options(
         if preset.setting_sources is not None
         else ["project"]
     )
-    extra: dict[str, str | None] = {"bare": None} if preset.bare else {}
+    if preset.repository_skills == "exclude":
+        effective_sources = [source for source in effective_sources if source not in ("project", "local")]
+    elif preset.repository_skills == "include" and "project" not in effective_sources:
+        effective_sources = [*effective_sources, "project"]
+    extra: dict[str, str | None] = {"bare": None} if preset.bare and preset.repository_skills != "include" else {}
 
     plugins, skills, mcp_servers = config.resolve_resources(preset)
     # Local import は config 初期化時の循環を避けつつ、互換 facade の正本を共有する。
@@ -111,15 +120,23 @@ def build_claude_options(
     resolved_mcp_servers = _inject_mcp_request_headers(
         resolve_mcp_secrets(mcp_servers, resolved_secrets=resolved_secrets),
         request_headers or {},
-        builtin_delegation=MCP_NAME in preset.mcp_refs,
+        builtin_delegation=not config._child_mcp_projection and preset.has_delegation_mcp,
     )
+    from ..child_mcp_proxy import relay_process_env
+
+    if relay_env := relay_process_env():
+        env = {**env, **relay_env}
     effective_tools: list[str] | ToolsPreset = (
         ToolsPreset(type="preset", preset="claude_code")
         if preset.tools is None
         else preset.tools
     )
+    if skills and isinstance(effective_tools, list) and "Skill" not in effective_tools:
+        # The SDK adds Skill(name) to the allowed tools, but an explicit tool list (--tools) without
+        # "Skill" removes the Skill tool itself, so the alias skills were never offered to the model.
+        effective_tools = [*effective_tools, "Skill"]
     options = ClaudeAgentOptions(
-        cli_path=bundled_claude_cli(),
+        cli_path=claude_cli_override.get() or bundled_claude_cli(),
         tools=effective_tools,
         setting_sources=effective_sources,
         model=preset.model,

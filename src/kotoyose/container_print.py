@@ -19,10 +19,11 @@ import structlog
 
 from .acp_client import LINE_LIMIT
 from .acp_execution import AcpExecution
-from .agent_container import CONTAINER_RUNTIME_BUNDLE, AgentContainerSpec
+from .agent_container import CONTAINER_ALIAS_SKILLS, CONTAINER_RUNTIME_BUNDLE, AgentContainerSpec
 from .agent_deadlines import AgentStartRejected
 from .codex_coding_policy import protected_workspace_entries, validate_workspace
 from .execution_resources import ExecutionError
+from .grok_skills import grok_skill_env, uses_grok_native_skills
 from .jail_place import (
     CONTAINER_HOME,
     CONTAINER_RELAY,
@@ -86,6 +87,8 @@ def build_print_cli_container_plan(
     settings_dir: Path,
     print_timeout_seconds: float,
     job_id: str,
+    skill_root: Path | None = None,
+    grok_home: Path | None = None,
 ) -> tuple[AgentContainerSpec, list[str], dict[str, str], list[str]]:
     """Build container spec, exec argv, exec env, and inner CLI args.
 
@@ -101,6 +104,8 @@ def build_print_cli_container_plan(
 
     ro_files = {_CONTAINER_RELAY: _RELAY_PATH}
     ro_dirs = protected_ro_dirs(protected, job.workspace)
+    if skill_root is not None:
+        ro_dirs[CONTAINER_ALIAS_SKILLS] = skill_root
     bundle = profile.isolated_bundle_root(cli_binary)
     if bundle is None:
         container_cli = f"/opt/agent/bin/{profile.binary}"
@@ -109,6 +114,9 @@ def build_print_cli_container_plan(
         container_cli = f"{CONTAINER_RUNTIME_BUNDLE}/{cli_binary.name}"
         ro_dirs[CONTAINER_RUNTIME_BUNDLE] = bundle
     env = build_print_cli_env(profile, _CONTAINER_HOME)
+    if grok_home is not None:
+        ro_dirs[CONTAINER_ALIAS_SKILLS] = grok_home
+        grok_skill_env(env, Path(CONTAINER_ALIAS_SKILLS), job.repository_skills, profile)
     if job.acp:
         if profile.acp is None:
             raise ValueError(f"Profile {profile.id} does not declare ACP")
@@ -206,7 +214,8 @@ async def execute_container_print(
             launch_outcome="not_started",
         )
 
-    settings_dir = Path(tempfile.mkdtemp(prefix="kotoyose-print-cfg-"))
+    settings_temp = tempfile.TemporaryDirectory(prefix="kotoyose-print-cfg-", ignore_cleanup_errors=True)
+    settings_dir = Path(settings_temp.name)
     socket_dir = _socket_dir(settings.egress_socket_root)
     job_id = container_job_id_for(job.attempt_id, job.generation)
     place = JailPlace(container, settings, image_id)
@@ -223,6 +232,21 @@ async def execute_container_print(
     acp: AcpExecution | None = None
 
     try:
+        skill_root = None
+        grok_home = None
+        if uses_grok_native_skills(profile, Path(job.cli_binary)):
+            grok_home = settings_dir / "grok-session-home"
+            grok_home.mkdir(mode=0o700)
+            job = job.place_alias_skills(grok_home, profile, layout="grok")
+        elif job.repository_skills is not None:
+            raise AgentStartRejected(
+                "unsupported_capability", "repository_skills requires the pinned Linux x64 Grok 1.0.89 binary", 422,
+            )
+        elif job.alias_skills is not None:
+            staged = settings_dir / "skills"
+            job = job.place_alias_skills(staged, profile, visible_root=Path(CONTAINER_ALIAS_SKILLS))
+            if staged.is_dir():
+                skill_root = staged
         print_timeout_seconds = max(0.1, remaining_now * 0.85)
         spec, argv, exec_env, _ = build_print_cli_container_plan(
             job,
@@ -233,6 +257,8 @@ async def execute_container_print(
             settings_dir=settings_dir,
             print_timeout_seconds=print_timeout_seconds,
             job_id=job_id,
+            skill_root=skill_root,
+            grok_home=grok_home,
         )
         egress = PrintCliEgress(
             socket_dir / "egress.sock",
@@ -402,12 +428,12 @@ async def execute_container_print(
         if stderr_task is not None:
             await asyncio.gather(stderr_task, return_exceptions=True)
         # Never remove job.login_home (spec.home): it is the connection's persistent home.
+        settings_temp.cleanup()
         JailPlace.cleanup_run_dirs(
             container_confirmation=container_confirmation,
             egress_closed=(egress is None or egress_closed),
             temp_home=None,
             socket_dir=socket_dir,
-            extra_dirs=(settings_dir,),
         )
         if stop == "confirmed" and on_runtime_stopped is not None:
             try:

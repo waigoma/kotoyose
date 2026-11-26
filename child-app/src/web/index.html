@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title data-text="appName"></title>
+  <link rel="stylesheet" href="/console.css">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+  <script src="/providers.js" defer></script>
+</head>
+<body class="child">
+  <div class="shell">
+    <aside id="sidebar" class="sidebar" data-aria="appName">
+      <div class="sidebar-bar">
+        <div class="brand"><span class="brand-ring" aria-hidden="true"></span><span data-text="appName"></span></div>
+        <button type="button" class="btn btn-sm nav-toggle" id="menu" aria-expanded="false" aria-controls="child-nav" data-text="menu"></button>
+      </div>
+      <div class="sidebar-drawer" id="child-nav">
+        <nav data-aria="settingsNavigation">
+          <ul class="nav-list">
+            <li><button type="button" class="nav-link" data-page="providers" data-text="providers"></button></li>
+            <li><button type="button" class="nav-link" data-page="workspace" data-text="workspace"></button></li>
+            <li class="nav-settings"><button type="button" class="nav-link" data-page="settings" data-text="settings"></button></li>
+          </ul>
+        </nav>
+        <div class="sidebar-foot">
+          <button type="button" class="nav-link connection-link" id="connection-link" data-page="connection" aria-controls="connection" aria-current="page">
+            <span class="dot" id="connection-dot" aria-hidden="true"></span>
+            <span class="connection-label">
+              <span id="connection-state" data-text="loading"></span>
+              <span class="sidebar-user" id="connection-address" hidden></span>
+            </span>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <p id="closed" class="card card-body" role="alert" hidden data-text="sessionClosed"></p>
+      <section id="connection" class="page">
+        <header class="page-head">
+          <h1 class="page-title" data-text="connectionDetails"></h1>
+          <button type="button" class="btn btn-sm" id="refresh-status" hidden data-text="refresh"></button>
+        </header>
+        <article id="connection-card" class="card card-body form" hidden>
+          <div class="status-row">
+            <div class="provider-heading">
+              <span class="provider-mark" aria-hidden="true"><span id="details-dot" class="dot"></span></span>
+              <div class="provider-title">
+                <h2 id="connection-summary" class="card-title"></h2>
+                <p id="versions" class="row-sub"></p>
+              </div>
+            </div>
+          </div>
+          <div class="row-status">
+            <span id="runner-dot" class="dot" aria-hidden="true"></span>
+            <span id="runner"></span>
+            <span id="memory" class="mono" hidden></span>
+          </div>
+          <p id="last-error" class="exception" hidden></p>
+          <p id="applying-policy" class="hint" hidden data-text="applyingPolicy"></p>
+        </article>
+        <section id="connection-enrollment" hidden>
+          <p id="enrollment-reason" class="exception" role="alert" hidden></p>
+          <form id="enroll-form" class="card card-body form enroll-card" autocomplete="off">
+            <p class="hint" data-text="enrollmentHint"></p>
+            <label class="field">
+              <span class="field-label" data-text="childName"></span>
+              <input id="child-name" class="input" type="text" required maxlength="64" spellcheck="false">
+            </label>
+            <label class="field">
+              <span class="field-label" data-text="enrollmentCode"></span>
+              <input id="enroll-code" class="input input-mono" type="password" required spellcheck="false">
+            </label>
+            <div class="form-actions"><button class="btn btn-primary" id="enroll-submit" data-text="enroll"></button></div>
+            <p id="enroll-message" role="status"></p>
+          </form>
+        </section>
+        <p id="status-message" role="status" data-text="loading"></p>
+      </section>
+
+      <section id="providers" class="page" hidden>
+        <header class="page-head">
+          <h1 class="page-title" data-text="providers"></h1>
+          <button type="button" class="btn btn-sm" id="refresh-components" data-text="check"></button>
+        </header>
+        <p id="components-warning" class="hint"></p>
+        <p id="provider-policy-error" role="status"></p>
+        <p id="provider-policy-message" role="status"></p>
+        <div id="host-declarations" class="form"></div>
+        <div id="component-rows" class="form"></div>
+        <p id="components-message" role="status"></p>
+        <p id="declaration-message" role="status"></p>
+      </section>
+
+      <section id="workspace" class="page" hidden>
+        <header class="page-head">
+          <h1 class="page-title" data-text="workspace"></h1>
+          <button type="button" class="btn btn-sm" id="reload-policy" data-text="reload"></button>
+        </header>
+        <p id="policy-load-error" role="status"></p>
+        <p id="policy-warnings" role="status" class="hint"></p>
+        <form id="policy-form" class="form" autocomplete="off">
+          <fieldset class="form" id="policy-inputs" disabled>
+            <section class="card" aria-labelledby="roots-title">
+              <div class="card-head"><h2 class="card-title" id="roots-title" data-text="workspaceFolders"></h2></div>
+              <div class="card-body form">
+                <div id="roots" class="form"></div>
+                <p class="hint empty-state" data-text="noWorkspaceFolders"></p>
+                <div class="form-actions"><button type="button" class="btn btn-sm" id="add-root" data-text="addWorkspaceFolder"></button></div>
+              </div>
+            </section>
+
+            <div class="card card-body sandbox-card">
+              <label class="field">
+                <span class="field-label" data-text="codexSandbox"></span>
+                <select id="codex-sandbox" class="input">
+                  <option value="read-only" data-text="sandboxRead"></option>
+                  <option value="workspace-write" selected data-text="sandboxWrite"></option>
+                  <option value="danger-full-access" data-text="sandboxFull"></option>
+                </select>
+              </label>
+            </div>
+
+            <section class="card" aria-labelledby="local-llm-title">
+              <div class="card-head"><h2 class="card-title" id="local-llm-title" data-text="localLlms"></h2></div>
+              <div class="card-body form">
+                <div id="local-llm" class="form"></div>
+                <p class="hint empty-state" data-text="noLocalLlms"></p>
+                <div class="form-actions"><button type="button" class="btn btn-sm" id="add-local-llm" data-text="addLocalLlm"></button></div>
+              </div>
+            </section>
+
+            <details class="card">
+              <summary class="card-head card-title" data-text="mcp"></summary>
+              <div class="card-body form">
+                <div id="mcp" class="form"></div>
+                <p class="hint empty-state" data-text="noMcp"></p>
+                <div class="form-actions"><button type="button" class="btn btn-sm" id="add-mcp" data-text="addMcp"></button></div>
+              </div>
+            </details>
+
+            <div class="form-actions">
+              <button class="btn btn-primary" data-text="savePolicy"></button>
+              <p class="hint" data-text="policyHint"></p>
+            </div>
+          </fieldset>
+        </form>
+        <p id="policy-message" role="status"></p>
+        <section class="card" id="host-mcp-card" aria-labelledby="host-mcp-title" hidden>
+          <div class="card-head"><h2 class="card-title" id="host-mcp-title" data-text="hostMcpTitle"></h2></div>
+          <div class="card-body form">
+            <p class="hint" data-text="hostMcpScope"></p>
+            <div id="host-mcp-offers" class="form"></div>
+            <p id="host-mcp-message" role="status"></p>
+          </div>
+        </section>
+      </section>
+
+      <section id="settings" class="page" hidden>
+        <header class="page-head"><h1 class="page-title" data-text="settings"></h1></header>
+        <section id="update-card" class="card" hidden>
+          <div class="card-head"><h2 class="card-title" data-text="appUpdate"></h2></div>
+          <div class="card-body form">
+            <p id="update-offer"></p>
+            <progress id="update-progress" data-aria="appUpdate" hidden></progress>
+            <p id="update-state" class="hint" role="status"></p>
+            <label class="check" id="update-defer-field" hidden>
+              <input id="update-defer" type="checkbox"><span data-text="updateDefer"></span>
+            </label>
+            <div class="actions">
+              <button type="button" class="btn btn-primary" id="update-start" data-text="update" hidden></button>
+              <button type="button" class="btn" id="update-interrupt" data-text="updateInterrupt" hidden></button>
+            </div>
+            <p id="update-error" role="status"></p>
+            <p id="update-message" role="status"></p>
+          </div>
+        </section>
+
+        <form id="idle-form" class="card" autocomplete="off">
+          <div class="card-head"><h2 class="card-title" data-text="runnerIdle"></h2></div>
+          <fieldset id="idle-inputs" class="card-body form" disabled>
+            <label class="field">
+              <span class="field-label" data-text="idleSeconds"></span>
+              <input id="idle" class="input input-mono" type="number" min="0" max="4294967295" step="1" required>
+            </label>
+            <p class="hint" data-text="idleHint"></p>
+            <div class="form-actions"><button class="btn btn-primary" data-text="saveIdle"></button></div>
+            <p id="idle-message" role="status"></p>
+          </fieldset>
+        </form>
+
+        <details id="autostart-form" class="card" hidden>
+          <summary class="card-head card-title" data-text="autostart"></summary>
+          <div class="card-body form">
+            <label class="check"><input id="autostart" type="checkbox"><span data-text="startAtSignIn"></span></label>
+            <p class="hint" data-text="autostartHint"></p>
+            <p id="autostart-message" role="status"></p>
+          </div>
+        </details>
+
+        <details id="app-controls" class="card">
+          <summary class="card-head card-title" data-text="appControls"></summary>
+          <div class="card-body form">
+            <p id="interrupt-hint" class="hint"></p>
+            <div class="actions">
+              <button type="button" class="btn" id="restart" data-text="restart" hidden></button>
+              <button type="button" class="btn" id="stop" data-text="stop"></button>
+            </div>
+            <p id="action-message" role="status"></p>
+          </div>
+        </details>
+
+        <details id="log-panel" class="card">
+          <summary class="card-head card-title" data-text="recentLogs"></summary>
+          <div class="card-body form">
+            <div class="actions">
+              <button type="button" class="btn btn-sm" id="open-logs" hidden data-text="openLogFolder"></button>
+              <button type="button" class="btn btn-sm" id="refresh-logs" data-text="refresh"></button>
+            </div>
+            <p id="repair-log-hint" class="hint" data-text="repairLogHint" hidden></p>
+            <p id="logs-empty" class="hint" data-text="loading"></p>
+            <pre id="logs" hidden></pre>
+            <p id="logs-message" role="status"></p>
+          </div>
+        </details>
+        <details id="re-enroll" class="card" hidden>
+          <summary class="card-head card-title" data-text="enrollAgain"></summary>
+          <div id="settings-enrollment" class="card-body"></div>
+        </details>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

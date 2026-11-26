@@ -365,6 +365,261 @@ def test_models_list_exposes_cached_reasoning_efforts(monkeypatch):
     assert "reasoning_efforts" not in rows["agy"]
 
 
+def test_fast_tier_shapes_from_discovery_details():
+    from kotoyose.model_discovery import fast_tier_from_detail
+
+    assert fast_tier_from_detail({
+        "id": "gpt",
+        "service_tiers": [
+            {"id": "standard", "name": "Standard", "description": "Normal"},
+            {"id": "priority", "name": "Fast", "description": "2x speed, increased usage"},
+        ],
+        "default_service_tier": "standard",
+    }) == {"service_tier": "priority", "name": "Fast", "description": "2x speed, increased usage"}
+    assert fast_tier_from_detail({
+        "id": "grok-4.6",
+        "parameters": [
+            {"id": "effort", "values": [{"value": "low"}, {"value": "high"}]},
+            {"id": "fast", "type": "boolean", "values": [{"value": "false"}, {"value": "true"}]},
+        ],
+    }) == {"service_tier": "priority", "name": "Fast", "description": None}
+    assert fast_tier_from_detail({
+        "id": "grok-4.6",
+        "parameters": [{"id": "fast", "values": [{"value": "true"}, {"value": "false"}]}],
+    }) == {"service_tier": "priority", "name": "Fast", "description": None}
+    assert fast_tier_from_detail({
+        "id": "grok-4.6",
+        "parameters": [{"id": "fast", "values": [{"value": "slow"}, {"value": "fast"}]}],
+    }) is None
+    assert fast_tier_from_detail({"id": "plain", "parameters": [{"id": "effort", "values": [{"value": "low"}]}]}) is None
+    assert fast_tier_from_detail({"id": "other"}) is None
+
+
+def _fast_config():
+    return HarnessConfig.model_validate({
+        "connections": {
+            "gateway": {
+                "provider": "claude", "kind": "endpoint", "data_policy": "no_training",
+                "endpoint": "https://demo.invalid", "secret": "env:DEMO_GATEWAY_KEY",
+            },
+            "codex-gw": {
+                "provider": "codex", "kind": "endpoint", "data_policy": "no_training",
+                "endpoint": "https://codex.invalid", "secret": "env:DEMO_CODEX_KEY",
+            },
+            "cursor-gw": {
+                "provider": "cursor", "kind": "endpoint", "data_policy": "no_training",
+                "endpoint": "https://cursor.invalid", "secret": "env:DEMO_CURSOR_KEY",
+            },
+        },
+        "routes": {
+            "gateway": {"driver": "claude.agent-sdk", "model": "claude-opus-test", "connection": "gateway"},
+            "codex-route": {"driver": "codex.app-server", "model": "gpt-test", "connection": "codex-gw"},
+            "cursor-route": {"driver": "cursor.sdk", "model": "grok-4.6", "connection": "cursor-gw"},
+        },
+        "models": {
+            "demo": {"route": "gateway"},
+            "agy": {"provider": "antigravity", "model": "agy-test"},
+            "codex-fast": {"route": "codex-route"},
+            "cursor-fast": {"route": "cursor-route"},
+            "codex-plain": {"provider": "codex", "model": "gpt-test"},
+        },
+    })
+
+
+def _remember_fast(cfg):
+    from kotoyose import model_discovery
+
+    model_discovery._remember_efforts("codex", "codex-gw", cfg.connections["codex-gw"], {"model_details": [
+        {"id": "gpt-test", "service_tiers": [{"id": "priority", "name": "Fast", "description": "1.5x speed"}]},
+        {"id": "no-fast"},
+    ]})
+    model_discovery._remember_efforts("cursor", "cursor-gw", cfg.connections["cursor-gw"], {"model_details": [
+        {"id": "grok-4.6", "parameters": [{"id": "fast", "values": [{"value": "false"}, {"value": "true"}]}]},
+    ]})
+
+
+def test_service_tier_rejected_for_runtime_that_does_not_apply_it(monkeypatch):
+    monkeypatch.setattr("kotoyose.config._config", _fast_config())
+    monkeypatch.setattr("kotoyose.auth.API_KEY", None)
+    resume = AsyncMock(return_value=(AsyncMock(), False))
+    monkeypatch.setattr(chat, "get_or_resume_client", resume)
+    response = _client().post("/v1/chat/completions", json={
+        "model": "agy", "messages": [{"role": "user", "content": "hi"}], "service_tier": "priority",
+    })
+    assert response.status_code == 422
+    assert "not supported" in response.json()["error"]["message"]
+    resume.assert_not_awaited()
+
+
+def test_service_tier_rejected_when_model_does_not_offer_fast(monkeypatch):
+    cfg = _fast_config()
+    monkeypatch.setattr("kotoyose.config._config", cfg)
+    monkeypatch.setattr("kotoyose.auth.API_KEY", None)
+    _remember_fast(cfg)
+    resume = AsyncMock(return_value=(AsyncMock(), False))
+    monkeypatch.setattr(chat, "get_or_resume_client", resume)
+    try:
+        missing = _client().post("/v1/chat/completions", json={
+            "model": "demo", "messages": [{"role": "user", "content": "hi"}], "service_tier": "priority",
+        })
+        uncached = _client().post("/v1/chat/completions", json={
+            "model": "codex-plain", "messages": [{"role": "user", "content": "hi"}], "service_tier": "priority",
+        })
+    finally:
+        clear_connection_discovery_cache()
+    assert missing.status_code == 422
+    assert uncached.status_code == 422
+    assert "not supported" in missing.json()["error"]["message"]
+    assert "not supported" in uncached.json()["error"]["message"]
+    resume.assert_not_awaited()
+
+
+def test_service_tier_rejects_unknown_values(monkeypatch):
+    monkeypatch.setattr("kotoyose.config._config", _fast_config())
+    monkeypatch.setattr("kotoyose.auth.API_KEY", None)
+    resume = AsyncMock(return_value=(AsyncMock(), False))
+    monkeypatch.setattr(chat, "get_or_resume_client", resume)
+    response = _client().post("/v1/chat/completions", json={
+        "model": "codex-fast", "messages": [{"role": "user", "content": "hi"}], "service_tier": "turbo",
+    })
+    assert response.status_code == 422
+    assert "turbo" in response.json()["error"]["message"]
+    resume.assert_not_awaited()
+
+
+def test_service_tier_priority_is_passed_and_defaults_are_unchanged(monkeypatch):
+    cfg = _fast_config()
+    monkeypatch.setattr("kotoyose.config._config", cfg)
+    monkeypatch.setattr("kotoyose.auth.API_KEY", None)
+    _remember_fast(cfg)
+    resume = AsyncMock(return_value=(AsyncMock(), False))
+    monkeypatch.setattr(chat, "get_or_resume_client", resume)
+    monkeypatch.setattr(chat, "ask_claude", AsyncMock(return_value=("ok", None, None)))
+    try:
+        fast = _client().post("/v1/chat/completions", json={
+            "model": "codex-fast", "messages": [{"role": "user", "content": "hi"}], "service_tier": "priority",
+        })
+        auto = _client().post("/v1/chat/completions", json={
+            "model": "codex-fast", "messages": [{"role": "user", "content": "hi"}], "service_tier": "auto",
+        })
+        default = _client().post("/v1/chat/completions", json={
+            "model": "cursor-fast", "messages": [{"role": "user", "content": "hi"}], "service_tier": "default",
+        })
+    finally:
+        clear_connection_discovery_cache()
+    assert fast.status_code == 200, fast.text
+    assert resume.await_args_list[0].kwargs["service_tier"] == "priority"
+    assert auto.status_code == 200, auto.text
+    assert default.status_code == 200, default.text
+    assert "service_tier" not in resume.await_args_list[1].kwargs
+    assert "service_tier" not in resume.await_args_list[2].kwargs
+
+
+def test_fast_tier_reaches_codex_and_cursor_sessions(monkeypatch):
+    monkeypatch.setattr("kotoyose.config._config", HarnessConfig())
+    codex = build_codex_session(
+        ModelPreset(provider="codex", model="gpt-test"), None, None, None, service_tier="priority",
+    )
+    assert codex.service_tier == "priority"
+    plain = build_codex_session(ModelPreset(provider="codex", model="gpt-test"), None, None, None)
+    assert plain.service_tier is None
+    cursor = build_cursor_session(
+        ModelPreset(provider="cursor", model="grok-4.6"), None, None, None, service_tier="priority",
+    )
+    assert cursor.model_params["fast"] == "true"
+    kept = build_cursor_session(
+        ModelPreset(provider="cursor", model="grok-4.6", cursor={"model_params": {"effort": "high", "fast": False}}),
+        None, None, None, service_tier="priority",
+    )
+    assert kept.model_params["effort"] == "high"
+    assert kept.model_params["fast"] == "true"
+
+
+def test_cache_identity_differs_by_service_tier():
+    args = ("codex", "alias", "gpt-test", [], None)
+    assert _cache_identity(*args) == _cache_identity(*args, service_tier=None)
+    fast = _cache_identity(*args, service_tier="priority")
+    assert fast != _cache_identity(*args)
+    assert fast == _cache_identity(*args, service_tier="priority")
+
+
+@pytest.mark.asyncio
+async def test_different_service_tier_does_not_reuse_the_runtime_session(monkeypatch):
+    import kotoyose.session as session_module
+
+    preset = ModelPreset(provider="claude", model="claude-sonnet")
+    monkeypatch.setattr(session_module, "sessions", {})
+    monkeypatch.setattr(session_module, "session_last_used", {})
+    monkeypatch.setattr(session_module, "session_cache_identities", {})
+    monkeypatch.setattr(session_module, "lookup_session", AsyncMock(return_value=None))
+
+    def build_options(*_args, **_kwargs):
+        return MagicMock()
+
+    def sdk_client(options=None):
+        return MagicMock(connect=AsyncMock(), options=options)
+
+    monkeypatch.setattr(session_module, "get_config", lambda: MagicMock(
+        preset_for=lambda _model: preset, models={"alias": preset},
+    ))
+    monkeypatch.setattr(session_module, "build_options", build_options)
+    monkeypatch.setattr(session_module, "ClaudeSDKClient", sdk_client)
+    first, first_resumed = await session_module.get_or_resume_client("conv", "alias")
+    plain = session_module.session_cache_identities["conv"]
+    second, second_resumed = await session_module.get_or_resume_client("conv", "alias", service_tier="priority")
+    assert first is not second
+    assert first_resumed is False and second_resumed is False
+    assert plain != session_module.session_cache_identities["conv"]
+    assert session_module.session_cache_identities["conv"] == _cache_identity(
+        "claude", "alias", "claude-sonnet", preset.required_request_headers, None, service_tier="priority",
+    )
+    session_module.lookup_session.assert_awaited_once()
+
+
+def test_models_list_exposes_cached_fast_tier(monkeypatch):
+    cfg = _fast_config()
+    monkeypatch.setattr("kotoyose.config._config", cfg)
+    monkeypatch.setattr("kotoyose.auth.API_KEY", None)
+    monkeypatch.setattr(app.state, "execution_service", None, raising=False)
+    _remember_fast(cfg)
+
+    def discover_models(*_args, **_kwargs):
+        raise AssertionError("model discovery must not run on the models list")
+
+    monkeypatch.setattr("kotoyose.model_discovery.discover_models", discover_models)
+    try:
+        rows = {item["id"]: item for item in _client().get("/v1/models").json()["data"]}
+    finally:
+        clear_connection_discovery_cache()
+    assert rows["codex-fast"]["fast"] == {
+        "service_tier": "priority", "name": "Fast", "description": "1.5x speed",
+    }
+    assert rows["cursor-fast"]["fast"] == {"service_tier": "priority", "name": "Fast", "description": None}
+    assert "fast" not in rows["demo"]
+    assert "fast" not in rows["agy"]
+    assert "fast" not in rows["codex-plain"]
+
+
+def test_fast_tier_outlives_the_model_list_cache(monkeypatch):
+    from kotoyose import model_discovery
+
+    cfg = _fast_config()
+    _remember_fast(cfg)
+    try:
+        # The 10-minute model list cache is empty or expired; the fast cache still answers.
+        assert model_discovery.cached_fast_tier(cfg, "codex-fast") == {
+            "service_tier": "priority", "name": "Fast", "description": "1.5x speed",
+        }
+        assert model_discovery.cached_fast_tier(cfg, "cursor-fast")["service_tier"] == "priority"
+        expires, fingerprint, tiers = model_discovery._FAST_CACHE["codex-gw"]
+        assert set(tiers) == {"gpt-test"}
+        model_discovery._FAST_CACHE["codex-gw"] = (time.monotonic() - 1, fingerprint, tiers)
+        assert model_discovery.cached_fast_tier(cfg, "codex-fast") is None
+        assert expires > 0 and fingerprint
+    finally:
+        clear_connection_discovery_cache()
+
+
 def test_efforts_outlive_the_model_list_cache(monkeypatch):
     from kotoyose import model_discovery
 

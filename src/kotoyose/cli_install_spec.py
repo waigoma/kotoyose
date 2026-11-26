@@ -66,8 +66,11 @@ def platform_key() -> str:
     return f"{platform.system().lower()}-{architecture}"
 
 
-def managed_install_paths(profile_id: str, spec: CliInstallSpec, binary: str) -> tuple[Path, Path]:
-    fallback = install_path(profile_id, spec.version, binary)
+def managed_install_paths(
+    profile_id: str, spec: CliInstallSpec, binary: str, *, tools_root: Path | None = None,
+) -> tuple[Path, Path]:
+    """Return the pinned release and executable paths under the selected tools root."""
+    fallback = install_path(profile_id, spec.version, binary, tools_root=tools_root)
     release = fallback.parent
     artifact = spec.artifact_for(platform_key())
     if artifact is not None and artifact.entrypoint is not None:
@@ -75,10 +78,12 @@ def managed_install_paths(profile_id: str, spec: CliInstallSpec, binary: str) ->
     return release, fallback
 
 
-def install_path(profile_id: str, version: str, binary: str) -> Path:
+def install_path(profile_id: str, version: str, binary: str, *, tools_root: Path | None = None) -> Path:
+    """Build a managed path from validated identifiers, using the host root by default."""
     if any(not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]*", part) for part in (profile_id, version, binary)):
         raise ValueError("Invalid managed CLI path component")
-    return default_data_dir().absolute() / "tools" / profile_id / version / binary
+    root = tools_root if tools_root is not None else default_data_dir().absolute() / "tools"
+    return root / profile_id / version / binary
 
 
 def installed_binary_version(path: Path, release: Path) -> str | None:

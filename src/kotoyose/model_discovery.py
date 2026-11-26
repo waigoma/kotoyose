@@ -86,7 +86,7 @@ BUNDLED_CATALOGS = {
         "gpt-5.4-mini",
     ],
 }
-SUPPORTED_PROVIDERS = set(CLI_COMMANDS) | set(BUNDLED_CATALOGS) | {"cursor"}
+SUPPORTED_PROVIDERS = set(CLI_COMMANDS) | set(BUNDLED_CATALOGS) | {"cursor", "openai_compat"}
 
 log = structlog.get_logger()
 
@@ -252,7 +252,12 @@ def _bundled_fallback(provider: str, reason: str) -> dict[str, Any]:
     )
 
 
-async def _fetch_url(url: str, headers: dict[str, str]) -> bytes:
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+async def _fetch_url(url: str, headers: dict[str, str], *, follow_redirects: bool = True) -> bytes:
     """HTTP GET を worker thread で実行し、応答本文を上限付きで返す。
 
     urllib は同期 API のため asyncio.to_thread でイベントループ外に逃がす。
@@ -263,6 +268,7 @@ async def _fetch_url(url: str, headers: dict[str, str]) -> bytes:
     Args:
         url: 照会先 URL。
         headers: リクエストヘッダ。
+        follow_redirects: False のとき転送先に認証ヘッダを送らない。
 
     Returns:
         最大 CAPTURE_LIMIT_BYTES までの応答本文。
@@ -273,7 +279,10 @@ async def _fetch_url(url: str, headers: dict[str, str]) -> bytes:
     """
     def _request() -> bytes:
         req = urllib.request.Request(url, headers=headers)
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        handlers = [urllib.request.ProxyHandler({})]
+        if not follow_redirects:
+            handlers.append(_NoRedirect())
+        opener = urllib.request.build_opener(*handlers)
         with opener.open(req, timeout=DISCOVERY_TIMEOUT_SECONDS) as resp:
             return resp.read(CAPTURE_LIMIT_BYTES)
 
@@ -330,13 +339,18 @@ async def _discover_endpoint_models(
     """
     urls = _models_url_candidates(base_url)
     headers = {"anthropic-version": ANTHROPIC_API_VERSION} if provider == "claude" else {}
+    bearer_only = provider == "openai_compat"
     if token:
-        # Router 実装差を吸収するため、OpenAI / Anthropic 両互換の認証 header を送る。
-        headers.update({"Authorization": f"Bearer {token}", "x-api-key": token})
+        headers["Authorization"] = f"Bearer {token}"
+        if not bearer_only:
+            # 既存の Router は OpenAI / Anthropic の認証ヘッダを受け付ける。
+            headers["x-api-key"] = token
+    if bearer_only and token and token in base_url:
+        return _bundled_fallback(provider, "接続先 URL に認証情報が含まれているため")
 
     for url in urls:
         try:
-            body = await _fetch_url(url, headers)
+            body = await _fetch_url(url, headers, **({"follow_redirects": False} if bearer_only else {}))
         except Exception:
             # Exceptions may repeat Authorization headers or credential-bearing
             # URLs. No endpoint/error text belongs in logs or discovery responses.
@@ -353,6 +367,8 @@ async def _discover_endpoint_models(
             return _bundled_fallback(provider, "取得結果を解析できなかったため")
 
         models = _model_ids_from_values(_values_from_payload(payload))
+        if bearer_only and token:
+            models = [model for model in models if token not in model]
         if not models:
             return _bundled_fallback(provider, "取得結果が空だったため")
         return _response(provider, models, _safe_endpoint_source(url))
@@ -704,16 +720,18 @@ class _CachedDiscovery:
 
 
 _CONNECTION_DISCOVERY_CACHE: dict[str, _CachedDiscovery] = {}
-# model ごとの使える effort は model の一覧より変わりにくい。一覧の控え (10 分) が切れても
-# /v1/models や kotoyose-acp に出し続けるため、取れた effort だけを長く持つ。
+# model ごとの使える effort と Fast は model の一覧より変わりにくい。一覧の控え (10 分) が切れても
+# /v1/models や kotoyose-acp に出し続けるため、取れた値だけを長く持つ。
 EFFORT_CACHE_TTL_SECONDS = 6 * 3600.0
 _EFFORT_CACHE: dict[str, tuple[float, tuple[Any, ...], dict[str, dict[str, Any]]]] = {}
+_FAST_CACHE: dict[str, tuple[float, tuple[Any, ...], dict[str, dict[str, Any]]]] = {}
 
 
 def clear_connection_discovery_cache() -> None:
     """Clear in-memory per-connection discovery cache (intended for test isolation)."""
     _CONNECTION_DISCOVERY_CACHE.clear()
     _EFFORT_CACHE.clear()
+    _FAST_CACHE.clear()
 
 
 def _remember_efforts(provider: str, connection_id: str, conn: Connection, result: dict[str, Any]) -> None:
@@ -725,10 +743,17 @@ def _remember_efforts(provider: str, connection_id: str, conn: Connection, resul
         if isinstance(entry, dict) and isinstance(entry.get("id"), str)
         and (found := reasoning_efforts_from_detail(entry)) is not None
     }
+    fast = {
+        entry["id"]: found for entry in details
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+        and (found := fast_tier_from_detail(entry)) is not None
+    }
+    expires = time.monotonic() + EFFORT_CACHE_TTL_SECONDS
+    fingerprint = _connection_cache_fingerprint(provider, conn)
     if efforts:
-        _EFFORT_CACHE[connection_id] = (
-            time.monotonic() + EFFORT_CACHE_TTL_SECONDS, _connection_cache_fingerprint(provider, conn), efforts,
-        )
+        _EFFORT_CACHE[connection_id] = (expires, fingerprint, efforts)
+    if fast:
+        _FAST_CACHE[connection_id] = (expires, fingerprint, fast)
 
 
 def reasoning_efforts_from_detail(entry: dict[str, Any]) -> dict[str, Any] | None:
@@ -756,6 +781,57 @@ def reasoning_efforts_from_detail(entry: dict[str, Any]) -> dict[str, Any] | Non
                 return None
             return {"supported": supported, "default": _cursor_default_effort(entry, supported)}
     return None
+
+
+def fast_tier_from_detail(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """1 モデルの catalog 行から Fast を読む。無いときは None。
+
+    Codex は ``service_tiers`` の id ``priority``。Cursor は parameter id ``fast`` で、
+    SDK が boolean を ``true`` / ``false`` の文字列値として表すもの。
+    """
+    if not isinstance(entry, dict):
+        return None
+    tiers = entry.get("service_tiers")
+    if isinstance(tiers, list):
+        for tier in tiers:
+            if not isinstance(tier, dict) or tier.get("id") != "priority":
+                continue
+            name = tier.get("name")
+            description = tier.get("description")
+            return {
+                "service_tier": "priority",
+                "name": name if isinstance(name, str) and name else "Fast",
+                "description": description if isinstance(description, str) and description else None,
+            }
+    for parameter in entry.get("parameters") or []:
+        if _cursor_boolean_fast(parameter):
+            return {"service_tier": "priority", "name": "Fast", "description": None}
+    return None
+
+
+def _cursor_boolean_fast(parameter: object) -> bool:
+    """Cursor の fast parameter が boolean 切替なら True。
+
+    ModelParameterDefinition は値を文字列で持つ。type が boolean か、値が true/false
+    だけの parameter を Fast とみなす。別の列挙は Fast ではない。
+    """
+    if not isinstance(parameter, dict) or parameter.get("id") != "fast":
+        return False
+    kind = parameter.get("type")
+    if isinstance(kind, str) and kind.lower() in {"boolean", "bool"}:
+        return True
+    values = parameter.get("values")
+    if not isinstance(values, list) or not values:
+        return False
+    tokens: list[str] = []
+    for item in values:
+        if isinstance(item, str):
+            tokens.append(item.lower())
+        elif isinstance(item, dict) and isinstance(item.get("value"), str):
+            tokens.append(item["value"].lower())
+        else:
+            return False
+    return "true" in tokens and set(tokens) <= {"true", "false"}
 
 
 def _effort_names(raw: object, key: str) -> list[str]:
@@ -818,11 +894,46 @@ def cached_reasoning_efforts(config: Any, alias: str) -> dict[str, Any] | None:
     return None
 
 
-async def warm_reasoning_efforts(config: Any, *, execution_service: Any = None) -> int:
-    """alias が使う接続の model の一覧を取得し、effort の控えを満たす。
+def cached_fast_tier(config: Any, alias: str) -> dict[str, Any] | None:
+    """alias のモデルが Fast を出すとき、その表示情報を返す。
 
-    effort を当てられる provider の接続だけを、接続ごとに 1 回取得する。失敗はログに残して続ける。
-    取得できた接続の数を返す。
+    discovery cache を更新せず、provider にも問い合わせない。未対応の runtime、
+    期限切れ、Fast の無いモデルは ``None``。
+    """
+    from .runtime.translation import FAST_PROVIDERS
+
+    models = getattr(config, "models", None)
+    if not isinstance(models, dict) or alias not in models:
+        return None
+    preset = config.preset_for(alias)
+    if preset.provider not in FAST_PROVIDERS or not preset.model:
+        return None
+    connection_id = connection_for_model(config, alias)
+    if not connection_id:
+        return None
+    conn = config.connections.get(connection_id)
+    if conn is None:
+        return None
+    base = _connection_cache_fingerprint(preset.provider, conn)
+    now = time.monotonic()
+    cached = _CONNECTION_DISCOVERY_CACHE.get(connection_id)
+    if cached is not None and now < cached.expires_at and cached.fingerprint[:len(base)] == base:
+        details = cached.result.get("model_details")
+        if isinstance(details, list):
+            for entry in details:
+                if isinstance(entry, dict) and entry.get("id") == preset.model:
+                    return fast_tier_from_detail(entry)
+    remembered = _FAST_CACHE.get(connection_id)
+    if remembered is not None and now < remembered[0] and remembered[1] == base:
+        return remembered[2].get(preset.model)
+    return None
+
+
+async def warm_reasoning_efforts(config: Any, *, execution_service: Any = None) -> int:
+    """alias が使う接続の model の一覧を取得し、effort と Fast の控えを満たす。
+
+    effort を当てられる provider の接続だけを、接続ごとに 1 回取得する。同じ取得結果から
+    Fast も覚える。失敗はログに残して続ける。取得できた接続の数を返す。
     """
     from .runtime.translation import EFFORT_PROVIDERS
 
@@ -845,7 +956,7 @@ async def warm_reasoning_efforts(config: Any, *, execution_service: Any = None) 
         except Exception as exc:  # noqa: BLE001 - one connection must not stop the others
             log.warning("model_discovery.effort_warm_failed", connection=connection_id, error_type=type(exc).__name__)
             continue
-        warmed += connection_id in _EFFORT_CACHE
+        warmed += connection_id in _EFFORT_CACHE or connection_id in _FAST_CACHE
     return warmed
 
 
@@ -1395,9 +1506,10 @@ async def discover_models(
     if preset is not None and preset.route is not None:
         cfg = get_config()
         route = cfg.routes.get(preset.route)
-        if route is not None and route.profile is not None:
+        if route is not None and (route.profile is not None or route.driver == "openai.chat"):
             if connection is not None or endpoint_base_url is not None or endpoint_api_key_env is not None:
-                raise ValueError("print CLI preset cannot be combined with endpoint overrides or connection")
+                kind = "print CLI" if route.profile is not None else "openai.chat"
+                raise ValueError(f"{kind} preset cannot be combined with endpoint overrides or connection")
             connection = route.connection
             preset = None
 
@@ -1436,5 +1548,7 @@ async def discover_models(
         return await _discover_codex_models()
     if provider == "cursor":
         return await _discover_cursor_models()
+    if provider == "openai_compat":
+        return _bundled_fallback(provider, "接続先が指定されていないため")
 
     return await _discover_provider_default_models(provider)

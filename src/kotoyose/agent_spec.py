@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from .provider_spec import BUILTIN_PROVIDERS, CODEX_CHILD_DRIVER, CODEX_SANDBOX_CAP
 from .registry import registry
 from .codex_coding_policy import (
     EXTERNAL_SANDBOX_POLICY, EXTERNAL_TOOL_POLICY_DIGEST, READ_SANDBOX_POLICY, READ_TOOL_POLICY_DIGEST,
@@ -172,9 +173,9 @@ _HOST_PRINT_CLI = HostCell(
     accepted_tools="none or host-coding", surface_enforced=False,
 )
 _CODEX_SANDBOX = SdkSandboxPolicy(
-    values=frozenset({"read-only", "workspace-write", "danger-full-access"}),
+    values=frozenset(CODEX_SANDBOX_CAP.order),
     host_approval_mode="deny_all", host_default="workspace-write",
-    inactive_alias=(("full-access", "danger-full-access"),), bypass_forbidden=True,
+    inactive_alias=CODEX_SANDBOX_CAP.aliases, bypass_forbidden=True,
     invalid_saved_message=_SAVED_SANDBOX,
 )
 
@@ -265,7 +266,7 @@ DRIVERS: tuple[DriverManifest, ...] = (
         allows_direct_output_schema=True, surface_selector="request",
     ),
     DriverManifest(
-        driver="codex.app-server", provider="codex",
+        driver=CODEX_CHILD_DRIVER, provider="codex",
         official_interfaces=("cli", "sdk", "chatgpt-subscription", "api-key"),
         places=frozenset({"host", "isolated"}), explicit_environments=frozenset({"host", "isolated"}),
         surfaces=_CODEX_SURFACES, host=None,
@@ -290,6 +291,13 @@ DRIVERS: tuple[DriverManifest, ...] = (
         driver="antigravity.sdk", provider="antigravity", official_interfaces=("api-key", "vertex"),
         places=frozenset({"host"}), explicit_environments=frozenset({"host"}),
         surfaces=_CLOSED, host=None, credential_modes=frozenset({"shared_host"}),
+        unmapped_backend=None, allows_execution_native=False,
+        allows_direct_output_schema=False, surface_selector="none",
+    ),
+    DriverManifest(
+        driver="openai.chat", provider="openai_compat", official_interfaces=("chat-completions",),
+        places=frozenset({"host"}), explicit_environments=frozenset({"host"}),
+        surfaces=_CLOSED, host=None, credential_modes=frozenset({"environment", "secret"}),
         unmapped_backend=None, allows_execution_native=False,
         allows_direct_output_schema=False, surface_selector="none",
     ),
@@ -334,6 +342,9 @@ def _check_table() -> None:
 
 _check_table()
 registry.register_builtin_drivers(DRIVERS)
+for _provider_spec in BUILTIN_PROVIDERS:
+    registry.register_builtin_provider(_provider_spec)
+del _provider_spec
 
 
 def driver_manifest(driver: str) -> DriverManifest:

@@ -431,6 +431,17 @@ function mcpForm(name, mcp, refresh, main, secretNames = [], tracker, { onError 
     }
   }
 
+  const publish = el("input", { type: "checkbox", "aria-label": "Publish to children" });
+  publish.checked = start.publish_to_children === true;
+  const revision = textInput(start.publication_revision || "", {
+    maxlength: 128, "aria-label": "Publication revision",
+  });
+  const publication = el("div", { class: "field wide" },
+    el("label", { class: "check-row" }, publish, "Publish to children"),
+    field("Publication revision", revision, {
+      hint: el("span", { class: "hint" },
+        "Change this when the tool contract or access scope changes. A published stdio server runs on the host; children never start its command."),
+    }));
   const stdioFields = el("div", { class: "form-grid wide" },
     pathField("Command", commandInput, { wide: true }),
     args.node,
@@ -443,6 +454,7 @@ function mcpForm(name, mcp, refresh, main, secretNames = [], tracker, { onError 
     const isStdio = transportSelect.value === "stdio";
     stdioFields.hidden = !isStdio;
     httpFields.hidden = isStdio;
+    publication.hidden = transportSelect.value === "sse";
   };
   transportSelect.addEventListener("change", () => {
     syncTransport();
@@ -595,6 +607,8 @@ function mcpForm(name, mcp, refresh, main, secretNames = [], tracker, { onError 
     const body = {
       description: descInput.value.trim(),
       server: built.server,
+      publish_to_children: transportSelect.value !== "sse" && publish.checked,
+      publication_revision: revision.value.trim(),
     };
 
     setBusy(true);
@@ -627,6 +641,7 @@ function mcpForm(name, mcp, refresh, main, secretNames = [], tracker, { onError 
       field("Transport", transportSelect, { wide: true }),
       stdioFields,
       httpFields,
+      publication,
       ...extraSecretInputs.map((extra) => extra.node)),
     el("div", { class: "field-stack" },
       el("div", { class: "probe-actions" },

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
@@ -13,6 +15,26 @@ if TYPE_CHECKING:
     from claude_agent_sdk import ClaudeAgentOptions
 
     from ..config import HarnessConfig, ModelPreset
+
+
+def _windows_path_key(path: str) -> str:
+    return str(path).replace("/", "\\").rstrip("\\").casefold()
+
+
+def claude_dir_is_default(config_dir: str, default_dir: str, *, windows: bool) -> bool:
+    """普段の `~/.claude` か。Windows は USERPROFILE 側の path を、大文字小文字を無視して比べる。"""
+    if windows:
+        return _windows_path_key(config_dir) == _windows_path_key(default_dir)
+    return Path(config_dir) == Path(default_dir)
+
+
+def _default_claude_config_dir() -> Path:
+    """Windows の普段の場所は USERPROFILE\\.claude。HOME は見ない。"""
+    if sys.platform == "win32":
+        profile = (os.environ.get("USERPROFILE") or "").strip()
+        if profile:
+            return Path(profile) / ".claude"
+    return Path.home() / ".claude"
 
 
 def build_auth_env(
@@ -55,7 +77,14 @@ def build_auth_env(
     ):
         # Owner's rule: config_dir subscription runs use Claude CLI's own login inside
         # CLAUDE_CONFIG_DIR and must never inject or inherit token/API-key env vars.
-        env["CLAUDE_CONFIG_DIR"] = str(sub_pair[1].config_dir)
+        # 普段の場所 (~/.claude) なら CLAUDE_CONFIG_DIR を設定しない。設定すると CLI は設定を
+        # ~/.claude/.claude.json に探し、普段の ~/.claude.json を使わなくなる (child は普段のログインを使う)。
+        # HOME と USERPROFILE はここに入れない。SDK は親の環境を継承し、この dict のキーだけを上書きする。
+        # 差し替えると、この turn から起動する UE や Blender が別の profile を見る。
+        config_dir = Path(sub_pair[1].config_dir).expanduser()
+        default_dir = _default_claude_config_dir()
+        if not claude_dir_is_default(str(config_dir), str(default_dir), windows=sys.platform == "win32"):
+            env["CLAUDE_CONFIG_DIR"] = str(sub_pair[1].config_dir)
         for token_key in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
             if process_env.get(token_key) is not None:
                 env[token_key] = ""

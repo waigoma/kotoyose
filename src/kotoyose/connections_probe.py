@@ -14,13 +14,14 @@ import shlex
 import shutil
 import signal
 import tempfile
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import urllib.parse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 import structlog
 
+from .child_pinned import login_spec, quota_command
 from .claude_cli import bundled_claude_cli
 from . import process_env
 from .agent_spec import driver_manifest
@@ -46,6 +47,9 @@ from .connection_state_store import (
     get_connection_state_store,
 )
 
+if TYPE_CHECKING:
+    from .child_server import ChildHub
+
 log = structlog.get_logger()
 
 EXPIRING_THRESHOLD_SECONDS = 48 * 3600
@@ -63,7 +67,9 @@ _OPENAI_API_KEY_PROVIDERS = frozenset({"codex", "openai"})
 
 _CLI_VERSION_TIMEOUT_SECONDS = 1.5
 _CLI_PROBE_REAP_TIMEOUT_SECONDS = 1.0
-_SAFE_SUBPROCESS_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "USER")
+_SAFE_SUBPROCESS_ENV_KEYS = (
+    "PATH", "HOME", "LANG", "LC_ALL", "TERM", "USER", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SYSTEMROOT",
+)
 _CLAUDE_USAGE_ENV_KEYS = ("PATH", "HOME", "LANG")
 _CLAUDE_SUBSCRIPTION_PROVIDERS = frozenset({"claude", "anthropic"})
 _CLAUDE_USAGE_LINE_RE = re.compile(
@@ -373,24 +379,25 @@ def _extract_codex_quota(rate_limits_resp: Any) -> tuple[list[dict[str, Any]], s
     return entries, plan
 
 
-def _build_codex_probe_config(cli_binary: Path, codex_home: str | None) -> Any:
+def _build_codex_probe_config(
+    cli_binary: Path, codex_home: str | None, *, fixed_env: Mapping[str, str] | None = None,
+) -> Any:
     from openai_codex import CodexConfig
 
-    minimal_env = _minimal_probe_env(codex_home)
+
+    minimal_env = _minimal_probe_env(codex_home) if fixed_env is None else dict(fixed_env)
     work_dir = codex_home if (codex_home and Path(codex_home).is_dir()) else tempfile.gettempdir()
     resolved_bin = str(cli_binary.resolve()) if cli_binary.exists() else str(cli_binary)
-    launch_args: list[str] | None = None
+    launch_args: tuple[str, ...] | None = None
     env_bin = shutil.which("env")
     if env_bin and os.name == "posix":
-        launch_args = [
+        launch_args = (
             env_bin,
             "-i",
             *(f"{k}={v}" for k, v in minimal_env.items()),
             resolved_bin,
-            "app-server",
-            "--listen",
-            "stdio://",
-        ]
+            *quota_command("codex", None),
+        )
     return CodexConfig(
         codex_bin=resolved_bin,
         launch_args_override=launch_args,
@@ -409,13 +416,24 @@ async def probe_codex_connection(
     timeout_seconds: float = DEFAULT_PROBE_TIMEOUT_SECONDS,
     force_refresh: bool = False,
     now: datetime | None = None,
+    inspect_expiry: bool = True,
+    fixed_env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Run a serialized, bounded, read-only Codex `app-server` probe and store the result."""
+    """Run a serialized, bounded, read-only Codex `app-server` probe and store the result.
+
+    When provided, fixed_env must be a safe CLI environment and supplies CODEX_HOME.
+    """
     target_store = store or get_connection_state_store()
     ref_now = now or datetime.now(timezone.utc)
-    codex_home, auth_path = codex_home_and_auth_path(conn)
+    if fixed_env is None:
+        codex_home, auth_path = codex_home_and_auth_path(conn)
+    else:
+        codex_home = fixed_env.get("CODEX_HOME")
+        auth_path = (Path(codex_home) if codex_home else Path.home() / ".codex") / "auth.json"
+    if not inspect_expiry:
+        auth_path = None
     expires_at = read_subscription_expiry(auth_path) if auth_path is not None else None
-    version_info = await probe_cli_version(cli_binary)
+    version_info = await probe_cli_version(cli_binary, fixed_env=fixed_env)
     cli_version = version_info.get("version")
 
     if cli_binary is None:
@@ -431,8 +449,8 @@ async def probe_codex_connection(
     from openai_codex import AsyncCodex
     from openai_codex.generated.v2_all import GetAccountRateLimitsResponse
 
-    config = _build_codex_probe_config(cli_binary, codex_home)
-    refresh_token = should_refresh_codex_token(
+    config = _build_codex_probe_config(cli_binary, codex_home, fixed_env=fixed_env)
+    refresh_token = inspect_expiry and should_refresh_codex_token(
         conn_id,
         expires_at,
         now=ref_now,
@@ -746,9 +764,7 @@ async def run_claude_auth_status(
         try:
             process = await asyncio.create_subprocess_exec(
                 str(cli_binary),
-                "auth",
-                "status",
-                "--json",
+                *login_spec("claude", None)[0].status_command,
                 cwd=tmpdir,
                 env=status_env,
                 stdin=asyncio.subprocess.DEVNULL,
@@ -871,10 +887,7 @@ async def probe_claude_connection(
         try:
             process = await asyncio.create_subprocess_exec(
                 str(resolved_cli),
-                "-p",
-                "/usage",
-                "--output-format",
-                "json",
+                *quota_command("claude", None),
                 cwd=tmpdir,
                 env=probe_env,
                 stdin=asyncio.subprocess.DEVNULL,
@@ -1013,9 +1026,10 @@ async def _exchange_quota_rpc(
         return {**failure, "last_error": "Quota RPC communication failed"}
     finally:
         stdin.close()
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
-        kill_session(process.pid)
+        if os.name == "posix":
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            kill_session(process.pid)
         stdout_task = asyncio.create_task(_drain_probe_output(stdout, bytearray(), 0))
         try:
             await _stop_probe_process(process)
@@ -1557,6 +1571,79 @@ async def probe_endpoint_connection(
     )
 
 
+_CHILD_QUOTA_DEFAULTS = {"quota": (), "quota_source": None, "plan": None, "expires_at": None}
+
+
+def child_connection_view(conn: Connection, state: dict[str, Any], *, hub: ChildHub | None = None) -> dict[str, Any]:
+    from .child_registry import child_on_name
+    from .child_server import ChildConnectionStatus, active_child_hub
+
+    child = child_on_name(conn.on)
+    if child is None:
+        return state
+    hub = hub or active_child_hub()
+    status = hub.connection_status(child, conn.provider, local_llm=conn.local_llm) if hub else ChildConnectionStatus("not_enrolled")
+    if status.enrolled_at:
+        checked_at = _dt_or_none(state.get("checked_at"))
+        enrolled_at = _dt_or_none(status.enrolled_at)
+        if checked_at and enrolled_at and checked_at < enrolled_at:
+            state = default_connection_state(state["connection"])
+    view = {
+        **state,
+        "child_state": status.state,
+        "last_heartbeat": status.last_heartbeat,
+        "child_quota_shared": status.quota_shared,
+        "workspace_policy": status.workspace_policy,
+    }
+    if not status.quota_shared:
+        view.update(_CHILD_QUOTA_DEFAULTS, quota=[])
+    if status.state != "online":
+        view.update(auth="unknown", last_error=None)
+    elif view["auth"] == "unknown" and view.get("checked_at") and not view.get("last_error"):
+        view["last_error"] = "child could not determine login status"
+    return view
+
+
+async def _probe_child_connection(child: str, conn: Connection, timeout: float, *, share_quota: bool) -> dict:
+    from .child_relay import ChildQuotaUnavailable, ChildStreamError, fetch_child_login_status, fetch_child_quota
+
+    result: dict[str, Any] = dict(_CHILD_QUOTA_DEFAULTS)
+    quota_error = None
+    quota_auth = "unknown"
+    if conn.kind == "subscription" and share_quota:
+        try:
+            quota = await fetch_child_quota(child, conn.provider, conn.profile, timeout)
+        except ChildQuotaUnavailable:
+            pass
+        except (ChildStreamError, TimeoutError) as exc:
+            quota_error = str(exc) or "child quota timed out"
+        else:
+            quota_error = quota.get("last_error")
+            quota_auth = quota["auth"]
+            if not quota_error:
+                if quota_auth != "unknown":
+                    return quota
+                result.update(quota)
+        if quota_error:
+            # Keep the previous quota while the child shares it.
+            result = {}
+
+    if conn.kind != "subscription":
+        return {**result, "auth": "unknown", "last_error": "child login status requires a subscription connection"}
+
+    try:
+        state = await fetch_child_login_status(child, conn.provider, conn.profile, timeout, require_feature=True)
+    except (ChildStreamError, TimeoutError) as exc:
+        auth, login_error = "unknown", str(exc) or "child login status timed out"
+    else:
+        auth = {"logged_in": "ok", "logged_out": "logged_out", "unknown": "unknown"}[state]
+        login_error = "child could not determine login status" if auth == "unknown" else None
+    if auth == "unknown" and quota_auth != "unknown":
+        auth, login_error = quota_auth, None
+    errors = " / ".join(error for error in (login_error, quota_error) if error)
+    return {**result, "auth": auth, "last_error": errors or None}
+
+
 async def probe_connection(
     conn_id: str,
     *,
@@ -1565,6 +1652,7 @@ async def probe_connection(
     store: ConnectionStateStore | None = None,
     timeout_seconds: float | None = None,
     force_refresh: bool = False,
+    child_hub: ChildHub | None = None,
 ) -> dict[str, Any]:
     """Probe one connection safely; supports subscription CLIs, API keys, and endpoints."""
     active_cfg = cfg or get_config()
@@ -1572,6 +1660,30 @@ async def probe_connection(
     if conn is None:
         raise KeyError(conn_id)
     target_store = store or get_connection_state_store()
+
+    from .child_registry import child_on_name
+    from .child_server import active_child_hub
+
+    if (child := child_on_name(conn.on)) is not None:
+        hub = child_hub or active_child_hub()
+        stored = await target_store.get(conn_id) or default_connection_state(conn_id)
+        state = child_connection_view(conn, stored, hub=hub)
+        live = hub.live_for(child) if hub is not None else None
+        if conn.kind == "local_llm" or state["child_state"] != "online" or live is None:
+            return state
+        result = await _probe_child_connection(
+            child, conn, 30 if timeout_seconds is None else timeout_seconds, share_quota=state["child_quota_shared"],
+        )
+        if hub.live_for(child) is not live:
+            return child_connection_view(conn, state, hub=hub)
+        if not hub.connection_status(child, conn.provider).quota_shared:
+            result.update(_CHILD_QUOTA_DEFAULTS)
+        elif state["checked_at"] != stored["checked_at"]:
+            # A new enrollment starts without any quota from the previous child.
+            for field, value in _CHILD_QUOTA_DEFAULTS.items():
+                result.setdefault(field, value)
+        state = await target_store.upsert(conn_id, checked_at=datetime.now(timezone.utc), **result)
+        return child_connection_view(conn, state, hub=hub)
 
     if conn.kind == "api_key":
         return await probe_api_key_connection(

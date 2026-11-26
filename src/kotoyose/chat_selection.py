@@ -19,7 +19,9 @@ from . import process_env
 from .chat_policy import validate_cwd, validate_required_headers
 from .execution_billing import owner_claude_subscription_billing
 from .execution_resources import ExecutionError
+from .runtime.base import SDKConnectionError
 from .runtime.claude_options import build_claude_options
+from .runtime.skill_resources import folder_binding, resolve_native_folders
 from .secret_store import SecretStoreError, resolve_secret_sync
 
 if TYPE_CHECKING:
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
 
     from .config import HarnessConfig, ModelPreset
     from .models import ChatCompletionRequest
+    from .skill_folders import SkillFolder
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +43,7 @@ class PinnedChatSelection:
     identity: tuple[str, str, str]
     # 選んだ時の config から一度だけ解いた connection。session は config を引き直さない。
     connection_id: str | None = None
+    skill_folders: tuple[SkillFolder, ...] = field(default=(), repr=False)
 
 
 def _identity_value(value):
@@ -147,6 +151,10 @@ def pin_pm_saved_preset(
         "CLAUDE_CODE_USE_VERTEX": "0",
         "CLAUDE_CODE_USE_FOUNDRY": "0",
     })
+    try:
+        folders = resolve_native_folders(config, preset)
+    except SDKConnectionError as exc:
+        raise ExecutionError("invalid_request", str(exc), 422) from None
     # Include actual resource contents/options, not only alias or model labels.
     # Session store is infrastructure; its contents must not become identity.
     # Header and credential values enter the digest only, never persisted raw.
@@ -158,6 +166,7 @@ def pin_pm_saved_preset(
         "contract": "pm_saved_preset_v1", "alias": request.model,
         "preset": preset.model_dump(mode="json"), "options": effective_options,
         "billing": billing,
+        **({"skill_scope": folder_binding(folders)} if folders else {}),
         "required_headers": [(name.lower(), {key.lower(): value for key, value in headers.items()}.get(name.lower(), ""))
                              for name in sorted(preset.required_request_headers, key=str.lower)],
     }
@@ -166,4 +175,4 @@ def pin_pm_saved_preset(
     route = config.routes.get(preset.route) if preset.route else None
     return PinnedChatSelection(request.model, preset, options, billing,
                                (preset.provider, request.model, digest),
-                               connection_id=route.connection if route is not None else None)
+                               connection_id=route.connection if route is not None else None, skill_folders=folders)

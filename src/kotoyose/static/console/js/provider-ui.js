@@ -1,8 +1,74 @@
 import { dot, el } from "./dom.js";
+import { api } from "./api.js";
+import { authLabel, authTone } from "./format.js";
+
+const CHILD_PRESENCE = {
+  waiting: { tone: "", label: "Waiting for child" },
+  disconnected: { tone: "warning", label: "Disconnected" },
+  revoked: { tone: "negative", label: "Revoked" },
+  not_enabled: { tone: "warning", label: "Not enabled on child" },
+  not_enrolled: { tone: "warning", label: "Child not enrolled" },
+  online: { tone: "positive", label: "Online" },
+};
+
+function lastSeen(heartbeat) {
+  const seconds = Math.floor((Date.now() - Date.parse(heartbeat)) / 1000);
+  if (!Number.isFinite(seconds)) return null;
+  if (seconds < 60) return "last seen just now";
+  if (seconds < 3600) return `last seen ${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `last seen ${Math.floor(seconds / 3600)}h ago`;
+  return `last seen ${Math.floor(seconds / 86400)}d ago`;
+}
+
+export function childPresenceBadge(state, heartbeat) {
+  const badge = CHILD_PRESENCE[state];
+  if (!badge) return null;
+  return { ...badge, detail: state === "disconnected" ? lastSeen(heartbeat) : null };
+}
+
+export function childConnectionBadge(state) {
+  if (state?.child_state !== "online") {
+    return childPresenceBadge(state?.child_state, state?.last_heartbeat);
+  }
+  if (state.auth === "unknown") {
+    return state.last_error
+      ? { tone: "warning", label: "unknown", detail: state.last_error }
+      : { tone: "", label: "Login not checked" };
+  }
+  return {
+    tone: authTone(state.auth),
+    label: state.auth === "logged_out" ? "Logged out" : authLabel(state),
+  };
+}
+
+export function statusChip(badge) {
+  if (!badge) return null;
+  const tone = badge.tone ? ` is-${badge.tone}` : "";
+  return el("span", { class: `state-chip mono small${tone}${badge.detail ? " has-detail" : ""}`, title: badge.detail },
+    dot(badge.tone), badge.label,
+    badge.detail ? el("span", { class: "muted" }, `· ${badge.detail}`) : null);
+}
+
+export async function loadChildConnectionBadges(config) {
+  if (!Object.values(config.connections || {}).some((conn) => conn.on?.startsWith("child:"))) {
+    return new Map();
+  }
+  try {
+    const { connections } = await api.connections();
+    return new Map(connections.map((conn) => [conn.id, childConnectionBadge(conn.state)]));
+  } catch (_error) {
+    return new Map();
+  }
+}
+
+export function aliasChildBadge(config, preset, childBadges) {
+  return childBadges.get(config.routes?.[preset?.route]?.connection);
+}
 
 export const PROVIDER_NAMES = new Map([
   ["claude", ["Anthropic", "Claude"]],
   ["codex", ["OpenAI", "Codex"]],
+  ["openai_compat", ["OpenAI-compatible", ""]],
   ["antigravity", ["Google", "Antigravity"]],
   ["cursor", ["Cursor", "Cursor"]],
   ["grok", ["xAI", "Grok Build"]],

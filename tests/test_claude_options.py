@@ -151,3 +151,23 @@ def test_explicit_oauth_migration_keeps_mcp_allowlist_and_prompt_policy(snapshot
     restored = HarnessConfig.model_validate(serialized).models["isolated"]
     assert restored.strict_mcp_config
     assert restored.system_prompt_snapshot is snapshot
+
+
+def test_explicit_tool_list_keeps_the_skill_tool_when_skills_are_set(tmp_path):
+    """An explicit `tools` list must not drop the Skill tool, or alias skills are never offered."""
+    plugin = tmp_path / "plugin"
+    (plugin / ".claude-plugin").mkdir(parents=True)
+    (plugin / ".claude-plugin" / "plugin.json").write_text('{"name": "plugin"}')
+    (plugin / "skills" / "example").mkdir(parents=True)
+    (plugin / "skills" / "example" / "SKILL.md").write_text("---\nname: example\ndescription: Example\n---\nBody\n")
+    with_skill = ModelPreset(model="claude-sonnet-5", tools=["Read", "Grep"], skills=["example"], plugins=[str(plugin)])
+    without_skill = ModelPreset(model="claude-sonnet-5", tools=["Read", "Grep"])
+    config = HarnessConfig(models={"a": with_skill, "b": without_skill})
+
+    def tools(preset, name):
+        return build_claude_options(
+            config, preset, model_name=name, cwd_override=None, request_headers=None, env={}, session_store=None,
+        ).tools
+
+    assert tools(with_skill, "a") == ["Read", "Grep", "Skill"]
+    assert tools(without_skill, "b") == ["Read", "Grep"]

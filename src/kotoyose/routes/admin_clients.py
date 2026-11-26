@@ -10,6 +10,7 @@ import structlog
 
 from ..auth import require_basic_auth
 from ..config import CLIENT_NAME_PATTERN, Client, get_clients, get_config
+from ..execution_resources import agent_model_allowed, agent_place_blockers
 from .admin import _save_config_or_422
 
 log = structlog.get_logger()
@@ -49,10 +50,20 @@ def _client_payload(name: str, client: Client, keys: list[dict]) -> dict:
 async def list_clients(request: Request):
     store = getattr(request.app.state, "api_key_store", None)
     keys = await store.list() if store is not None else []
-    clients = get_clients()
+    config = get_config()
+    clients = get_clients(config)
+    settings = getattr(getattr(request.app.state, "execution_service", None), "config", None)
+    aliases = sorted(config.models.keys() | config.pools.keys())
     return {
         "clients": [
-            _client_payload(name, client, keys)
+            {
+                **_client_payload(name, client, keys),
+                "place_blocked_models": {
+                    alias: places for alias in aliases
+                    if agent_model_allowed(alias, client)
+                    and (places := agent_place_blockers(alias, client, settings, config=config))
+                },
+            }
             for name, client in sorted(clients.items())
         ],
     }

@@ -101,3 +101,51 @@ def test_public_release_step_passes_the_built_in_token_to_gh():
     steps = [step for job in document["jobs"].values() for step in job["steps"] if "run" in step]
     assert steps and all(step.get("env", {}).get("GH_TOKEN") == "${{ github.token }}" for step in steps
                          if "gh " in step["run"])
+
+
+def test_installer_builds_on_linux_and_release_assets_use_the_tag():
+    ci = load_workflow(WORKFLOWS / "ci.yml")["jobs"]["rust"]
+    release = load_workflow(WORKFLOWS / "github-release.yml")["jobs"]["release"]
+    for job in (ci, release):
+        runs_on = job["runs-on"]
+        # GitHub の hosted runner (ubuntu-*) か、self-hosted の Linux runner。
+        assert (isinstance(runs_on, str) and runs_on.startswith("ubuntu-")) or (
+            isinstance(runs_on, list) and {"self-hosted", "linux"} <= set(runs_on)
+        )
+        build = next(step for step in job["steps"] if "scripts/build-child-installer.sh\n" in step.get("run", ""))
+        assert "scripts/test-child-installer-wine.sh" in build["run"]
+        if job is release:
+            upload = next(step for step in job["steps"] if "gh release upload" in step.get("run", ""))
+            assert upload["if"] == build["if"]
+            assert "github.ref_type == 'tag'" in upload["if"]
+            assert "scripts/build-child-linux.sh" in build["run"]
+            assert "linux-x64.tar.gz" in upload["run"]
+            assert 'test "$TAG" = "v$version"' in build["run"]
+            assert '"$installer.sha256"' in upload["run"]
+        else:
+            # PR では installer を作って Wine で試すだけ。成果物の保存枠を使わないので upload しない。
+            assert not any(step.get("uses", "").startswith("actions/upload-artifact@") for step in job["steps"])
+
+
+@private_only
+def test_release_jobs_run_on_the_self_hosted_runner():
+    """GitHub-hosted runners are unavailable to the private repository."""
+    for job in load_workflow(RELEASE_PUBLIC)["jobs"].values():
+        assert isinstance(job["runs-on"], list) and {"self-hosted", "linux"} <= set(job["runs-on"])
+
+
+@private_only
+def test_pull_requests_run_the_public_export_check():
+    """Findings that would block the release surface in the PR, not at release time."""
+    steps = load_workflow(WORKFLOWS / "ci.yml")["jobs"]["check"]["steps"]
+    script = "\n".join(step.get("run") or "" for step in steps)
+    assert "scripts/export-public.py" in script and "scripts/check-public.py" in script
+    assert any("gitleaks" in str(step.get("uses", "")) for step in steps)
+
+
+@private_only
+def test_publish_uses_only_tools_the_self_hosted_runner_has():
+    """The runner has no jq or rsync (the 1.3.0 publish stopped on jq)."""
+    publish = load_workflow(RELEASE_PUBLIC)["jobs"]["publish"]
+    script = "\n".join(step.get("run") or "" for step in publish["steps"])
+    assert "jq " not in script and "rsync" not in script

@@ -12,8 +12,10 @@ class Element {
     this.value = "";
     this.hidden = false;
     this.disabled = false;
+    this.classList = { add() {} };
   }
 
+  get parentNode() { return this.parent; }
   get isConnected() { return this === document.body || Boolean(this.parent?.isConnected); }
   get textContent() { return this.text + this.children.map((child) => child.textContent).join(""); }
   set textContent(text) { this.text = text; this.replaceChildren(); }
@@ -27,6 +29,12 @@ class Element {
     for (const child of this.children) child.parent = null;
     this.children = [];
     this.append(...children);
+  }
+
+  remove() {
+    if (!this.parent) return;
+    this.parent.children = this.parent.children.filter((child) => child !== this);
+    this.parent = null;
   }
 
   setAttribute(name, value) {
@@ -56,7 +64,11 @@ globalThis.Node = Element;
 globalThis.document = {
   body: new Element("body"),
   createElement: (tag) => new Element(tag),
+  createElementNS: (_ns, tag) => new Element(tag),
   createTextNode: (text) => Object.assign(new Element("#text"), { text }),
+  addEventListener() {},
+  removeEventListener() {},
+  querySelector: () => null,
 };
 globalThis.window = {};
 const load = (module) => import(pathToFileURL(join(process.argv[2], "js", module)));
@@ -72,6 +84,96 @@ const button = (label, root = main) => {
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 const cases = {
+  async childConnections() {
+    const { renderProviders } = await load("pages/providers.js");
+    const { renderChildren } = await load("pages/children.js");
+    const { renderDashboard } = await load("pages/dashboard.js");
+    const { renderRoutes } = await load("pages/routes.js");
+    const { renderAliases } = await load("pages/aliases.js");
+    const { renderCombos } = await load("pages/combos.js");
+    const { destroyPeek } = await load("peek.js");
+    const lastSeen = new Date(Date.now() - 7 * 60_000).toISOString();
+    const roots = [String.raw`C:\programming\tmp\work`, "/path/<example>"];
+    const workspace = { workspace_roots: roots, codex_sandbox_max: "read-only" };
+    const oldVersion = "Not reported by this child version";
+    const folderWarning = String.raw`Alias alias-a allows D:\Programming\ai\tmp but child disconnected's workspace has ${roots.join(", ")}.`;
+    const sandboxWarning = "Alias alias-a requests Codex sandbox workspace-write but child disconnected's limit is read-only.";
+    const entries = [
+      ["waiting", { child_state: "waiting" }, "Waiting for child"],
+      ["disconnected", { child_state: "disconnected", last_heartbeat: lastSeen, workspace_policy: workspace }, "Disconnected"],
+      ["revoked", { child_state: "revoked" }, "Revoked"],
+      ["disabled", { child_state: "not_enabled" }, "Not enabled on child"],
+      ["signed-out", { child_state: "online", auth: "logged_out" }, "Logged out"],
+      ["signed-in", { child_state: "online", auth: "ok", child_quota_shared: false }, "ok"],
+      ["failed", { child_state: "online", last_error: "child login status timed out" }, "unknown"],
+      ["unchecked", { child_state: "online" }, "Login not checked"],
+    ];
+    const connections = entries.map(([id, state]) => ({
+      id, on: `child:${id}`, provider: "claude", kind: "subscription", state: { auth: "unknown", ...state },
+    }));
+    const config = {
+      connections: Object.fromEntries(connections.map((conn) => [conn.id, conn])),
+      routes: { "route-a": { driver: "claude.agent-sdk", model: "fixture", connection: "disconnected" } },
+      models: { "alias-a": { route: "route-a", on: "child:disconnected" } },
+      pools: { "pool-a": { candidates: ["alias-a"] } },
+    };
+    api.connections = async () => ({ connections });
+    api.children = async () => ({ children: [
+      { name: "child-a", child_state: "waiting" },
+      { name: "disconnected", child_state: "disconnected", last_heartbeat: lastSeen, workspace_policy: workspace,
+        alias_warnings: [folderWarning, sandboxWarning].map((message) => ({ alias: "alias-a", message })) },
+      { name: "child-c", child_state: "revoked", revoked: true },
+      { name: "child-d", child_state: "online", online: true,
+        workspace_policy: { workspace_roots: [], codex_sandbox_max: "workspace-write" } },
+    ] });
+    api.machine = api.tools = api.secrets = api.providerDeclarations = async () => ({});
+    api.interactions = async () => ({ items: [] });
+    api.poolState = async () => ({ pools: {} });
+    globalThis.location = { hash: "#/providers/connection/disconnected" };
+    globalThis.requestAnimationFrame = (callback) => callback();
+    const context = { config, rest: [], query: new URLSearchParams(), refresh: async () => {}, counts: {} };
+    await renderProviders(main, { ...context, rest: ["connection", "disconnected"] });
+    for (const [id, , label] of entries) {
+      const row = main.querySelectorAll("a").find((a) => a.className === "connection-row" &&
+        a.getAttribute("href").includes(`/connection/${id}`));
+      const chip = row?.querySelectorAll("span").find((item) => item.className?.includes("state-chip"));
+      assert.ok(chip?.textContent.startsWith(label), `${id} should show ${label}`);
+    }
+    assert.match(main.textContent, /last seen 7m ago/);
+    assert.match(main.textContent, /child login status timed out/);
+    const detail = document.body.querySelectorAll("aside")[0];
+    assert.match(detail.textContent, /Disconnected · last seen 7m ago/);
+    for (const text of ["Workspace folders", ...roots, "Codex sandbox limit", "read-only"]) {
+      assert.ok(detail.textContent.includes(text));
+    }
+    destroyPeek();
+    main.replaceChildren();
+    await renderProviders(main, { ...context, rest: ["connection", "waiting"] });
+    assert.ok(document.body.querySelectorAll("aside")[0].textContent.includes(oldVersion));
+    destroyPeek();
+
+    for (const render of [renderChildren, renderDashboard, renderRoutes, renderAliases, renderCombos]) {
+      main.replaceChildren();
+      await render(main, context);
+      assert.match(main.textContent, /Disconnected/);
+      assert.match(main.textContent, /last seen 7m ago/);
+      assert.doesNotMatch(main.textContent, /Quota unknown/);
+      if (render === renderChildren) {
+        for (const label of ["Waiting for child", "Revoked", "Online"]) assert.ok(main.textContent.includes(label));
+        for (const text of ["Workspace folders", ...roots, "Codex sandbox limit", "read-only", oldVersion,
+          "No workspace folders configured", folderWarning, sandboxWarning]) assert.ok(main.textContent.includes(text));
+      }
+      if (render === renderAliases) {
+        for (const text of [folderWarning, sandboxWarning]) assert.ok(main.textContent.includes(text));
+      }
+      if (render === renderDashboard) assert.match(main.textContent, /Quota not shared/);
+    }
+    main.replaceChildren();
+    await renderAliases(main, { ...context, rest: ["alias-a"] });
+    const aliasDetail = document.body.querySelectorAll("aside")[0];
+    for (const text of [folderWarning, sandboxWarning]) assert.ok(aliasDetail.textContent.includes(text));
+  },
+
   async reload() {
     const { renderMachine } = await load("pages/machine.js");
     api.machine = async () => ({});

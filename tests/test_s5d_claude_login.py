@@ -813,9 +813,13 @@ def test_console_providers_ui_contains_s5d_login_and_issue_token_controls(isolat
             assert "Open sign-in page" in text
             assert "Submit" in text
             assert "Cancel" in text
-            assert "CLAUDE_CONFIG_DIR=" in text
             assert "Log in from a terminal:" not in text
             assert ".innerHTML" not in text
+            tools = client.get("/admin/tools", auth=BASIC_AUTH)
+            assert tools.status_code == 200
+            assert tools.json()["connections"]["claude"]["terminal"] == {
+                "env_paths": {"CLAUDE_CONFIG_DIR": "."}, "env": {}, "argv": ["claude"], "follow_up": "/login",
+            }
 
             api_js = client.get(f"{prefix}/js/api.js", auth=BASIC_AUTH)
             assert api_js.status_code == 200

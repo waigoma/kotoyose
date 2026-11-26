@@ -30,6 +30,7 @@ from .print_cli_agent import PrintCliJob, PrintCliWorker
 from .print_cli_profiles import get_print_cli_profile
 from .agent_interactions import AgentInteraction
 from .runtime.base import RuntimeEvent
+from .runtime.skill_resources import CliInstructions
 from .codex_preferences import CodexModelPreferences
 from .execution_resources import pinned_codex_egress_limits
 from .agent_spec import mode_requests_room
@@ -88,6 +89,8 @@ class _ProgressWriter:
                             error="authentication_failed",
                         )
                     await self.store.append_event(self.attempt_id, "provider_progress", asdict(event))
+                    from .execution_delegation import note_child_tool
+                    await note_child_tool(self.attempt_id, event)
             except Exception as exc:
                 self.failed = True
                 log.warning("native.progress_event_failed", error_type=type(exc).__name__)
@@ -623,6 +626,13 @@ class AgentExecutor:
             raise ExecutionError("request_conflict", "Print CLI binary changed after admission", 409)
 
         instructions, prompt, _ = await self._render_inputs(attempt)
+        alias_skills = None
+        if "alias_cli_skills" in snapshot:
+            try:
+                stored = snapshot["alias_cli_skills"]
+                alias_skills = CliInstructions.from_payload(stored["prompts"], stored["skills"], stored["skill_folders"])
+            except (TypeError, KeyError, ValueError):
+                raise ExecutionError("request_conflict", "Invalid alias skill snapshot", 409) from None
         timeout, budget = snapshot["timeout"], snapshot["budget"]
         if tracker is not None:
             self._validate_snapshot_start(snapshot)
@@ -675,6 +685,8 @@ class AgentExecutor:
             api_key_secret=snapshot.get("api_key_secret"),
             surface=snapshot.get("surface", "read"),
             instructions=instructions,
+            alias_skills=alias_skills,
+            repository_skills=snapshot.get("repository_skills"),
             prompt=prompt,
             output_contract=snapshot["definition"]["output_contract"],
             timeout_seconds=(

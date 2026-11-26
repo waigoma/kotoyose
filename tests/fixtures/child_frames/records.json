@@ -1,0 +1,56 @@
+[
+  {
+    "name": "UTF-8 golden",
+    "bytes": "AAAAN3sic3RyZWFtIjoxLCJraW5kIjoiZGVsdGEiLCJwYXlsb2FkIjp7InRleHQiOiLlv5znrZQifX0=",
+    "outcome": "frame",
+    "spaces": 0
+  },
+  {
+    "name": "clean EOF",
+    "bytes": "",
+    "outcome": "eof",
+    "spaces": 0
+  },
+  {
+    "name": "truncated prefix",
+    "bytes": "AAAA",
+    "outcome": "error",
+    "spaces": 0
+  },
+  {
+    "name": "truncated body",
+    "bytes": "AAAAN3sic3RyZWFtIjoxLCJraW5kIjoiZGVsdGEiLCJwYXlsb2FkIjp7InRleHQiOiLlv5znrZQifQ==",
+    "outcome": "error",
+    "spaces": 0
+  },
+  {
+    "name": "zero length",
+    "bytes": "AAAAAA==",
+    "outcome": "error",
+    "spaces": 0
+  },
+  {
+    "name": "over 1 MiB",
+    "bytes": "ABAAAQ==",
+    "outcome": "error",
+    "spaces": 0
+  },
+  {
+    "name": "body exactly 1 MiB",
+    "bytes": "ABAAAHsic3RyZWFtIjoxLCJraW5kIjoiZGVsdGEiLCJwYXlsb2FkIjp7InRleHQiOiLlv5znrZQifX0=",
+    "outcome": "frame",
+    "spaces": 1048521
+  },
+  {
+    "name": "record length 1, non-envelope",
+    "bytes": "AAAAAXg=",
+    "outcome": "invalid_json",
+    "spaces": 0
+  },
+  {
+    "name": "invalid UTF-8",
+    "bytes": "AAAAAf8=",
+    "outcome": "invalid_json",
+    "spaces": 0
+  }
+]

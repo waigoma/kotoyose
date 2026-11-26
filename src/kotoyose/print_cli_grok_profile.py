@@ -14,6 +14,32 @@ _GROK_BINARY_URLS = (
     "https://x.ai/cli/grok-{version}-{os}-{arch}",
     "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-{version}-{os}-{arch}",
 )
+GROK_ACP_ARGV = ("agent", "--no-leader", "--model", "{model}", "stdio")
+GROK_READ_FLAGS = (
+    "--permission-mode", "dontAsk", "--no-subagents", "--disable-web-search",
+    "--tools", "Read,Grep,Glob",
+    "--allow", "Read", "--allow", "Grep", "--allow", "Glob",
+    "--deny", "Bash", "--deny", "Edit", "--deny", "Write", "--deny", "MCPTool",
+)
+# child には OS の閉じ込めが無い。Grok Build は ACP では --tools / --deny / --permission-mode を効かせず、
+# 編集を許可の問い合わせなしに行う (1.0.89 で実測)。読み取りは Grok 自身の read-only sandbox
+# (Linux は Landlock、書き込みは ~/.grok と /tmp だけ、子プロセスはネットワーク不可) で守る。
+# ネットワーク制約には Linux カーネル 6.7 以降 (Landlock ABI 4 以上) が必要。子機は起動前に確認する。
+GROK_ACP_READ_SANDBOX = ("--sandbox", "read-only")
+GROK_ACP_READ_ARGV = GROK_ACP_READ_SANDBOX + GROK_READ_FLAGS + GROK_ACP_ARGV
+GROK_ACP_UNRESTRICTED_ARGV = ("--no-subagents", "--disable-web-search") + GROK_ACP_ARGV
+GROK_ACP_WRITE_ARGV = ("--sandbox", "strict") + GROK_ACP_UNRESTRICTED_ARGV
+GROK_INTEGRATION_ENV = tuple(
+    (f"GROK_{source}_{feature}_ENABLED", "0")
+    for source in ("CLAUDE", "CURSOR", "CODEX")
+    for feature in ("HOOKS", "MCPS", "SKILLS", "RULES", "AGENTS")
+)
+GROK_NATIVE_SKILL_LAYOUT = "grok_agents_home_v1"
+GROK_LINUX_SKILL_VERSION = "1.0.89"
+GROK_LINUX_SKILL_DIGEST = "sha256:a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f"
+DEVICE_LOGIN_URL_PATTERN = r"https://[^\s<>\"'\x00-\x1f\x7f]+"
+GROK_DEVICE_CODE_PATTERN = r"(?i)\b([a-z0-9]{4}-[a-z0-9]{4})\b"
+GROK_SIGNED_OUT_PATTERN = r"(?i)\bnot authenticated\b"
 
 
 def grok_profile() -> PrintCliProfile:
@@ -22,17 +48,18 @@ def grok_profile() -> PrintCliProfile:
 
     return PrintCliProfile(
         id="grok",
-        acp=AcpSpec(("agent", "--no-leader", "--model", "{model}", "stdio"), usage_parser="grok_acp_meta_v1"),
+        acp=AcpSpec(GROK_ACP_ARGV, usage_parser="grok_acp_meta_v1"),
         provider="grok",
         display_name="Grok Build",
         binary="grok",
         min_version=(1, 0, 89),
+        native_skill_layout=GROK_NATIVE_SKILL_LAYOUT,
         install=CliInstallSpec(
-            version="1.0.89",
+            version=GROK_LINUX_SKILL_VERSION,
             artifacts=(
                 CliArtifact(
                     "linux-x64", "linux", "x86_64", _GROK_BINARY_URLS,
-                    "sha256:a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f",
+                    GROK_LINUX_SKILL_DIGEST,
                 ),
                 CliArtifact("linux-arm64", "linux", "aarch64", _GROK_BINARY_URLS, "unset"),
             ),
@@ -42,12 +69,7 @@ def grok_profile() -> PrintCliProfile:
             "--single={prompt}",
         ),
         surfaces={
-            "read": SurfaceCliSpec(extra_args=(
-                "--permission-mode", "dontAsk", "--no-subagents", "--disable-web-search",
-                "--tools", "Read,Grep,Glob",
-                "--allow", "Read", "--allow", "Grep", "--allow", "Glob",
-                "--deny", "Bash", "--deny", "Edit", "--deny", "Write", "--deny", "MCPTool",
-            )),
+            "read": SurfaceCliSpec(extra_args=GROK_READ_FLAGS),
             # Grok calls this always-approve mode. It avoids tool approval prompts.
             "write": SurfaceCliSpec(extra_args=("--permission-mode", "bypassPermissions")),
         },
@@ -82,17 +104,17 @@ def grok_profile() -> PrintCliProfile:
         ),
         quota_source="grok_acp_billing",
         login_home_env="GROK_HOME",
+        terminal_login="hidden",
         login_home_env_paths={"HOME": "."},
-        max_concurrent_per_home=1,
         login_flow="device_code",
         login=PrintCliLoginSpec(
             command=("login", "--device-auth"),
-            url_pattern=r"https://[^\s<>\"'\x00-\x1f\x7f]+",
+            url_pattern=DEVICE_LOGIN_URL_PATTERN,
             url_hosts=("accounts.x.ai", "auth.x.ai", "x.ai", "grok.com"),
-            user_code_pattern=r"(?i)\b([a-z0-9]{4}-[a-z0-9]{4})\b",
+            user_code_pattern=GROK_DEVICE_CODE_PATTERN,
             cli_timeout_seconds=300,
             status_command=("models",),
-            signed_out_pattern=r"(?i)\bnot authenticated\b",
+            signed_out_pattern=GROK_SIGNED_OUT_PATTERN,
             success_json_field=None,
         ),
         egress_hosts=("cli-chat-proxy.grok.com", "auth.x.ai"),

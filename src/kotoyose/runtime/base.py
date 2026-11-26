@@ -7,6 +7,14 @@ from dataclasses import dataclass
 from typing import Any, Protocol, TypeAlias, runtime_checkable
 
 
+class SDKConnectionError(Exception):
+    """A runtime could not establish its provider connection."""
+
+    def __init__(self, message: str = "", *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeTextInput:
     """provider へ渡すユーザーテキスト。"""
@@ -23,13 +31,22 @@ class RuntimeImageInput:
 
 
 RuntimeInputPart: TypeAlias = RuntimeTextInput | RuntimeImageInput
-RuntimePrompt: TypeAlias = str | list[RuntimeInputPart]
+@dataclass(frozen=True, slots=True)
+class RuntimeChatHistory:
+    """ステートレスなテキストチャットへ、発言を元の role と順序で渡す。"""
+
+    messages: tuple[tuple[str, str], ...]
+
+
+RuntimePrompt: TypeAlias = str | list[RuntimeInputPart] | RuntimeChatHistory
 
 
 def prompt_text(prompt: RuntimePrompt) -> str:
     """runtime prompt からテキスト部分だけを順序どおり連結して返す。"""
     if isinstance(prompt, str):
         return prompt
+    if isinstance(prompt, RuntimeChatHistory):
+        return "\n".join(text for _, text in prompt.messages)
     return "\n".join(
         part.text for part in prompt if isinstance(part, RuntimeTextInput)
     )
@@ -37,14 +54,14 @@ def prompt_text(prompt: RuntimePrompt) -> str:
 
 def prompt_has_images(prompt: RuntimePrompt) -> bool:
     """runtime prompt に画像が 1 件以上含まれるかを返す。"""
-    return not isinstance(prompt, str) and any(
+    return isinstance(prompt, list) and any(
         isinstance(part, RuntimeImageInput) for part in prompt
     )
 
 
 def prompt_image_urls(prompt: RuntimePrompt) -> list[str]:
     """runtime prompt に含まれる画像 URL を入力順に返す。"""
-    if isinstance(prompt, str):
+    if not isinstance(prompt, list):
         return []
     return [
         part.url for part in prompt if isinstance(part, RuntimeImageInput)
@@ -55,6 +72,8 @@ def prompt_audit_text(prompt: RuntimePrompt) -> str:
     """画像本体や URL を保存せず、監査ログ向けの入力概要を返す。"""
     if isinstance(prompt, str):
         return prompt
+    if isinstance(prompt, RuntimeChatHistory):
+        return "\n".join(text for _, text in prompt.messages)
     return "\n".join(
         part.text if isinstance(part, RuntimeTextInput) else "[image]"
         for part in prompt

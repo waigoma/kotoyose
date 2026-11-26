@@ -66,8 +66,13 @@ export function usageByRef(config, refsField) {
     const refs = (preset && preset[refsField]) || [];
     for (const ref of Array.isArray(refs) ? refs : [refs]) {
       if (!ref) continue;
-      if (!map.has(ref)) map.set(ref, { models: [] });
-      map.get(ref).models.push(alias);
+      let name = ref;
+      if (refsField === "mcp_refs") {
+        if (preset.on?.startsWith("child:") && !ref.startsWith("host:")) continue;
+        name = ref.replace(/^(host|local):/, "");
+      }
+      if (!map.has(name)) map.set(name, { models: [] });
+      map.get(name).models.push(alias);
     }
   }
   for (const entry of map.values()) entry.models.sort();

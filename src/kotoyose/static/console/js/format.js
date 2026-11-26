@@ -13,6 +13,11 @@ export function count(value) {
   return value === null || value === undefined ? "—" : Number(value).toLocaleString("en-US");
 }
 
+export function placeGateMessage(places) {
+  const options = places.some((place) => place.startsWith("child:")) ? [...places, "child"] : places;
+  return `Hidden by client places. Allow ${options.join(" or ")}.`;
+}
+
 export function bytesLabel(bytes) {
   if (bytes === null || bytes === undefined) return "—";
   if (bytes === "disabled") return "disabled";

@@ -15,7 +15,7 @@ from kotoyose.codex_coding_policy import CODEX_SANDBOXES, HOST_MODE, HOST_TOOL_R
 def test_table_declares_todays_drivers_and_does_not_admit_unread_surfaces():
     assert [row.driver for row in DRIVERS] == [
         "claude.agent-sdk", "codex.app-server", "cursor.sdk", "antigravity.sdk",
-        "cli.print", "cli.acp",
+        "openai.chat", "cli.print", "cli.acp",
     ]
     admitted = {
         row.driver: tuple(cell.surface for cell in row.surfaces if cell.admitted)
@@ -24,7 +24,7 @@ def test_table_declares_todays_drivers_and_does_not_admit_unread_surfaces():
     assert admitted["claude.agent-sdk"] == ("none", "read", "write")
     assert admitted["codex.app-server"] == ("read", "exec", "write")
     assert admitted["cursor.sdk"] == ()
-    assert admitted["antigravity.sdk"] == ()
+    assert admitted["antigravity.sdk"] == admitted["openai.chat"] == ()
     assert admitted["cli.print"] == admitted["cli.acp"] == ("read", "write")
     cli_print = next(row for row in DRIVERS if row.driver == "cli.print")
     cli_print_write = next(cell for cell in cli_print.surfaces if cell.surface == "write")

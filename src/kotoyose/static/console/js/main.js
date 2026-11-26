@@ -13,6 +13,7 @@ import {
   wasPeekReused,
 } from "./peek.js";
 import { renderAliases } from "./pages/aliases.js";
+import { renderChildren } from "./pages/children.js";
 import { renderCombos } from "./pages/combos.js";
 import { renderDashboard } from "./pages/dashboard.js";
 import { renderEndpoint } from "./pages/endpoint.js";
@@ -30,6 +31,7 @@ const PAGES = {
   dashboard: renderDashboard,
   providers: renderProviders,
   endpoint: renderEndpoint,
+  children: renderChildren,
   routes: renderRoutes,
   combos: renderCombos,
   aliases: renderAliases,

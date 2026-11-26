@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..child_sdk_skills import MAX_TURN_FILE_BYTES
 from ..config import (
     HarnessConfig,
     ModelPreset,
@@ -15,8 +16,8 @@ from ..config import (
     resolve_prompt_texts,
     resolve_skill_fallback_texts,
 )
-from ..delegation import MCP_NAME
 from ..logging_setup import log
+from .base import SDKConnectionError
 
 # Skill を runtime へ native 注入できる provider。ここに無い provider では
 # skill_refs の本文を system prompt へ前置する (skill fallback)。
@@ -24,6 +25,18 @@ from ..logging_setup import log
 _SKILL_CAPABLE_PROVIDERS = frozenset({"claude", "codex", "antigravity"})
 # preset.effort を実行設定へ渡す runtime。Antigravity SDK は警告するだけで転送しない。
 EFFORT_PROVIDERS = frozenset({"claude", "codex", "cursor"})
+# リクエストの service_tier=priority (Fast) を実行設定へ渡す runtime。
+# Claude と ACP / print CLI は受け取らない。
+FAST_PROVIDERS = frozenset({"codex", "cursor"})
+
+
+def resolve_cli_prompt_texts(config: HarnessConfig, preset: ModelPreset) -> list[str]:
+    try:
+        return resolve_prompt_texts(
+            config.resolve_prompt_files(preset), strict_limits=(MAX_TURN_FILE_BYTES, MAX_TURN_FILE_BYTES),
+        )
+    except ValueError:
+        raise ValueError(f"prompt files are unavailable or invalid (limit {MAX_TURN_FILE_BYTES} bytes)") from None
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,11 +67,14 @@ def translate_runtime_config(
     *,
     resolved_secrets: Mapping[str, str] | None = None,
     effort_override: str | None = None,
+    skill_resources: tuple[list[str], list[str] | str | None] | None = None,
 ) -> TranslatedRuntimeConfig:
     """参照・inline・request header を provider 非依存の規則で 1 回だけ解決する。"""
     plugin_paths, skill_filter, mcp_servers = config.resolve_resources(preset)
+    if skill_resources is not None:
+        plugin_paths, skill_filter = skill_resources
     texts = resolve_prompt_texts(config.resolve_prompt_files(preset))
-    skills = tuple(_resolve_skills(plugin_paths, skill_filter))
+    skills = tuple(resolve_plugin_skills(plugin_paths, skill_filter))
 
     if preset.provider not in _SKILL_CAPABLE_PROVIDERS and preset.skill_refs:
         fallbacks = resolve_skill_fallback_texts(
@@ -98,7 +114,7 @@ def translate_runtime_config(
         mcp_servers=_inject_mcp_request_headers(
             resolve_mcp_secrets(mcp_servers, resolved_secrets=resolved_secrets),
             request_headers or {},
-            builtin_delegation=MCP_NAME in preset.mcp_refs,
+            builtin_delegation=not config._child_mcp_projection and preset.has_delegation_mcp,
         ),
         skills=skills,
         effort=effort_override if effort_override is not None else preset.effort,
@@ -117,8 +133,8 @@ def apply_common_timeout(
     return resolved
 
 
-def _resolve_skills(
-    plugin_paths: list[str], skill_filter: list[str] | str | None
+def resolve_plugin_skills(
+    plugin_paths: list[str], skill_filter: list[str] | str | None, *, keep_source_path: bool = False,
 ) -> list[RuntimeSkill]:
     """Claude plugin bundle 内の Skill を Codex/Antigravity でも使える明示参照へ変換する。"""
     discovered: dict[str, Path] = {}
@@ -127,7 +143,7 @@ def _resolve_skills(
         if not skills_dir.is_dir():
             continue
         for skill_file in sorted(skills_dir.glob("*/SKILL.md")):
-            discovered.setdefault(skill_file.parent.name, skill_file.resolve())
+            discovered.setdefault(skill_file.parent.name, skill_file.absolute() if keep_source_path else skill_file.resolve())
 
     if skill_filter == []:
         return []

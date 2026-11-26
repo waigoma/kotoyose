@@ -9,3 +9,4 @@ tests/test_container_claude.py 10.1.2.3
 tests/test_container_claude.py 10.9.8.7
 tests/test_native_codex.py 10.0.0.1
 tests/test_native_codex.py 192.168.0.1
+tests/test_provider_data.py 192.168.1.2

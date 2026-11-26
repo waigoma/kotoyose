@@ -3,9 +3,14 @@
 import asyncio
 from datetime import datetime
 
+import structlog
+
 from .agent_spec import admitted_execution_cell
-from .delegation import MAX_CONCURRENT, MCP_NAME
+from .delegation import MAX_CONCURRENT, child_tool_summary, public_progress_text
 from .execution_resources import ExecutionError, agent_profile_allowed
+
+log = structlog.get_logger()
+MAX_PROGRESS_NOTES = 32
 
 LIST_AGENTS = "builtin:kotoyose-list-agents@1"
 ASK_AGENT = "builtin:kotoyose-ask-agent@1"
@@ -42,7 +47,7 @@ def only_delegation_tools(specs, refs, callback) -> bool:
 
 def targets(config, parent_alias, policy, settings) -> list[dict]:
     parent = config.models.get(parent_alias)
-    if parent is None or not parent.is_jailed or MCP_NAME not in parent.mcp_refs:
+    if parent is None or not parent.is_jailed or not parent.has_delegation_mcp:
         return []
     return [
         {"alias": alias, "description": preset.description, "model": config.preset_for(alias).model, "place": "jail"}
@@ -119,3 +124,52 @@ class DelegationCalls:
         if self.watcher is not None:
             tasks.append(self.watcher)
         await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
+
+
+class DelegationProgress:
+    """親 Attempt に残す、子の進捗。道具の題と状態だけで、子の本文は載せない。"""
+
+    def __init__(self, store, parent_attempt_id: str, child_id: str):
+        self.store = store
+        self.parent_attempt_id = parent_attempt_id
+        self.child_id = child_id
+        self.tool_call_id = f"delegate:{child_id}"
+        self.notes = 0
+
+    async def event(self, **fields) -> None:
+        payload = {"tool_call_id": self.tool_call_id}
+        payload.update({key: value for key, value in fields.items() if value is not None})
+        try:
+            await self.store.append_event(self.parent_attempt_id, "delegation_progress", payload)
+        except Exception as exc:
+            log.warning("delegation.progress_failed", error_type=type(exc).__name__)
+
+    async def start(self, alias: str, task: str) -> None:
+        await self.event(
+            status="in_progress", tool_kind="other",
+            title=public_progress_text(f"{alias}: {task[:80]}"),
+        )
+
+
+_reporters: dict[str, DelegationProgress] = {}
+
+
+def bind_child_progress(child_id: str, reporter: DelegationProgress) -> None:
+    _reporters[child_id] = reporter
+
+
+def unbind_child_progress(child_id: str, reporter: DelegationProgress) -> None:
+    if _reporters.get(child_id) is reporter:
+        del _reporters[child_id]
+
+
+async def note_child_tool(child_id: str, event) -> None:
+    """実行中の子の道具イベントを、親の delegation_progress に 1 行足す。"""
+    reporter = _reporters.get(child_id)
+    if reporter is None or reporter.notes >= MAX_PROGRESS_NOTES:
+        return
+    summary = child_tool_summary(event)
+    if not summary:
+        return
+    reporter.notes += 1
+    await reporter.event(status="in_progress", summary=summary)

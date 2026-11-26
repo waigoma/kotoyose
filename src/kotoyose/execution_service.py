@@ -38,7 +38,10 @@ from .execution_resources import (
 from .execution_store import ExecutionStore
 from .client_tool_bridge import ClientToolCallOutcome
 from .delegation import redact_token
-from .execution_delegation import ASK_AGENT, LIST_AGENTS, MAX_TASK_BYTES, TOOL_SPECS, DelegationCalls, targets
+from .execution_delegation import (
+    ASK_AGENT, LIST_AGENTS, MAX_TASK_BYTES, TOOL_SPECS, DelegationCalls, DelegationProgress,
+    bind_child_progress, targets, unbind_child_progress,
+)
 from .execution_output_guard import check_artifacts, check_workspace, workspace_state
 from .output_guard import LEAK_MESSAGE, LEAK_REASON, guard_enabled
 from .agent_spec import HOST_CODING
@@ -785,24 +788,35 @@ class ExecutionService:
             raise ExecutionError("tool_denied", "Parent execution is stopping", 409)
         self._require_accepting()
         child, _ = await self.store.admit(principal, request.model_dump(mode="json"), snapshot, policy.max_concurrent)
-        self._schedule(child, cancel=stop)
-        execution = self._tasks[child["id"]]
-        cancellation = asyncio.create_task(stop.wait())
+        progress = DelegationProgress(self.store, parent["id"], child["id"])
+        bind_child_progress(child["id"], progress)
+        terminal = "failed"
         try:
-            await asyncio.wait({execution, cancellation}, return_when=asyncio.FIRST_COMPLETED)
-            if stop.is_set() and not execution.done():
-                await self.store.cancel(principal, child["id"], "parent_execution_ended")
+            await progress.start(alias, task)
+            if stop.is_set():
+                raise ExecutionError("tool_denied", "Parent execution is stopping", 409)
+            self._schedule(child, cancel=stop)
+            execution = self._tasks[child["id"]]
+            cancellation = asyncio.create_task(stop.wait())
+            try:
+                await asyncio.wait({execution, cancellation}, return_when=asyncio.FIRST_COMPLETED)
+                if stop.is_set() and not execution.done():
+                    await self.store.cancel(principal, child["id"], "parent_execution_ended")
+            finally:
+                cancellation.cancel()
+                result = await asyncio.shield(execution)
+            if stop.is_set() or not result or result[0] != "succeeded" or result[2] != "confirmed":
+                reason = result[1] if result else "stopped_before_start"
+                raise ExecutionError("delegated_execution_failed", f"Delegated execution failed ({reason})", 409)
+            terminal = "completed"
+            _, _, _, content, usage = result
+            return ClientToolCallOutcome("succeeded", {
+                "text": content.decode("utf-8", errors="replace"),
+                **({"usage": usage} if usage.get("source") == "reported" else {}),
+            })
         finally:
-            cancellation.cancel()
-            result = await asyncio.shield(execution)
-        if stop.is_set() or not result or result[0] != "succeeded" or result[2] != "confirmed":
-            reason = result[1] if result else "stopped_before_start"
-            raise ExecutionError("delegated_execution_failed", f"Delegated execution failed ({reason})", 409)
-        _, _, _, content, usage = result
-        return ClientToolCallOutcome("succeeded", {
-            "text": content.decode("utf-8", errors="replace"),
-            **({"usage": usage} if usage.get("source") == "reported" else {}),
-        })
+            await progress.event(status=terminal, summary=terminal)
+            unbind_child_progress(child["id"], progress)
 
     async def _execute(self, attempt: dict, cancel: asyncio.Event) -> tuple[str, str | None, str | None, bytes, dict] | None:
         attempt_id, snapshot = attempt["id"], attempt["snapshot"]

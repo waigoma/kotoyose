@@ -709,9 +709,11 @@ def test_admin_connections_quota_from_and_console_assets(isolated_s5c_env):
             assert providers_js.status_code == 200
             assert "Config dir" in providers_js.text
             assert "Quota from" in providers_js.text
-            assert "CLAUDE_CONFIG_DIR=" in providers_js.text
             assert "via ${via}" in providers_js.text
             assert ".innerHTML" not in providers_js.text
+            tools = client.get("/admin/tools")
+            assert tools.status_code == 200
+            assert tools.json()["connections"]["claude"]["terminal"]["env_paths"] == {"CLAUDE_CONFIG_DIR": "."}
 
             format_js = client.get(f"{prefix}/js/format.js")
             assert format_js.status_code == 200

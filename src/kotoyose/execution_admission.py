@@ -28,11 +28,10 @@ from .execution_resources import (
     ExecutionGrant, InputText, MemorySnapshot, NativeRuntimeProfile, PinnedContentResource,
     PrintCliRuntimeProfile, RepositoryContextPack,
     ResourceBase, SkillResource, TimeoutPolicy, WorkingDirectory, WorkerCapabilityConfig,
-    agent_profile_allowed, caller_allows_isolation, canonical_json, default_worker_capabilities, resolve_agent_model,
+    agent_pool_candidates, agent_profile_allowed, caller_allows_isolation, canonical_json, default_worker_capabilities, resolve_agent_model,
     content_digest, codex_authentication_binding, codex_profile_authentication, pinned_codex_egress_limits,
 )
 from .execution_store import ExecutionStore
-from .delegation import MCP_NAME
 from .execution_delegation import TOOL_SPECS, require_live_parent, targets
 from .execution_images import (
     MAX_IMAGE_COUNT, MAX_IMAGE_TOTAL_BYTES, IMAGE_ARTIFACT_REF_PATTERN, validate_image_artifact,
@@ -43,8 +42,11 @@ from .mcp_resources import McpResourceResolver
 from .compression_contract import CompressionPolicy
 from .execution_billing import require_runtime_selection
 from .preset_prompts import stored_preset_prompts
+from .agent_container import CONTAINER_ALIAS_SKILLS
 from .print_cli_agent import compose_print_cli_prompt
 from .print_cli_profiles import get_print_cli_profile
+from .runtime.base import SDKConnectionError
+from .runtime.skill_resources import CliInstructions, resolve_cli_resources
 
 ResourceType = TypeVar("ResourceType", bound=ResourceBase)
 PINNED_CLOSURE_MAX_BYTES = 8 * 1024 * 1024
@@ -208,16 +210,22 @@ class ExecutionAdmission:
         if not self._model_allowed(pool_alias, policy):
             raise ExecutionError("permission_denied", "Agent model is outside caller or grant scope", 403)
         pools = self.store.model_pools
+        configured_candidates = config.pools[pool_alias].candidates
+        candidates = agent_pool_candidates(pool_alias, policy, self.settings, config)
         if pinned_model is not None:
-            if pinned_model not in config.pools[pool_alias].candidates:
+            if pinned_model not in configured_candidates:
                 raise ExecutionError("request_conflict", "Pinned pool candidate is no longer configured", 409)
+            if pinned_model not in candidates:
+                raise ExecutionError("permission_denied", "Pinned pool candidate is outside caller scope", 403)
             ordered = [pinned_model]
         else:
             refuse = getattr(self.settings, "sanction_enforcement", "off") in {"agent", "all"}
-            defer_policy = ({"defer_data_policy": True}
-                            if any(alias_data_policy(config, alias).restricted
-                                   for alias in config.pools[pool_alias].candidates) else {})
-            ordered = await pools.select(config, pool_alias, refuse_needs_ack=refuse, **defer_policy)
+            selection = {}
+            if any(alias_data_policy(config, alias).restricted for alias in candidates):
+                selection["defer_data_policy"] = True
+            if candidates != configured_candidates:
+                selection["candidate_aliases"] = candidates
+            ordered = await pools.select(config, pool_alias, refuse_needs_ack=refuse, **selection)
         failure: ExecutionError | None = None
         for index, alias in enumerate(ordered):
             if index:
@@ -241,7 +249,8 @@ class ExecutionAdmission:
         raise failure
 
     async def _resolve(self, principal: str, policy: CallerPolicy, request: ExecutionRequest, profile, *,
-                       requested_model: str | None = None, delegated_task: str | None = None) -> dict:
+                       requested_model: str | None = None, delegated_task: str | None = None,
+                       predecessor: dict | None = None) -> dict:
         """Apply admission checks to one already-resolved alias/profile.
 
         requested_model は、呼び手が名指した pool alias。権限はそれに対して見る。
@@ -254,10 +263,16 @@ class ExecutionAdmission:
                 raise ExecutionError("permission_denied", "Agent model is outside caller or grant scope", 403)
             from .config import get_config
             config = get_config()
+            if requested_model is not None and request.model not in agent_pool_candidates(
+                requested_model, policy, self.settings, config,
+            ):
+                raise ExecutionError("permission_denied", "Pool candidate is outside caller scope", 403)
             decision = alias_data_policy(config, request.model)
             if decision.restricted:
                 preset = config.models[request.model]
                 capabilities = configured_capabilities(preset) | execution_training_capabilities(request)
+                if predecessor is not None and predecessor.get("alias_cli_skills") is not None:
+                    capabilities.add("skills")
                 pool = (getattr(config, "pools", None) or {}).get(requested_model)
                 if pool is not None and "images" in pool.requires:
                     capabilities.add("attachments")
@@ -328,7 +343,8 @@ class ExecutionAdmission:
             plan, timeout = await self._command(principal, policy, grant, request)
         else:
             plan, timeout = await self._agent(principal, policy, grant, request, profile,
-                                              requested_model=requested_model, delegated_task=delegated_task)
+                                              requested_model=requested_model, delegated_task=delegated_task,
+                                              predecessor=predecessor)
         if host_coding and plan.get("execution_environment") == "isolated":
             cell = admitted_execution_cell(
                 getattr(profile, "provider", None), getattr(profile, "codex_execution_mode", None),
@@ -472,15 +488,17 @@ class ExecutionAdmission:
             except ExecutionError as exc:
                 raise unsafe("checkpoint_mismatch") from exc
         try:
-            snapshot = await self._resolve(principal, policy, effective, profile, requested_model=requested_model)
+            snapshot = await self._resolve(
+                principal, policy, effective, profile, requested_model=requested_model, predecessor=previous["snapshot"],
+            )
         except (OSError, ExecutionError) as exc:
             if isinstance(exc, ExecutionError) and exc.reason_code == "data_policy_restricted":
                 raise
             raise unsafe("admission_rejected") from exc
         if requested_model is not None:
             snapshot["resolved_model"], snapshot["requested_model"] = execution.model, requested_model
-        # Resume inherits the predecessor's admitted text, including absence in
-        # older snapshots. It never consults today's prompt refs or files.
+        # Resume inherits the predecessor's admitted instructions and skill data.
+        # Preserve the absence of these resources in older snapshots.
         old = previous["snapshot"]
         snapshot.pop('provider_session_storage', None)
         if 'provider_session_storage' in old:
@@ -624,7 +642,8 @@ class ExecutionAdmission:
 
     async def _agent(self, principal: str, policy: CallerPolicy, grant: ExecutionGrant, request: AgentExecution,
                      profile: NativeRuntimeProfile | PrintCliRuntimeProfile | None, *,
-                     requested_model: str | None = None, delegated_task: str | None = None) -> tuple[dict, TimeoutPolicy]:
+                     requested_model: str | None = None, delegated_task: str | None = None,
+                     predecessor: dict | None = None) -> tuple[dict, TimeoutPolicy]:
         if profile is None or request.model is None:
             raise ExecutionError("invalid_request", "runtime_profile was replaced by a model alias", 422)
         authority_model = requested_model or request.model
@@ -667,10 +686,11 @@ class ExecutionAdmission:
             raise ExecutionError('permission_denied', 'MCP tool surface exceeds limit', 403)
         from .config import get_config
 
-        preset = (getattr(get_config(), "models", None) or {}).get(request.model)
+        config = get_config()
+        preset = (getattr(config, "models", None) or {}).get(request.model)
         delegation_tools = []
         if (delegated_task is None and requested_model is None and preset is not None and preset.is_jailed
-                and MCP_NAME in preset.mcp_refs and request.requirements.isolation == "sandbox"):
+                and preset.has_delegation_mcp and request.requirements.isolation == "sandbox"):
             if (profile.backend != "native" or
                     (profile.provider == "codex" and host_coding
                      and getattr(profile, "execution_environment", None) != "isolated")):
@@ -837,7 +857,24 @@ class ExecutionAdmission:
             })
         if profile.backend == "print_cli":
             cli_profile = get_print_cli_profile(profile.profile)
+            try:
+                if predecessor is not None:
+                    stored = predecessor.get("alias_cli_skills")
+                    resources = CliInstructions.from_payload(
+                        stored["prompts"], stored["skills"], stored["skill_folders"],
+                    ) if stored is not None else None
+                else:
+                    resources = resolve_cli_resources(config, preset) if preset is not None and preset.skill_refs else None
+            except (SDKConnectionError, TypeError, KeyError, ValueError) as exc:
+                message = str(exc) if isinstance(exc, SDKConnectionError) else "Invalid alias skill snapshot"
+                raise ExecutionError("invalid_request", message, 422) from None
             rendered_instructions = definition.instructions
+            if resources is not None:
+                prefix = (
+                    resources.render(Path(CONTAINER_ALIAS_SKILLS))
+                    if profile.execution_environment == "isolated" else resources.text()
+                )
+                rendered_instructions = "\n\n".join(filter(None, (prefix, rendered_instructions)))
             rendered_data = []
             for item in inputs:
                 if item["kind"] == "instructions":
@@ -891,6 +928,11 @@ class ExecutionAdmission:
                 **({"api_key_secret": profile.api_key_secret} if profile.api_key_secret else {}),
                 "surface": surface,
                 "execution_environment": profile.execution_environment,
+                **({"repository_skills": repository_skills} if (repository_skills := (
+                    predecessor.get("repository_skills") if predecessor is not None
+                    else preset.repository_skills if preset is not None else None
+                )) is not None else {}),
+                **({"alias_cli_skills": resources.payload()} if resources is not None else {}),
             }
         else:
             binary = profile.cli_binary.resolve(strict=True)

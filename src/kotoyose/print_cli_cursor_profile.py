@@ -62,6 +62,7 @@ def cursor_profile() -> PrintCliProfile:
         models_command=("models",),
         parse_models="cursor_models_v1",
         login_home_env="HOME",
+        host_sdk_packages=("cursor-sdk",),
         login_home_env_paths={"CURSOR_CONFIG_DIR": ".cursor"},
         login_env={"NO_OPEN_BROWSER": "1"},
         fixed_env={"NODE_USE_ENV_PROXY": "1"},

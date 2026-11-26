@@ -22,6 +22,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from ..alias_mcp import is_host_mcp_reference, mcp_reference
 from ..auth import admin_username, require_basic_auth
 from ..data_policy import TrainingCapability, alias_data_policy, connection_data_policy, training_digest
 from ..config import (
@@ -138,6 +139,7 @@ def _config_to_dict() -> dict[str, Any]:
             "required_request_headers": preset.required_request_headers,
             "allow_cwd_override": preset.allow_cwd_override,
             "setting_sources": preset.setting_sources,
+            "repository_skills": preset.repository_skills,
             "tools": preset.tools,
             "require_isolation": preset.require_isolation,
             "strict_mcp_config": preset.strict_mcp_config,
@@ -654,13 +656,19 @@ async def delete_model(model_id: str):
     return {"status": "ok", "model_id": model_id}
 
 
+def _matches_resource_reference(preset: ModelPreset, field: str, reference: str, name: str) -> bool:
+    if field != "mcp_refs":
+        return reference == name
+    return is_host_mcp_reference(reference, on_child=preset.on.startswith("child:")) and mcp_reference(reference)[1] == name
+
+
 def _resource_references(field: str, resource_name: str) -> list[str]:
     """モデルから個別リソースへの参照元を収集する。"""
     return [
         name
         for name, preset in get_config().models.items()
         if (
-            resource_name in getattr(preset, field)
+            any(_matches_resource_reference(preset, field, ref, resource_name) for ref in getattr(preset, field))
             if isinstance(getattr(preset, field), list)
             else resource_name == getattr(preset, field)
         )
@@ -810,6 +818,8 @@ class McpRenameRequest(ResourceRenameRequest):
 
     description: str | None = None
     server: dict[str, object] | None = None
+    publish_to_children: bool | None = None
+    publication_revision: str | None = None
 
 
 async def _rename_resource(
@@ -840,7 +850,12 @@ async def _rename_resource(
             setattr(
                 preset,
                 refs_field,
-                [new_name if reference == name else reference for reference in references],
+                [
+                    reference if not _matches_resource_reference(preset, refs_field, reference, name)
+                    else f"{reference.partition(':')[0]}:{new_name}" if refs_field == "mcp_refs" and ":" in reference
+                    else new_name
+                    for reference in references
+                ],
             )
         elif references == name:
             setattr(preset, refs_field, new_name)
@@ -874,6 +889,8 @@ async def rename_mcp(name: str, body: McpRenameRequest):
             return McpDefinition(
                 description=definition.description if body.description is None else body.description,
                 server=definition.server if body.server is None else body.server,
+                publish_to_children=definition.publish_to_children if body.publish_to_children is None else body.publish_to_children,
+                publication_revision=definition.publication_revision if body.publication_revision is None else body.publication_revision,
             )
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

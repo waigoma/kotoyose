@@ -17,6 +17,8 @@ import uuid
 import structlog
 
 from .claude_cli import bundled_claude_cli
+from .child_pinned import login_spec
+from .child_registry import child_on_name
 from .cli_login import (
     DEFAULT_START_TIMEOUT_SECONDS,
     DEFAULT_SUBMIT_TIMEOUT_SECONDS,
@@ -55,7 +57,7 @@ log = structlog.get_logger()
 DEFAULT_CLAUDE_LOGIN_TTL_SECONDS = 10 * 60
 
 _CLAUDE_SUBSCRIPTION_PROVIDERS = frozenset({"claude", "anthropic"})
-_CLAUDE_COMMAND_LOGIN: tuple[str, ...] = ("auth", "login", "--claudeai")
+_CLAUDE_COMMAND_LOGIN = login_spec("claude", None)[0].command
 _CLAUDE_COMMAND_SETUP_TOKEN: tuple[str, ...] = ("setup-token",)
 _ALLOWED_CLAUDE_COMMANDS = frozenset({_CLAUDE_COMMAND_LOGIN, _CLAUDE_COMMAND_SETUP_TOKEN})
 
@@ -193,6 +195,8 @@ def _validate_claude_connection(
         raise ClaudeLoginNotSupportedError(
             "Claude CLI login is only supported for Claude subscription connections"
         )
+    if child_on_name(conn.on) is not None:
+        raise ClaudeLoginNotSupportedError("Use child CLI login for a child connection")
     if kind == "login":
         if conn.config_dir is None:
             raise ClaudeLoginNotSupportedError(

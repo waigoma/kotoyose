@@ -678,8 +678,13 @@ def test_console_ui_and_tilde_expansion_api_and_node_dom(
             text = providers_js.text
             assert "Expires in " in text
             assert "Start again" in text
-            assert "~/.local/share/kotoyose/agy-home" in text
             assert ".innerHTML" not in text
+            tools = client.get("/admin/tools", auth=BASIC_AUTH)
+            assert tools.status_code == 200
+            catalog = tools.json()
+            antigravity = catalog["connections"]["antigravity"]
+            assert antigravity["login_home"] == "~/.local/share/kotoyose/agy-home"
+            assert antigravity["terminal"]["argv"] == ["agy"]
 
             api_js = client.get(f"{prefix}/js/api.js", auth=BASIC_AUTH)
             assert api_js.status_code == 200
@@ -816,6 +821,7 @@ Object.defineProperty(globalThis, 'navigator', {{
   value: {{ clipboard: {{ writeText: async (value) => {{ copied = value; }} }} }},
 }});
 const apiResponses = {{
+  '/admin/tools': {json.dumps(catalog)},
   '/admin/config': {{ catalog: {{ drivers: {{}} }}, connections: {{}}, routes: {{}}, route_sanctions: {{}} }},
   '/admin/machine': {{ enabled: false, drivers: {{}} }},
   '/admin/connections': {{
@@ -896,7 +902,8 @@ const configDirInput = findAll(doc.body, (n) => n.getAttribute && n.getAttribute
 assert.ok(configDirInput);
 assert.equal(configDirInput.value, '~/.local/share/kotoyose/agy-home');
 assert.deepEqual(
-  connectionBody({{ provider: 'antigravity', kind: 'subscription', configDir: configDirInput.value, home: '', showQuota: true, dataPolicy: 'no_training' }}),
+  connectionBody({{ provider: 'antigravity', kind: 'subscription', configDir: configDirInput.value, home: '', showQuota: true, dataPolicy: 'no_training' }},
+    apiResponses['/admin/tools'].connections),
   {{ provider: 'antigravity', kind: 'subscription', profile: 'agy', config_dir: '~/.local/share/kotoyose/agy-home', show_quota: true, data_policy: 'no_training' }},
 );
 

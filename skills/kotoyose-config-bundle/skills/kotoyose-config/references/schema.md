@@ -1,7 +1,9 @@
 # config.yml 仕様表
 
 `src/kotoyose/config.py` が正本。本書と食い違ったときはソースを信じ、本書を直すこと。
-行番号は 2026-07-29 時点のもの。
+行番号は 2026-07-29 時点のもの。`on` は 2026-11-22 に足した。
+
+alias と connection の `on` は `local` (既定) か `child:<登録名>` だけです。`on: child:*` の alias は、subscription の `on` が同じ名前でなければならず、`api_key` / `endpoint`、無修飾の `mcp_refs: [kotoyose]`、空でない `mcp_servers` は読めません。`host:kotoyose` は子機からホストの組み込み委譲を参照します。`mcp_refs` の名前が host の `mcps` に無くても、child のカタログは turn まで見ないので、読み込みでは落ちません。
 
 ## 1. トップレベル 8 セクション
 
@@ -113,7 +115,7 @@ preset が `null` のときだけ definition の値が使われる。
 
 | キー | 型 | 既定 | 備考 |
 |---|---|---|---|
-| `mcp_refs` / `prompt_file_refs` / `skill_refs` | `list[str]` | `[]` | 同一リスト内の重複は ValidationError。`mcp_refs: [kotoyose]` は組み込みの委譲 MCP |
+| `mcp_refs` / `prompt_file_refs` / `skill_refs` | `list[str]` | `[]` | 同一リスト内の重複は ValidationError。`mcp_refs: [kotoyose]` はホストの組み込み委譲 MCP。子機では `host:kotoyose` |
 | `delegates` | `list[str]` | `[]` | 委譲先 alias。`mcp_refs: [kotoyose]` と組で使う |
 | `mcp_servers` | `dict[str, dict]` | `{}` | inline 定義。§6 のスキーマ検証あり |
 | `plugins` | `list[str]` | `[]` | 束ディレクトリ。存在と `.claude-plugin/plugin.json` を起動時に検証 |

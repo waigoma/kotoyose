@@ -9,6 +9,7 @@ export const NAV_GROUPS = [
   { label: "Connect", items: [
     { key: "providers", label: "Providers" },
     { key: "endpoint", label: "Endpoint" },
+    { key: "children", label: "Children" },
   ] },
   { label: "Build", items: [
     { key: "routes", label: "Routes", count: "routes" },

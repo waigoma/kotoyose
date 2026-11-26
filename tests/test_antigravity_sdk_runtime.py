@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from enum import Enum
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from kotoyose.runtime.antigravity_sdk import (
+    AntigravitySdkRuntimeSession,
     _build_sdk_config_kwargs,
     _normalize_usage,
 )
 from kotoyose.runtime.translation import RuntimeSkill, TranslatedRuntimeConfig
+from kotoyose.skill_folders import SkillFolder
 
 
 class _BuiltinTools(str, Enum):
@@ -124,6 +128,33 @@ def test_sdk_config_translates_resources_and_autonomous_policy(tmp_path):
     assert remote.kwargs["url"] == "https://example.test/mcp"
     assert remote.kwargs["disabled_tools"] == ["write"]
     assert kwargs["subagents"] == []
+
+
+async def test_sdk_uses_a_private_copy_of_alias_skill_folders(tmp_path, monkeypatch):
+    translated = _translated(tmp_path)
+    captured = []
+
+    def agent(config):
+        captured.append(Path(config.kwargs["skills_paths"][0]))
+        return SimpleNamespace(__aenter__=AsyncMock(return_value=object()), __aexit__=AsyncMock())
+
+    monkeypatch.setenv("TEST_GEMINI_KEY", "fake")
+    monkeypatch.setattr("kotoyose.runtime.antigravity_sdk._load_sdk", lambda: {
+        "types": _Types, "CapabilitiesConfig": _Capabilities, "policy": _Policy,
+        "LocalAgentConfig": _Record, "Agent": agent,
+    })
+    session = AntigravitySdkRuntimeSession(
+        "fake", str(tmp_path), translated, {"api_key_env": "TEST_GEMINI_KEY"},
+        skill_folders=(SkillFolder("review", {"SKILL.md": b"# skill", "asset.txt": b"fixture"}),),
+    )
+    try:
+        await session._ensure_agent()
+        [private] = captured
+        assert private != Path(translated.skills[0].path).parent
+        assert (private / "asset.txt").read_bytes() == b"fixture"
+    finally:
+        await session.disconnect()
+    assert not private.exists()
 
 
 def test_sdk_api_key_env_is_resolved_without_storing_secret(tmp_path, monkeypatch):

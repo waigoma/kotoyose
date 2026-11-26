@@ -1879,3 +1879,30 @@ def test_removed_config_keys_are_forbidden(data, field):
 def test_legacy_execution_value_is_rejected():
     with pytest.raises(ValueError, match="'direct' or 'native'"):
         ModelPreset.model_validate({"execution": "legacy"})
+
+
+def test_hand_written_on_key_is_read_as_a_string():
+    # PyYAML's YAML 1.1 default would turn the key `on` into True and the config would fail to load.
+    from kotoyose.config import HarnessConfig, load_config_yaml
+
+    data = load_config_yaml("""
+connections:
+  c:
+    provider: claude
+    kind: subscription
+    data_policy: no_training
+    on: child:dev
+routes:
+  r: {driver: claude.agent-sdk, connection: c, model: claude-haiku-5-5}
+models:
+  a:
+    route: r
+    on: child:dev
+    bare: yes
+    strict_mcp_config: off
+""")
+    assert data["models"]["a"]["on"] == "child:dev" and data["models"]["a"]["bare"] == "yes"
+    cfg = HarnessConfig.model_validate(data)
+    assert cfg.models["a"].on == "child:dev" and cfg.connections["c"].on == "child:dev"
+    assert cfg.models["a"].bare is True and cfg.models["a"].strict_mcp_config is False
+    assert load_config_yaml("x: true\ny: False\n") == {"x": True, "y": False}

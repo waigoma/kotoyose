@@ -40,6 +40,9 @@ def emit_runtime_event(event: RuntimeEvent) -> None:
     queue = _active_event_queue.get()
     if queue is not None:
         queue.put_nowait(event)
+    # 子 turn の道具進捗だけを、委譲元が登録した listener へ渡す。本文は渡さない。
+    from . import delegation
+    delegation.notify_progress(event)
 
 
 def start_event_writer(

@@ -19,6 +19,8 @@ import json
 import time
 from collections.abc import Mapping
 from contextlib import contextmanager
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
 from claude_agent_sdk import ClaudeSDKClient
@@ -26,6 +28,8 @@ from claude_agent_sdk import ClaudeSDKClient
 from . import delegation
 from .data_policy import alias_data_policy, configured_capabilities, training_binding
 from .execution_resources import ExecutionError, NativeExecutionConfig
+from .child_registry import child_on_name
+from .child_server import child_generation
 from .config import (
     SESSION_TTL_SECONDS,
     ClaudeSubscriptionAuthError,
@@ -39,18 +43,21 @@ from .config import (
 from .connections_probe import connection_for_model
 from .db import lookup_runtime_session, lookup_session
 from .logging_setup import log
-from .secret_store import SecretStoreError, use_resolved_secrets
+from .secret_store import SecretStoreError, resolve_secret_async, use_resolved_secrets
 from .runtime.antigravity_sdk import build_antigravity_sdk_session
 from .registry import registry
 from .runtime.acp import acp_binding, build_acp_session
+from .runtime.openai_chat import build_openai_chat_session
 from .runtime.print_cli import build_print_cli_session
 from .runtime.base import (
-    RuntimePrompt, RuntimeProviderSpec, RuntimeResult, RuntimeSession, prompt_text,
+    RuntimePrompt, RuntimeProviderSpec, RuntimeResult, RuntimeSession, SDKConnectionError, prompt_text,
 )
-from .runtime.claude import ClaudeRuntimeSession
+from .runtime.child import ChildRuntimeSession, child_cli_binding, require_child_link
+from .runtime.claude import ClaudeRuntimeSession, ClaudeToolApprovals
 from .runtime.claude_auth import validate_auth_options
-from .runtime.codex import build_codex_session
-from .runtime.cursor import build_cursor_session
+from .runtime.claude_options import claude_approval_scope
+from .runtime.skill_resources import CliInstructions, folder_binding, resolve_cli_resources, resolve_native_folders
+from .skill_folders import SkillFolder, write_skill_plugin
 
 if TYPE_CHECKING:
     from .chat_selection import PinnedChatSelection
@@ -66,25 +73,32 @@ session_last_used: dict[str, float] = {}
 session_cache_identities: dict[str, tuple[str, str, str]] = {}
 
 
-class SDKConnectionError(Exception):
-    """Claude SDK の接続失敗を示す例外。503 または認証失敗時の 401 を返すために使用する。"""
-
-    def __init__(self, message: str = "", *, code: str | None = None) -> None:
-        super().__init__(message)
-        self.code = code
-
-
 # host runtime の provider 表は registry が持つ。組み込み runtime はここで登録する。
+def _build_codex(*args, **kwargs):
+    from .runtime.codex import build_codex_session
+
+    return build_codex_session(*args, **kwargs)
+
+
+def _build_cursor(*args, **kwargs):
+    from .runtime.cursor import build_cursor_session
+
+    return build_cursor_session(*args, **kwargs)
+
+
 RUNTIME_PROVIDER_REGISTRY: dict[str, RuntimeProviderSpec] = registry.runtime_providers
 for _name, _builder in (
     ("cli_acp", build_acp_session),
-    ("codex", build_codex_session), ("cursor", build_cursor_session),
+    ("codex", _build_codex), ("cursor", _build_cursor),
     ("antigravity", build_antigravity_sdk_session),
 ):
     registry.register_builtin_runtime(_name, RuntimeProviderSpec(_builder, _name))
 del _name, _builder
 registry.register_builtin_runtime(
     "print_cli", RuntimeProviderSpec(build_print_cli_session, "print_cli", stateless=True),
+)
+registry.register_builtin_runtime(
+    "openai_compat", RuntimeProviderSpec(build_openai_chat_session, "openai_compat", stateless=True),
 )
 
 
@@ -142,8 +156,13 @@ async def get_or_resume_client(
     *, selection: "PinnedChatSelection | None" = None, config_snapshot: HarnessConfig | None = None,
     execution_settings: NativeExecutionConfig | None = None,
     reasoning_effort: str | None = None,
+    service_tier: str | None = None,
     delegation_parent: delegation.DelegationParent | None = None,
     delegated: bool = False,
+    client_allows_full: bool = False,
+    acp_instructions: CliInstructions | None = None,
+    skill_folders: tuple[SkillFolder, ...] | None = None,
+    delegation_app=None,
 ) -> tuple[RuntimeSession, bool]:
     """会話キーに対応する runtime session を返す。
 
@@ -157,6 +176,7 @@ async def get_or_resume_client(
         cwd_override: request body の cwd フィールド。クライアント生成時のみ適用される。
             インメモリキャッシュヒット時は無視される (TaskHub の conversation key は
             run 単位で一意 = "taskhub:task:<id>:run:<id>" なので問題ない)。
+        delegation_app: 子機が組み込み MCP を使う場合のホストアプリ。省略時はホストアプリの状態を使わない。
 
     Returns:
         (client, was_resumed):
@@ -190,7 +210,7 @@ async def get_or_resume_client(
             declared = config.models[model]
             if message := decision.refusal(configured_capabilities(declared)):
                 raise ExecutionError("permission_denied", message, 403, reason_code="data_policy_restricted")
-            if preset.provider != "claude":
+            if preset.provider not in {"claude", "openai_compat"}:
                 raise ExecutionError(
                     "permission_denied", f"Alias '{model}' requires a chat runtime with enforceable data policy", 403,
                     reason_code="data_policy_restricted",
@@ -204,9 +224,34 @@ async def get_or_resume_client(
         preset = preset.with_execution_environment()
     except ValueError as exc:
         raise SDKConnectionError(str(exc)) from exc
+    child_name = child_on_name(preset.on)
     provider = preset.provider
+    if child_name is not None and provider == "openai_compat":
+        # A stateless chat uses the current route and prompt resources on every request.
+        lookup_key = None
+    host_acp = provider == "cli_acp" and child_name is None
+    if host_acp and acp_instructions is None and preset.skill_refs:
+        acp_instructions = resolve_cli_resources(config, preset)
+    if child_name is None and provider in {"claude", "codex", "antigravity"} and preset.skill_refs:
+        if selection is not None:
+            skill_folders = selection.skill_folders
+        elif skill_folders is None:
+            skill_folders = resolve_native_folders(config, preset)
     spec = RUNTIME_PROVIDER_REGISTRY.get(provider)
-    if spec is not None and spec.stateless:
+    if child_name is None and spec is not None and spec.stateless:
+        builder_options = {}
+        secrets = {}
+        if provider == "print_cli":
+            builder_options = {"config": config, "settings": execution_settings}
+        elif provider == "openai_compat":
+            assert config is not None and preset.route is not None
+            connection = config.connections[config.routes[preset.route].connection]
+            builder_options = {"config": config}
+            if connection.secret_name is not None:
+                try:
+                    secrets[connection.secret_name] = await resolve_secret_async(connection.secret_name)
+                except SecretStoreError:
+                    raise SDKConnectionError("Chat endpoint credential is unavailable") from None
         return await _build_registered_runtime_session(
             provider=provider,
             lookup_key=None,
@@ -216,14 +261,14 @@ async def get_or_resume_client(
             request_headers=request_headers,
             allow_persisted_resume=False,
             session_identity=None,
-            preloaded_secrets={},
-            **({"builder_options": {"config": config, "settings": execution_settings}}
-               if provider == "print_cli" else {}),
+            preloaded_secrets=secrets,
+            builder_options=builder_options,
             effort_override=reasoning_effort,
+            service_tier=service_tier,
         )
     preloaded_secrets: dict[str, str] = {}
     secret_versions: dict[str, int] = {}
-    if selection is None:
+    if selection is None and child_name is None:
         try:
             preloaded_secrets, secret_versions = await resolve_preset_secrets_with_versions_async(
                 config, preset
@@ -232,7 +277,7 @@ async def get_or_resume_client(
             raise SDKConnectionError(str(exc), code="authentication_failed") from exc
         except SecretStoreError as exc:
             raise SDKConnectionError(str(exc)) from exc
-    if delegated or delegation.MCP_NAME not in preset.mcp_refs:
+    if delegated or not preset.has_delegation_mcp:
         delegation_parent = None
     requested_identity = selection.identity if selection is not None else _cache_identity(
         provider, model, preset.model, preset.required_request_headers, request_headers,
@@ -241,8 +286,14 @@ async def get_or_resume_client(
         codex_sandbox=preset.codex.get("sandbox") if provider == "codex" else None,
         **({"secret_versions": secret_versions} if secret_versions else {}),
         training_binding=binding,
-        acp_scope=acp_binding(config, preset, cwd_override) if provider == "cli_acp" else None,
+        acp_scope=(acp_binding(config, preset, cwd_override, instructions=acp_instructions) if host_acp
+                   else child_cli_binding(config, preset, cwd_override, client_allows_full)),
+        skill_scope=folder_binding(skill_folders) if skill_folders else None,
+        repository_skills=preset.repository_skills,
         reasoning_effort=reasoning_effort,
+        service_tier=service_tier,
+        **({"claude_approval_scope": claude_approval_scope(preset)} if provider == "claude" and not delegated else {}),
+        **({"on": preset.on, "child_generation": child_generation(child_name)} if child_name is not None else {}),
     )
     if delegation_parent:
         requested_identity = delegation_identity(requested_identity, delegation_parent.client_id)
@@ -280,11 +331,33 @@ async def get_or_resume_client(
                     )
             discard_runtime(lookup_key, cached)
         else:
+            if child_name is not None:
+                require_child_link(child_name, provider)
             _touch(lookup_key)
             log.info("session.cache_hit", conversation_key=lookup_key, provider=provider)
             return cached, False
 
+    if child_name is not None:
+        require_child_link(child_name, provider)
+        client = ChildRuntimeSession(
+            name=child_name, provider=provider, alias=model, config=config, preset=preset,
+            conversation_key=lookup_key, cwd=cwd_override, client_allows_full=client_allows_full,
+            request_headers=request_headers, delegation_parent=delegation_parent, delegation_app=delegation_app,
+        )
+        if lookup_key:
+            sessions[lookup_key] = client
+            _touch(lookup_key)
+            session_cache_identities[lookup_key] = requested_identity
+        return client, False
+
     if provider in RUNTIME_PROVIDER_REGISTRY:  # registry.runtime_providers と同じ dict (tests が差し替える)
+        builder_options = {"config": config, "settings": execution_settings} if host_acp else {}
+        if host_acp and acp_instructions is not None:
+            builder_options["instructions"] = acp_instructions
+        if provider == "codex" and skill_folders:
+            builder_options.update(config=config, skill_folders=skill_folders)
+        if provider == "antigravity" and skill_folders:
+            builder_options["skill_folders"] = skill_folders
         client, was_resumed = await _build_registered_runtime_session(
             provider=provider,
             lookup_key=lookup_key,
@@ -296,9 +369,9 @@ async def get_or_resume_client(
             session_identity=requested_identity[2],
             preloaded_secrets=preloaded_secrets,
             delegation_parent=delegation_parent,
-            **({"builder_options": {"config": config, "settings": execution_settings}}
-               if provider == "cli_acp" else {}),
+            builder_options=builder_options,
             effort_override=reasoning_effort,
+            service_tier=service_tier,
         )
         if lookup_key:
             session_cache_identities[lookup_key] = requested_identity
@@ -323,6 +396,8 @@ async def get_or_resume_client(
         runtime_client = await _build_claude_runtime_session(
             model, preset, selection, config, config_snapshot, cwd_override, request_headers,
             preloaded_secrets, existing_session_id, lookup_key, token, reasoning_effort,
+            **({"skill_folders": skill_folders} if skill_folders else {}),
+            **({"client_approval": True} if preset.approval == "client" and not delegated else {}),
         )
         runtime_client = _bind_delegation_runtime(runtime_client, grant)
     if lookup_key:
@@ -367,6 +442,7 @@ async def _build_claude_runtime_session(
     cwd_override: str | None, request_headers: dict[str, str] | None,
     preloaded_secrets: dict[str, str], existing_session_id: str | None,
     lookup_key: str | None, token: str | None, reasoning_effort: str | None = None,
+    *, client_approval: bool = False, skill_folders: tuple[SkillFolder, ...] = (),
 ) -> RuntimeSession:
     # build_options は _build_auth_env 経由で secret store 解決等を行うため、
     # run_in_executor で worker thread に退避してイベントループのブロックを避ける。
@@ -417,19 +493,38 @@ async def _build_claude_runtime_session(
     else:
         log.info("session.created", conversation_key=lookup_key or "first")
 
-    client = ClaudeSDKClient(options=options)
+    tool_approvals = (
+        ClaudeToolApprovals(options) if client_approval and options.permission_mode != "bypassPermissions" else None
+    )
+    if tool_approvals is not None:
+        options = dataclasses.replace(options, can_use_tool=tool_approvals.decide)
+    skill_temp = None
     try:
-        await client.connect()
-    except asyncio.CancelledError:
-        await client.disconnect()
+        if skill_folders:
+            skill_temp = TemporaryDirectory(prefix="kotoyose-claude-skills-")
+            plugin = write_skill_plugin(Path(skill_temp.name) / "plugin", skill_folders)
+            options = dataclasses.replace(options, plugins=[
+                {"type": "local", "path": str(path)} for path in (plugin, *preset.plugins)
+            ])
+        client = ClaudeSDKClient(options=options)
+        try:
+            await client.connect()
+        except asyncio.CancelledError:
+            await client.disconnect()
+            raise
+    except BaseException as exc:
+        if skill_temp is not None:
+            skill_temp.cleanup()
+        if isinstance(exc, Exception):
+            raise SDKConnectionError(delegation.redact_token(str(exc))) from None
         raise
-    except Exception as e:
-        raise SDKConnectionError(delegation.redact_token(str(e))) from None
     runtime_client = ClaudeRuntimeSession(
         client=client,
         timeout_seconds=preset.timeout_seconds,
         connection_id=(selection.connection_id if selection is not None
                        else connection_for_model(config, model)),
+        **({"tool_approvals": tool_approvals} if tool_approvals is not None else {}),
+        **({"skill_temp": skill_temp} if skill_temp is not None else {}),
     )
     if preset.output_schema is not None:
         from .structured_output import StructuredOutputSession
@@ -450,7 +545,13 @@ def _cache_identity(
     secret_versions: Mapping[str, int] | None = None,
     training_binding: str | None = None,
     acp_scope: str | None = None,
+    skill_scope: str | None = None,
+    repository_skills: str | None = None,
     reasoning_effort: str | None = None,
+    service_tier: str | None = None,
+    on: str | None = None,
+    child_generation: int | None = None,
+    claude_approval_scope: tuple | None = None,
 ) -> tuple[str, str, str]:
     """session cache が安全に再利用できる runtime 設定の同一性を返す。"""
     normalized = {key.lower(): value for key, value in (request_headers or {}).items()}
@@ -460,6 +561,9 @@ def _cache_identity(
             "preset_key": preset_key,
             "runtime_model": runtime_model or "",
             **({"acp_scope": acp_scope} if acp_scope else {}),
+            **({"skill_scope": skill_scope} if skill_scope else {}),
+            **({"repository_skills": repository_skills} if repository_skills is not None else {}),
+            **({"claude_approval_scope": claude_approval_scope} if claude_approval_scope is not None else {}),
             **({"training_binding": training_binding} if training_binding else {}),
             **({"output_schema": output_schema} if output_schema is not None else {}),
             **({"execution_environment": execution_environment,
@@ -467,6 +571,8 @@ def _cache_identity(
             **({"secret_versions": sorted((name, int(ver)) for name, ver in secret_versions.items())}
                if secret_versions else {}),
             **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
+            **({"service_tier": service_tier} if service_tier is not None else {}),
+            **({"on": on, "child_generation": child_generation} if on is not None else {}),
             "required_headers": [
                 (name.lower(), normalized.get(name.lower(), ""))
                 for name in sorted(required_headers, key=str.lower)
@@ -491,6 +597,7 @@ async def _build_registered_runtime_session(
     preloaded_secrets: Mapping[str, str] | None = None,
     builder_options: dict | None = None,
     effort_override: str | None = None,
+    service_tier: str | None = None,
     delegation_parent: delegation.DelegationParent | None = None,
 ) -> tuple[RuntimeSession, bool]:
     """registry に登録済みの subprocess provider session を構築する。"""
@@ -519,6 +626,9 @@ async def _build_registered_runtime_session(
         builder_kwargs = dict(builder_options or {})
         if effort_override is not None:
             builder_kwargs["effort_override"] = effort_override
+        if service_tier is not None and provider in {"codex", "cursor"}:
+            # Fast を受け取れる runtime だけへ渡す。他の builder は引数を持たない。
+            builder_kwargs["service_tier"] = service_tier
         with _new_delegation_grant(delegation_parent, model, lookup_key) as (token, grant):
             with use_resolved_secrets(secrets_map), delegation.runtime_credentials(token):
                 client = spec.builder(preset, cwd_override, existing_session_id, request_headers, **builder_kwargs)

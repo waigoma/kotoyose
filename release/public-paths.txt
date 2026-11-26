@@ -1,5 +1,6 @@
 # Root-relative paths. A trailing slash includes descendants.
 src/
+child-app/
 tests/
 README.md
 README.en.md
@@ -12,6 +13,7 @@ main.py
 config.example.yml
 execution.example.json
 conversation.example.json
+examples/provider-declarations/grok-build.json
 .env.example
 # docs は公開するものだけを列挙する。設計・ADR・運用手順・リリース手順・作業履歴は公開しない。
 docs/README.md
@@ -31,6 +33,10 @@ skills/example-bundle/
 skills/kotoyose-config-bundle/
 skills/kotoyose-delegation-bundle/
 scripts/build-codex-rootfs
+scripts/build-child-installer.sh
+scripts/build-child-linux.sh
+scripts/publish-child-update.sh
+scripts/test-child-installer-wine.sh
 scripts/native-claude
 scripts/native-codex
 scripts/create_master_key.py

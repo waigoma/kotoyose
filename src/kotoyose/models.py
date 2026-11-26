@@ -140,6 +140,8 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
     tools: SkipJsonSchema[object] = Field(default=None, exclude=True)
     tool_choice: SkipJsonSchema[object] = Field(default=None, exclude=True)
+    functions: SkipJsonSchema[object] = Field(default=None, exclude=True)
+    function_call: SkipJsonSchema[object] = Field(default=None, exclude=True)
     attachments: SkipJsonSchema[object] = Field(default=None, exclude=True)
     files: SkipJsonSchema[object] = Field(default=None, exclude=True)
     images: SkipJsonSchema[object] = Field(default=None, exclude=True)
@@ -149,6 +151,9 @@ class ChatCompletionRequest(BaseModel):
     # この turn だけ alias の effort を上書きする。未対応の runtime と、
     # 判明している候補の外の値は 422 になる。
     reasoning_effort: str | None = None
+    # OpenAI と同じ欄。priority だけが Fast。default / auto / 未指定は速度を変えない。
+    # 未対応の runtime と、catalog が Fast を出していないモデルは 422 になる。
+    service_tier: str | None = None
     # Kotoyose 専用 metadata は strict に検証し、未知の保証要求を落とさない。
     metadata: ChatMetadata | None = None
 

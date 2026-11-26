@@ -14,16 +14,22 @@ from anyio import CancelScope
 import structlog
 
 from ..activity import emit_runtime_event
-from ..acp_client import AcpClient, AcpError, _finish_cleanup
+from ..acp_client import AcpClient, AcpError, GrokMcpGuardError, _finish_cleanup
 from ..acp_turn import AcpPermissionPolicy, AcpTurn, acp_mcp_servers, acp_usage_parser
+from ..chat_approvals import current_turn_approvals
 from ..config import HarnessConfig, ModelPreset, get_config
 from ..execution_resources import NativeExecutionConfig
+from ..grok_skills import grok_skill_env, uses_grok_native_skills
 from ..print_cli_agent import _HOME_SEMAPHORES, compose_print_cli_prompt
 from ..print_cli_home import PrintCliHomeBusyError, use_login_home
 from ..print_cli_profiles import (
     PrintCliProfile, build_print_cli_env, get_print_cli_profile, resolve_print_cli_binary,
 )
-from .base import RuntimeEvent, RuntimePrompt, RuntimeResult, RuntimeTurnError, prompt_has_images, prompt_text
+from ..provider_data import UNRESTRICTED
+from ..provider_data_runtime import DeclarationRejected
+from ..repository_skills import RepositorySkills
+from .base import RuntimeEvent, RuntimePrompt, RuntimeResult, RuntimeTurnError, SDKConnectionError, prompt_has_images, prompt_text
+from .skill_resources import CliInstructions, resolve_cli_resources
 
 log = structlog.get_logger()
 IDLE_SECONDS = 120.0
@@ -50,6 +56,8 @@ class AcpRuntimeSession:
         self, profile: PrintCliProfile, binary: Path, login_home: Path, cwd: Path | None, model: str,
         timeout: float, instructions: str, mcp_servers: list[dict], policy: AcpPermissionPolicy,
         session_id: str | None, *, idle_seconds: float = IDLE_SECONDS,
+        resources: CliInstructions | None = None, output_schema: dict | None = None,
+        repository_skills: RepositorySkills | None = None,
     ) -> None:
         self.profile = profile
         self.binary = binary
@@ -60,12 +68,17 @@ class AcpRuntimeSession:
         self.model = model
         self.timeout = timeout
         self.instructions = instructions
+        self._resources = resources
+        self._output_schema = output_schema
+        self._repository_skills = repository_skills
+        self._effective_instructions = instructions
         self.mcp_servers = mcp_servers
         self.policy = policy
         self.session_id = session_id
         self.idle_seconds = idle_seconds
         self._lock = asyncio.Lock()
         self._process: AcpClient | None = None
+        self._approval_watch: asyncio.Task | None = None
         self._leases = ExitStack()
         self._idle: asyncio.TimerHandle | None = None
         self.invalidated = False
@@ -81,6 +94,15 @@ class AcpRuntimeSession:
             self._idle.cancel()
             self._idle = None
         try:
+            if self._process is not None and (declaration := self.profile.data_declaration) is not None:
+                from ..provider_data_runtime import stop_process
+
+                if pid := self._process.process.pid:
+                    stop_process(declaration.id, pid)
+            if self._approval_watch is not None:
+                self._approval_watch.cancel()
+                await asyncio.gather(self._approval_watch, return_exceptions=True)
+                self._approval_watch = None
             if self._process is not None:
                 stop = await self._process.close()
                 if stop != "confirmed":
@@ -126,18 +148,102 @@ class AcpRuntimeSession:
         assert spec is not None
         if self._fixed_cwd is None:
             self.cwd = Path(self._leases.enter_context(tempfile.TemporaryDirectory(prefix="kotoyose-acp-chat-")))
-        env = build_print_cli_env(self.profile, self.home, minimal=True)
-        env.update(spec.env)
+        declaration = self.profile.data_declaration
+        mcp_servers = self.mcp_servers
+        child_home = None
+        approval = None
+        capability = "write" if self.policy.sandboxed_child_write else "read"
+        require_empty_grok_mcp = False
+        if declaration is not None:
+            from ..provider_data import GROK_MCP_GUARD, reject_option_value
+            from ..provider_data_child import approved_for, execution_home, watch_approval
+            from ..provider_data_runtime import (
+                acp_data_env, checked_write_cwd, managed_binary, register_declared_process, require_acp_landlock,
+            )
+
+            if self.policy.unrestricted_child:
+                from ..child_process_tree import bound_windows_job
+                from ..cli_install_spec import platform_key
+
+                target = declaration.platform(platform_key())
+                if (target is None or not target.supports(UNRESTRICTED)
+                        or self._fixed_cwd is None or declaration.acp_unrestricted is None):
+                    raise AcpError("unsupported_acp_write")
+                bound_windows_job()
+                capability = UNRESTRICTED
+                spec = declaration.acp_unrestricted
+            elif self.policy.mcp_names:
+                capability = "mcp"
+            require_empty_grok_mcp = capability in ("mcp", UNRESTRICTED)
+            if require_empty_grok_mcp and declaration.mcp_guard != GROK_MCP_GUARD:
+                raise AcpError("unsupported_mcp_guard")
+            if not self.policy.mcp_names:
+                mcp_servers = []
+            try:
+                reject_option_value(self.model, "model")
+            except ValueError as exc:
+                raise AcpError("unsupported_acp_model") from exc
+            child_home = execution_home()
+            if child_home is not None:
+                approval = approved_for(child_home, declaration, capability)
+            if capability in ("write", "mcp", UNRESTRICTED):
+                if child_home is None or self._fixed_cwd is None:
+                    raise AcpError("unsupported_acp_write")
+                self.cwd = checked_write_cwd(self._fixed_cwd, child_home)
+            if capability in ("write", "mcp"):
+                if declaration.acp_write is None:
+                    raise AcpError("unsupported_acp_write")
+                spec = declaration.acp_write
+            require_acp_landlock(spec)
+            env = acp_data_env(declaration, child_home, self._leases)
+            self.binary = managed_binary(declaration, child_home)
+        else:
+            env = build_print_cli_env(self.profile, self.home, minimal=True)
+            env.update(spec.env)
+        self._place_instructions(env)
         self._process = await AcpClient.spawn(
-            [str(self.binary), *spec.arguments(self.model, mcp_servers=self.mcp_servers)],
+            [str(self.binary), *spec.arguments(self.model, mcp_servers=mcp_servers)],
             cwd=self.cwd, env=env,
         )
+        if declaration is not None and (pid := self._process.process.pid):
+            try:
+                register_declared_process(declaration.id, pid)
+            except Exception:
+                await _finish_cleanup(asyncio.create_task(self._close()))
+                raise
+            if child_home is not None and approval is not None:
+                # The approval can change while the subprocess is starting.
+                approved_for(child_home, declaration, capability, generation=approval.generation)
+                self._approval_watch = asyncio.create_task(watch_approval(child_home, approval, pid))
         resumed = await self._process.start_session(
-            spec, cwd=str(self.cwd), mcp_servers=self.mcp_servers,
-            session_id=self.session_id, model=self.model,
+            spec, cwd=str(self.cwd), mcp_servers=mcp_servers,
+            session_id=self.session_id, model=self.model, require_empty_grok_mcp=require_empty_grok_mcp,
         )
         self.session_id = self._process.session_id
         return self._process, resumed
+
+    def _place_instructions(self, env: dict[str, str]) -> None:
+        resources = self._resources
+        if uses_grok_native_skills(self.profile, self.binary):
+            if self.profile.data_declaration is not None:
+                home = Path(env["HOME"])
+            else:
+                home = Path(self._leases.enter_context(tempfile.TemporaryDirectory(prefix="kotoyose-acp-home-")))
+            grok_skill_env(env, home, self._repository_skills, self.profile)
+            if resources is None:
+                return
+            try:
+                text = resources.place_grok(home)
+            except ValueError as exc:
+                raise DeclarationRejected(str(exc)) from None
+        elif self._repository_skills is not None:
+            raise DeclarationRejected("repository_skills requires the pinned Linux x64 Grok 1.0.89 binary")
+        elif resources is not None and resources.folders:
+            root = Path(self._leases.enter_context(tempfile.TemporaryDirectory(prefix="kotoyose-acp-skills-")))
+            text = resources.place(root / "skills")
+        else:
+            return
+        self._effective_instructions = _with_output_schema(text, self._output_schema)
 
     async def _run(self, prompt: RuntimePrompt, turn: AcpTurn) -> RuntimeResult:
         if self._idle is not None:
@@ -149,18 +255,23 @@ class AcpRuntimeSession:
                 raise AcpError("session_closed")
             if prompt_has_images(prompt):
                 raise AcpError("unsupported_input")
-            async with asyncio.timeout(self.timeout):
+            deadline = asyncio.get_running_loop().time() + self.timeout
+            async with asyncio.timeout_at(deadline):
                 client, resumed = await self._connect()
                 user_text = prompt.history if isinstance(prompt, AcpPrompt) and not resumed else prompt_text(prompt)
-                text = compose_print_cli_prompt(self.instructions, user_text)
+                text = compose_print_cli_prompt(self._effective_instructions, user_text)
                 if len(text.encode()) > self.profile.max_prompt_bytes:
                     raise AcpError("unsupported_input")
-                prompt_task = asyncio.create_task(turn.run(client, text, timeout=self.timeout))
+                # Keep the prompt reader alive for session/cancel during cleanup.
+                prompt_task = asyncio.create_task(turn.run(client, text, timeout=None, turn_deadline=deadline))
                 await asyncio.shield(prompt_task)
             self._idle = asyncio.get_running_loop().call_later(
                 self.idle_seconds, lambda: asyncio.create_task(self._reap_idle()),
             )
             return self._result(turn)
+        except GrokMcpGuardError:
+            await _finish_cleanup(asyncio.create_task(self._close()))
+            raise
         except BaseException:
             async def cleanup() -> None:
                 try:
@@ -184,6 +295,13 @@ class AcpRuntimeSession:
         async with self._lock:
             try:
                 return await self._run(prompt, turn)
+            except DeclarationRejected as exc:
+                raise RuntimeTurnError(str(exc), partial_result=self._result(turn), retryable=False) from None
+            except GrokMcpGuardError as exc:
+                raise RuntimeTurnError(
+                    exc.user_message, partial_result=self._result(turn), retryable=False,
+                    diagnostics={"terminal_reason": exc.reason},
+                ) from None
             except (AcpError, TimeoutError, OSError) as exc:
                 reason = exc.reason if isinstance(exc, AcpError) else (
                     "timeout" if isinstance(exc, TimeoutError) else "provider_error"
@@ -202,7 +320,10 @@ class AcpRuntimeSession:
             if isinstance(item, RuntimeEvent):
                 emit_runtime_event(item)
 
-        return await self._run_turn(prompt, AcpTurn(self.policy, 1024 * 1024, emit, usage_parser=acp_usage_parser(self.profile)))
+        return await self._run_turn(prompt, AcpTurn(
+            self.policy, 1024 * 1024, emit, usage_parser=acp_usage_parser(self.profile),
+            approvals=current_turn_approvals.get(),
+        ))
 
     @staticmethod
     def _audit_permission(item: str | RuntimeEvent) -> None:
@@ -219,7 +340,10 @@ class AcpRuntimeSession:
 
         async def run():
             try:
-                return await self._run_turn(prompt, AcpTurn(self.policy, 1024 * 1024, emit, usage_parser=acp_usage_parser(self.profile)))
+                return await self._run_turn(prompt, AcpTurn(
+                    self.policy, 1024 * 1024, emit, usage_parser=acp_usage_parser(self.profile),
+                    approvals=current_turn_approvals.get(),
+                ))
             finally:
                 # 購読中断で queue が満杯なら、呼び出し側が task を取り消して回収する。
                 await queue.put(_END)
@@ -243,8 +367,10 @@ class AcpRuntimeSession:
         yield result
 
 
-def acp_binding(config: HarnessConfig, preset: ModelPreset, cwd_override: str | None) -> str:
-    """会話再利用を route、login home、MCP 設定、ツール方針と cwd に束縛する。"""
+def acp_binding(
+    config: HarnessConfig, preset: ModelPreset, cwd_override: str | None, *, instructions: CliInstructions | None = None,
+) -> str:
+    """会話再利用を route、login home、MCP、ツール方針、cwd と解決済みの指示文に束縛する。"""
     route = config.routes[preset.route]
     conn = config.connections[route.connection]
     _, _, servers = config.resolve_resources(preset)
@@ -257,17 +383,18 @@ def acp_binding(config: HarnessConfig, preset: ModelPreset, cwd_override: str | 
         "prompt_files": config.resolve_prompt_files(preset),
         "timeout": preset.timeout_seconds,
     }
+    if instructions is not None:
+        shape["instructions"] = instructions.binding
     return hashlib.sha256(json.dumps(shape, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
 def build_acp_session(
     preset: ModelPreset, cwd_override: str | None, session_id: str | None, headers: dict[str, str] | None,
     *, config: HarnessConfig | None = None, settings: NativeExecutionConfig | None = None,
+    child_data_capability: str | None = None, instructions: CliInstructions | None = None,
 ) -> AcpRuntimeSession:
     """route と alias から、まだプロセスを持たないホスト用セッションを作る。"""
-    from ..config import _inject_mcp_request_headers, resolve_mcp_secrets, resolve_prompt_texts
-    from ..delegation import MCP_NAME
-    from ..session import SDKConnectionError
+    from ..config import _inject_mcp_request_headers, resolve_mcp_secrets
 
     config = config or get_config()
     route = config.routes.get(preset.route or "")
@@ -276,26 +403,71 @@ def build_acp_session(
     if preset.place == "jail" or (preset.agent is not None and preset.agent.place != "host"):
         raise SDKConnectionError("ACP chat requires host placement")
     conn = config.connections[route.connection]
-    if conn.config_dir is None or conn.kind != "subscription":
-        raise SDKConnectionError("ACP chat requires a CLI login home")
     profile = get_print_cli_profile(route.profile)
+    declaration = profile.data_declaration
+    if declaration is not None:
+        if conn.config_dir is not None or conn.kind != "subscription":
+            raise SDKConnectionError("data providers use the normal OS login location")
+        login_home = Path.home()
+    elif conn.config_dir is None or conn.kind != "subscription":
+        raise SDKConnectionError("ACP chat requires a CLI login home")
+    else:
+        login_home = conn.config_dir.expanduser().resolve()
     binary = resolve_print_cli_binary(profile, settings)
     if binary is None:
         raise SDKConnectionError(f"Set drivers.cli.print.profile_binaries.{profile.id} to an available executable")
-    _, _, servers = config.resolve_resources(preset)
-    servers = _inject_mcp_request_headers(
-        resolve_mcp_secrets(servers), headers or {}, builtin_delegation=MCP_NAME in preset.mcp_refs,
-    )
-    instructions = "\n".join(resolve_prompt_texts(config.resolve_prompt_files(preset)))
-    if preset.output_schema is not None:
-        instructions = compose_print_cli_prompt(instructions, "", output_contract="json", output_schema=preset.output_schema)
-    policy = AcpPermissionPolicy(
-        preset.agent.surface if preset.agent is not None else "read", "host",
-        tuple(preset.tools) if preset.tools is not None else None, tuple(preset.deny),
-    )
+    if declaration is not None:
+        from ..cli_install_spec import platform_key
+        from ..provider_data import child_capability, require_unrestricted_alias
+        from ..provider_data_child import execution_home
+        from ..provider_data_runtime import read_permission_policy
+
+        servers = {}
+        if child_data_capability is not None:
+            target = declaration.platform(platform_key())
+            surface = preset.agent.surface if preset.agent is not None else "read"
+            if (target is None or not target.supports(child_data_capability)
+                    or execution_home() is None or not cwd_override or surface != "write"):
+                raise SDKConnectionError("data provider write requires an approved child workspace")
+            if child_data_capability == UNRESTRICTED:
+                require_unrestricted_alias(
+                    preset.on, surface, preset.allow is not None and preset.allow.full, route.driver,
+                    tools=preset.tools, deny=preset.deny,
+                )
+            elif child_capability(surface, has_mcp=bool(preset.mcp_refs)) != child_data_capability:
+                raise SDKConnectionError("data provider write requires an approved child workspace")
+            if child_data_capability in ("mcp", UNRESTRICTED):
+                # The child builder gets its catalog from _prepare's policy projection.
+                servers = {name: config.mcps[name].server for name in preset.mcp_refs}
+    else:
+        _, _, servers = config.resolve_resources(preset)
+        servers = _inject_mcp_request_headers(
+            resolve_mcp_secrets(servers), headers or {},
+            builtin_delegation=not config._child_mcp_projection and preset.has_delegation_mcp,
+        )
+    resources = instructions or resolve_cli_resources(config, preset)
+    text = _with_output_schema(resources.text(), preset.output_schema)
+    if declaration is not None and child_data_capability is None:
+        policy = read_permission_policy()
+    elif child_data_capability == UNRESTRICTED:
+        policy = AcpPermissionPolicy("write", "host", unrestricted_child=True, mcp_names=tuple(servers))
+    else:
+        policy = AcpPermissionPolicy(
+            preset.agent.surface if preset.agent is not None else "read", "host",
+            tuple(preset.tools) if preset.tools is not None else None, tuple(preset.deny),
+            sandboxed_child_write=declaration is not None and child_data_capability is not None,
+            mcp_names=tuple(servers) if child_data_capability == "mcp" else (),
+        )
+    cwd = cwd_override or (preset.cwd if preset.repository_skills == "include" else None)
     return AcpRuntimeSession(
-        profile, binary.absolute(), conn.config_dir.expanduser().resolve(),
-        # Like cli.print chat: a private temporary cwd, never the alias cwd on the host.
-        Path(cwd_override).resolve() if cwd_override else None, route.model, preset.timeout_seconds or 600.0,
-        instructions, acp_mcp_servers(servers), policy, session_id,
+        profile, binary.absolute(), login_home,
+        Path(cwd).expanduser().resolve() if cwd else None, route.model, preset.timeout_seconds or 600.0,
+        text, acp_mcp_servers(servers), policy, session_id, resources=resources, output_schema=preset.output_schema,
+        repository_skills=preset.repository_skills,
     )
+
+
+def _with_output_schema(instructions: str, schema: dict | None) -> str:
+    if schema is None:
+        return instructions
+    return compose_print_cli_prompt(instructions, "", output_contract="json", output_schema=schema)

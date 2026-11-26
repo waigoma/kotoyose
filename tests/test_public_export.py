@@ -89,11 +89,12 @@ def test_checker_reports_only_locations_and_kinds(tmp_path, monkeypatch):
 
 
 def test_release_automation_is_on_the_allow_list_and_in_the_snapshot(tmp_path, monkeypatch):
-    exported = (".github/workflows/github-release.yml", "scripts/release-notes.py")
-    manifest = (ROOT / "release/public-paths.txt").read_text(encoding="utf-8")
-    allowed = [line.strip() for line in manifest.splitlines() if line.strip() and not line.strip().startswith("#")]
-    for relative in exported:
-        assert relative in allowed
+    exported = (
+        ".github/workflows/github-release.yml", "scripts/release-notes.py", "scripts/build-child-installer.sh",
+        "scripts/test-child-installer-wine.sh", "child-app/installer/setup.nsi",
+        "scripts/build-child-linux.sh", "scripts/publish-child-update.sh", "child-app/installer/install-linux.sh",
+        "child-app/installer/payload_fingerprint.py",
+    )
     spec = importlib.util.spec_from_file_location("public_export_release", EXPORT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

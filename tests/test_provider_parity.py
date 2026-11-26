@@ -9,6 +9,8 @@ PROVIDER_ADAPTERS = {
     "codex": "codex",
     "cursor": "cursor",
     "antigravity": "antigravity_sdk",
+    "cli_acp": "acp",
+    "print_cli": "print_cli",
 }
 
 

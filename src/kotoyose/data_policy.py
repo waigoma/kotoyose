@@ -69,14 +69,21 @@ def alias_data_policy(config, alias: str) -> AliasDataPolicy:
     if policy == "no_training":
         return AliasDataPolicy(alias, policy, False)
     for ack in getattr(config, "training_acks", ()):
-        if ack.alias == alias and ack.digest == training_digest(config, alias, ack.capabilities):
+        if ack.alias != alias:
+            continue
+        try:
+            digest = training_digest(config, alias, ack.capabilities)
+        except KeyError:
+            # A catalog reload may have withdrawn a profile still named by the active config.
+            break
+        if ack.digest == digest:
             return AliasDataPolicy(alias, policy, True, frozenset(ack.capabilities))
     return AliasDataPolicy(alias, policy, True)
 
 
 def configured_capabilities(preset) -> set[str]:
     capabilities = set()
-    if not preset.bare or preset.setting_sources:
+    if not preset.bare or preset.setting_sources or preset.repository_skills == "include":
         capabilities.update(("workspace", "tools", "mcp", "skills"))
     if preset.tools:
         capabilities.add("tools")

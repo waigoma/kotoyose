@@ -1,9 +1,10 @@
 // Aliases: model presets that bind a route, agent placement, effort, and library attachments. Uses /admin/models endpoints.
 
-import { providerOf, providerPanels } from "../provider-ui.js";
+import { aliasChildBadge, loadChildConnectionBadges, providerOf, providerPanels, statusChip } from "../provider-ui.js";
 import { api } from "../api.js";
+import { workspaceWarnings } from "../child-workspace.js";
 import { el, rowMeta, attachmentTags } from "../dom.js";
-import { sanctionOf, trainingRiskLabel } from "../format.js";
+import { placeGateMessage, sanctionOf, trainingRiskLabel } from "../format.js";
 import { createDirtyTracker, openPeek } from "../peek.js";
 
 const NEW = "new";
@@ -48,6 +49,7 @@ export function aliasBody(base, values) {
 
   body.prompt_file_refs = values.promptFileRefs;
   body.skill_refs = values.skillRefs;
+  if (values.repositorySkills !== undefined) body.repository_skills = values.repositorySkills || null;
   body.mcp_refs = values.mcpRefs;
   return body;
 }
@@ -65,7 +67,7 @@ function aliasStatus(config, preset) {
   return sanctionOf(sanction && sanction.sanction);
 }
 
-function aliasRow(name, preset, config, selected) {
+function aliasRow(name, preset, config, selected, childBadge, warnings) {
   const target = preset.route ? [preset.route] : [preset.provider || "direct", preset.model];
   const shape = preset.agent ? [preset.agent.place, preset.agent.surface] : ["chat only"];
   const status = aliasStatus(config, preset);
@@ -81,6 +83,8 @@ function aliasRow(name, preset, config, selected) {
   el("div", { class: "row-main" },
     el("span", { class: "row-title" }, name),
     rowMeta(target, shape),
+    statusChip(childBadge),
+    workspaceWarnings(warnings),
     attachmentTags(attachments),
     risk ? el("span", { class: "place-tag" }, risk) : null),
   official ? null : el("span", { class: "state-chip is-warning" }, status.label));
@@ -104,7 +108,7 @@ function matchesSearch(name, preset, config, needle) {
   return haystack.includes(needle);
 }
 
-function listCard(config, selected) {
+function listCard(config, selected, childBadges, aliasWarnings) {
   const models = config.models || {};
   const names = Object.keys(models).sort();
   const countNode = el("span", { class: "mono small muted" }, "");
@@ -134,7 +138,8 @@ function listCard(config, selected) {
     }
     rowsWrap.replaceChildren(...providerPanels(filtered,
       (name) => providerOf(config.routes?.[models[name].route], config),
-      config, ["alias", "aliases"], (name) => aliasRow(name, models[name], config, name === selected)));
+      config, ["alias", "aliases"], (name) => aliasRow(
+        name, models[name], config, name === selected, aliasChildBadge(config, models[name], childBadges), aliasWarnings.get(name))));
   }
 
   searchInput.addEventListener("input", () => {
@@ -187,6 +192,46 @@ function attachmentPicker(label, collection, existingRefs) {
       box),
     value,
   };
+}
+
+function mcpReferences(collection, preset) {
+  const input = el("textarea", { class: "input input-mono", rows: 3, "aria-label": "MCP references" });
+  input.value = (preset.mcp_refs || []).join("\n");
+  const child = preset.on?.startsWith("child:");
+  const choices = Object.entries(collection || {}).flatMap(([name]) => child
+    ? [`host:${name}`]
+    : [name, `host:${name}`, `local:${name}`]);
+  const select = el("select", { class: "input", "aria-label": "Add registered MCP" },
+    el("option", { value: "" }, "Add registered MCP"),
+    choices.sort().map((ref) => el("option", { value: ref }, ref)));
+  const value = () => input.value.split(/\r?\n/).filter((ref) => ref.trim());
+  select.addEventListener("change", () => {
+    if (select.value && !value().includes(select.value)) {
+      input.value = [...value(), select.value].join("\n");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    select.value = "";
+  });
+  return {
+    node: el("div", { class: "field wide" },
+      el("span", { class: "field-label" }, "MCPs"),
+      input, select,
+      el("span", { class: "hint" }, "One reference per line. Use host:name for the host catalog or local:name for the execution location.")),
+    value,
+  };
+}
+
+function mcpReferenceError(refs) {
+  const names = new Set();
+  for (const ref of refs) {
+    const match = /^(?:(host|local):)?([^:\p{C}]+)$/u.exec(ref);
+    if (!match || match[2].trim() !== match[2] || !match[2].trim()) return "Use name, host:name, or local:name.";
+    const [, scope, name] = match;
+    if (scope === "local" && name === "kotoyose") return "kotoyose is reserved.";
+    if (names.has(name)) return `Duplicate public MCP name: ${name}`;
+    names.add(name);
+  }
+  return "";
 }
 
 function deleteControl(name, setBusy, status, onDeleted) {
@@ -329,7 +374,12 @@ function aliasForm(config, name, preset, refresh, tracker) {
 
   const promptFiles = attachmentPicker("Prompt files", config.prompt_files, start.prompt_file_refs);
   const skills = attachmentPicker("Skills", config.skill_definitions, start.skill_refs);
-  const mcps = attachmentPicker("MCPs", config.mcps, start.mcp_refs);
+  const repositorySkills = el("select", { class: "input", "aria-label": "Repository skills" },
+    el("option", { value: "" }, "Provider default"),
+    el("option", { value: "include" }, "Include"),
+    el("option", { value: "exclude" }, "Exclude"));
+  repositorySkills.value = start.repository_skills || "";
+  const mcps = mcpReferences(config.mcps, start);
 
   const unlocks = {
     tools: "Tools",
@@ -383,6 +433,12 @@ function aliasForm(config, name, preset, refresh, tracker) {
       status.textContent = "Route is required.";
       return;
     }
+    const mcpRefs = mcps.value();
+    const mcpError = mcpReferenceError(mcpRefs);
+    if (mcpError) {
+      status.textContent = mcpError;
+      return;
+    }
     const body = aliasBody(isNew ? {} : preset, {
       route,
       place: placeSelect.value,
@@ -390,7 +446,8 @@ function aliasForm(config, name, preset, refresh, tracker) {
       effort: effortSelect.value,
       promptFileRefs: promptFiles.value(),
       skillRefs: skills.value(),
-      mcpRefs: mcps.value(),
+      repositorySkills: repositorySkills.value,
+      mcpRefs,
     });
     const capabilities = acknowledgement.disabled ? [] : checks
       .filter(({ input }) => input.checked)
@@ -435,6 +492,7 @@ function aliasForm(config, name, preset, refresh, tracker) {
       field("Effort", effortSelect, { wide: true }),
       promptFiles.node,
       skills.node,
+      field("Repository skills", repositorySkills, { hint: "Controls the provider's automatic discovery in the working directory." }),
       mcps.node,
       acknowledgement),
     status,
@@ -444,12 +502,9 @@ function aliasForm(config, name, preset, refresh, tracker) {
   return form;
 }
 
-function usedBySection(config, name, nativeOptions) {
+function usedBySection(config, name, clients) {
   const combos = combosReferencing(config, name);
-  const clients = (nativeOptions && nativeOptions.enabled ? nativeOptions.clients || [] : [])
-    .filter((client) => (client.allowed_agent_models || []).includes(name))
-    .map((client) => client.name)
-    .sort();
+  const references = clients.filter((client) => client.models?.includes("*") || client.models?.includes(name));
 
   const items = [];
   if (combos.length > 0) {
@@ -459,22 +514,23 @@ function usedBySection(config, name, nativeOptions) {
         href: `#/combos/${encodeURIComponent(combo)}`,
       }, `combo: ${combo}`))));
   }
-  if (clients.length > 0) {
-    items.push(el("div", { class: "chips" },
-      clients.map((client) => el("span", { class: "chip" }, `client: ${client}`))));
+  if (references.length > 0) {
+    items.push(el("div", { class: "stack" }, references.map((client) => {
+      const places = client.place_blocked_models?.[name];
+      return el("div", { class: "row-sub" },
+        el("a", { class: "chip", href: `#/endpoint/clients/${encodeURIComponent(client.name)}` }, client.name),
+        Array.isArray(places) ? el("span", { class: "hint" }, placeGateMessage(places)) : null);
+    })));
   }
   if (items.length === 0) {
-    items.push(el("span", { class: "hint" },
-      nativeOptions && nativeOptions.enabled
-        ? "Not referenced by any combo or client policy."
-        : "Not referenced by any combo."));
+    items.push(el("span", { class: "hint" }, "No combo or client references."));
   }
   return el("div", { class: "field-stack" },
     el("span", { class: "field-label" }, "Used by"),
     ...items);
 }
 
-function openAliasPeek(config, selected, nativeOptions, refresh) {
+function openAliasPeek(config, selected, clients, refresh, childBadges, warnings) {
   if (selected === null) return;
   const onClose = () => { location.hash = "#/aliases"; };
   const isNew = selected === NEW;
@@ -493,31 +549,50 @@ function openAliasPeek(config, selected, nativeOptions, refresh) {
   const tracker = createDirtyTracker();
   const sections = [aliasForm(config, isNew ? null : selected, preset, refresh, tracker)];
   if (!isNew) {
-    sections.push(usedBySection(config, selected, nativeOptions));
+    sections.push(usedBySection(config, selected, clients));
   }
   const sub = isNew
     ? "An alias binds a route, optional agent limits, effort, and attachments."
-    : null;
+    : statusChip(aliasChildBadge(config, preset, childBadges));
   const badge = isNew || config.route_sanctions?.[preset.route]?.sanction === "official"
     ? null : { label: aliasStatus(config, preset).label, tone: "warning" };
   openPeek({
     title: isNew ? "New alias" : selected,
     subtitle: sub,
     badge,
-    body: sections,
+    body: [workspaceWarnings(warnings), ...sections],
     onClose,
     isDirty: tracker.isDirty,
   });
 }
 
+async function loadAliasWarnings(config) {
+  const warnings = new Map();
+  if (!Object.values(config.models || {}).some((preset) => preset.on?.startsWith("child:"))) return warnings;
+  try {
+    const { children } = await api.children();
+    for (const child of children) {
+      for (const warning of child.alias_warnings || []) {
+        if (!warnings.has(warning.alias)) warnings.set(warning.alias, []);
+        warnings.get(warning.alias).push(warning);
+      }
+    }
+  } catch (_error) {
+    // Older hosts and unavailable child status leave the alias view usable.
+  }
+  return warnings;
+}
+
 export async function renderAliases(main, { config, rest, refresh }) {
   const selected = rest[0] || null;
-  let nativeOptions = null;
+  const [childBadges, aliasWarnings] = await Promise.all([loadChildConnectionBadges(config), loadAliasWarnings(config)]);
+  if (!main.isConnected) return;
+  let clients = [];
   if (selected && selected !== NEW && (config.models || {})[selected]) {
     try {
-      nativeOptions = await api.nativeOptions();
+      ({ clients = [] } = await api.clients());
     } catch (error) {
-      nativeOptions = null;
+      clients = [];
     }
     if (!main.isConnected) return;
   }
@@ -528,7 +603,7 @@ export async function renderAliases(main, { config, rest, refresh }) {
         el("h1", { class: "page-title" }, "Aliases"),
         el("p", { class: "page-sub" }, "Model names clients call. Each alias binds a route, agent placement, effort, and attachments.")),
       el("a", { class: "btn btn-primary", href: `#/aliases/${NEW}` }, "New alias")),
-    listCard(config, selected),
+    listCard(config, selected, childBadges, aliasWarnings),
   );
-  openAliasPeek(config, selected, nativeOptions, refresh);
+  openAliasPeek(config, selected, clients, refresh, childBadges, aliasWarnings.get(selected));
 }

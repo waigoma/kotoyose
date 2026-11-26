@@ -7,15 +7,18 @@ import contextlib
 import os
 from importlib.metadata import version
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from .. import process_env
 from ..activity import emit_runtime_event
 from ..logging_setup import log
+from ..skill_folders import SkillFolder, write_skill_folders
 from .base import RuntimeEvent, RuntimePrompt, RuntimeResult, RuntimeTurnError, prompt_text
-from .translation import TranslatedRuntimeConfig, translate_runtime_config
+from .skill_resources import resolve_native_folders
+from .translation import RuntimeSkill, TranslatedRuntimeConfig, translate_runtime_config
 
 
 # Kotoyose owns these snapshots. Never call SDK read_only/default/all_tools helpers:
@@ -40,18 +43,25 @@ class AntigravitySdkRuntimeSession:
     translated: TranslatedRuntimeConfig
     config: dict[str, Any] = field(default_factory=dict)
     provider: str = "antigravity"
+    skill_folders: tuple[SkillFolder, ...] = field(default=(), repr=False)
 
     _agent_cm: Any = field(default=None, init=False, repr=False)
     _agent: Any = field(default=None, init=False, repr=False)
+    _skill_temp: TemporaryDirectory[str] | None = field(default=None, init=False, repr=False)
     _turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
     invalidated: bool = field(default=False, init=False)
 
     async def disconnect(self) -> None:
-        if self._agent_cm is not None:
-            with contextlib.suppress(Exception):
-                await self._agent_cm.__aexit__(None, None, None)
-        self._agent = None
-        self._agent_cm = None
+        try:
+            if self._agent_cm is not None:
+                with contextlib.suppress(Exception):
+                    await self._agent_cm.__aexit__(None, None, None)
+        finally:
+            self._agent = None
+            self._agent_cm = None
+            if self._skill_temp is not None:
+                self._skill_temp.cleanup()
+                self._skill_temp = None
 
     async def ask(self, prompt: RuntimePrompt) -> RuntimeResult:
         final_result: RuntimeResult | None = None
@@ -198,11 +208,20 @@ class AntigravitySdkRuntimeSession:
             return self._agent
 
         sdk = _load_sdk()
+        translated = self.translated
+        if self.skill_folders:
+            self._skill_temp = TemporaryDirectory(prefix="kotoyose-antigravity-skills-")
+            root = Path(self._skill_temp.name) / "skills"
+            write_skill_folders(root, self.skill_folders)
+            placed = {folder.name: str(root / folder.name / "SKILL.md") for folder in self.skill_folders}
+            translated = replace(translated, skills=tuple(
+                RuntimeSkill(skill.name, placed.get(skill.name, skill.path)) for skill in translated.skills
+            ))
         kwargs = _build_sdk_config_kwargs(
             sdk=sdk,
             model=self.model,
             cwd=self.cwd,
-            translated=self.translated,
+            translated=translated,
             config=self.config,
         )
         local_config = sdk["LocalAgentConfig"](**kwargs)
@@ -218,12 +237,15 @@ def build_antigravity_sdk_session(
     cwd_override: str | None,
     session_id: str | None,
     request_headers: dict[str, str] | None = None,
+    *,
+    skill_folders: tuple[SkillFolder, ...] | None = None,
 ) -> AntigravitySdkRuntimeSession:
     """Build the Antigravity SDK session for API key or Vertex authentication."""
     from ..config import get_config
 
     cwd = os.path.expanduser(cwd_override) if cwd_override is not None else preset.cwd
-    translated = translate_runtime_config(get_config(), preset, request_headers)
+    config = get_config()
+    translated = translate_runtime_config(config, preset, request_headers)
     sdk_config = dict((preset.antigravity or {}).get("sdk") or {})
     if translated.timeout_seconds is not None and "timeout_seconds" not in sdk_config:
         sdk_config["timeout_seconds"] = translated.timeout_seconds
@@ -250,6 +272,7 @@ def build_antigravity_sdk_session(
         cwd=str(Path(cwd).expanduser()),
         translated=translated,
         config=sdk_config,
+        skill_folders=skill_folders if skill_folders is not None else resolve_native_folders(config, preset),
     )
 
 

@@ -419,6 +419,7 @@ a:hover { color: #6fd3c3; }
 }
 .kv dt { color: var(--text-3); }
 .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.workspace-warnings { color: var(--warning); margin: 4px 0; padding-inline-start: 18px; overflow-wrap: anywhere; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
@@ -1678,6 +1679,13 @@ html.peek-resizing * {
 .connection-row .state-chip {
   font-family: var(--font-ui);
   font-size: 12px;
+}
+
+.state-chip.has-detail {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  border-radius: 8px;
 }
 
 .empty-line,

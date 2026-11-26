@@ -7,14 +7,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, NotRequired, Protocol, TypedDict, TypeVar
 
 from .print_cli_events import PrintCliStreamParser
+from .provider_login import LoginFlowKind as LoginFlowKind
 
 
 if TYPE_CHECKING:
     from .cli_login import PtyLoginSession
     from .print_cli_profiles import PrintCliLoginSpec, PrintCliProfile
-
-
-LoginFlowKind = Literal["paste_code", "browser_wait", "device_code"]
 
 
 @dataclass(frozen=True)

@@ -12,10 +12,11 @@ import asyncio
 import json
 import os
 import re
+from tempfile import TemporaryDirectory
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openai_codex import (
     ApprovalMode,
@@ -36,6 +37,7 @@ from openai_codex.generated.v2_all import (
     MessagePhase,
     DynamicToolCallThreadItem,
     McpToolCallThreadItem,
+    SkillsExtraRootsSetResponse,
     TurnStatus,
     WebSearchThreadItem,
 )
@@ -51,10 +53,17 @@ from openai_codex.models import (
 )
 
 from ..activity import emit_runtime_event
+from ..child_codex import ChildCodexLaunch
 from ..logging_setup import log
 from ..output_guard import guard_enabled, redact_event
+from ..skill_folders import SkillFolder, write_skill_folders
 from .base import RuntimeEvent, RuntimePrompt, RuntimeResult, RuntimeTextInput, RuntimeTurnError
+from .codex_child import LocalMcpToDisable, child_sdk_config, start_child_sdk
+from .skill_resources import resolve_native_folders
 from .translation import RuntimeSkill, apply_common_timeout, translate_runtime_config
+
+if TYPE_CHECKING:
+    from ..config import HarnessConfig
 
 _DEFAULT_TIMEOUT_SECONDS = 600.0  # timeout 未指定時のデフォルト (turn がハングした場合の上限)
 
@@ -77,6 +86,22 @@ def _codex_turn_input(prompt: RuntimePrompt, skills: tuple[RuntimeSkill, ...] = 
         *(SkillInput(name=skill.name, path=skill.path) for skill in skills),
         *prompt_items,
     ]
+
+
+async def _register_skill_roots(client: AsyncCodex, skills: tuple[RuntimeSkill, ...]) -> None:
+    # Codex discovers from directories and resolves SkillInput against the discovered SKILL.md paths.
+    # SDK 0.170.0 generates the response type but exposes this RPC only on the transport.
+    roots = list(dict.fromkeys(str(Path(skill.path).parent) for skill in skills))
+    try:
+        await client._client.request(
+            "skills/extraRoots/set", {"extraRoots": roots}, response_model=SkillsExtraRootsSetResponse,
+        )
+    except Exception as exc:
+        log.warning("codex.skill_roots.registration_failed", error_type=type(exc).__name__)
+        raise RuntimeTurnError(
+            "Codex app-server could not register alias skill roots",
+            partial_result=RuntimeResult(text="", provider="codex"),
+        ) from None
 
 
 @dataclass(slots=True)
@@ -248,11 +273,19 @@ class CodexRuntimeSession:
     mcp_servers: dict[str, dict] = field(default_factory=dict)
     skills: tuple[RuntimeSkill, ...] = ()
     effort: str | None = None
+    # priority のときだけ app-server の serviceTier。未指定はモデルの既定速度のまま。
+    service_tier: str | None = None
     output_schema: dict[str, Any] | None = None
     # preset.codex_home を展開したもの。指定時は CODEX_HOME としてのみ渡す。
     codex_home: str | None = None
+    child_launch: ChildCodexLaunch | None = None
+    skill_folders: tuple[SkillFolder, ...] = field(default=(), repr=False)
+    _skill_temp: TemporaryDirectory[str] | None = field(default=None, init=False, repr=False)
+    _active_skills: tuple[RuntimeSkill, ...] = field(default=(), init=False, repr=False)
     _codex: Any = field(default=None, init=False, repr=False)  # AsyncCodex
     _thread: Any = field(default=None, init=False, repr=False)  # AsyncThread
+    # child: ローカルの config.toml にある方針外の MCP。この session では無効にして起動する。
+    _child_disabled_mcp: tuple[str, ...] = field(default=(), init=False, repr=False)
 
     async def disconnect(self) -> None:
         """app-server subprocess を閉じ、参照を破棄する (孤児化防止)。"""
@@ -264,6 +297,10 @@ class CodexRuntimeSession:
         finally:
             self._codex = None
             self._thread = None
+            self._active_skills = ()
+            if self._skill_temp is not None:
+                self._skill_temp.cleanup()
+                self._skill_temp = None
 
     async def ask(self, prompt: RuntimePrompt) -> RuntimeResult:
         """stream() の最終結果を非ストリーミング呼び出しへ集約する (cursor.py の ask と同型)。"""
@@ -300,10 +337,13 @@ class CodexRuntimeSession:
             async with asyncio.timeout(timeout) as timeout_cm:
                 thread = await self._ensure_thread()
                 turn_options: dict[str, Any] = {"effort": self.effort}
+                if self.service_tier is not None:
+                    # TurnStartParams.serviceTier はこの turn と以降の thread 既定を上書きする。
+                    turn_options["service_tier"] = self.service_tier
                 if self.output_schema is not None:
                     turn_options["output_schema"] = self.output_schema
                 handle = await thread.turn(
-                    _codex_turn_input(prompt, self.skills), **turn_options,
+                    _codex_turn_input(prompt, self._active_skills), **turn_options,
                 )
                 async for notification in handle.stream():
                     payload = notification.payload
@@ -406,16 +446,26 @@ class CodexRuntimeSession:
             return self._thread
         try:
             if self._codex is None:
-                self._codex = AsyncCodex(
-                    CodexConfig(
-                        codex_bin=_resolve_codex_bin(self.config),
-                        cwd=self.cwd,
-                        config_overrides=self._build_config_overrides(),
-                        env={"CODEX_HOME": self.codex_home} if self.codex_home else None,
-                    )
-                )
+                self._codex = AsyncCodex(self._sdk_config())
+                if self.child_launch is not None:
+                    try:
+                        await start_child_sdk(self._codex, self.cwd, self.mcp_servers)
+                    except LocalMcpToDisable as extra:
+                        # ローカルの Codex 設定にある方針外の MCP を、この session では無効にして起動し直す。
+                        log.info("child.codex.local_mcp_disabled", count=len(extra.names))
+                        await self.disconnect()
+                        self._child_disabled_mcp = extra.names
+                        self._codex = AsyncCodex(self._sdk_config())
+                        await start_child_sdk(self._codex, self.cwd, self.mcp_servers, disabled=extra.names)
+                self._active_skills = self._place_skills()
+                if self._active_skills:
+                    if self.child_launch is None:
+                        await self._codex.__aenter__()
+                    await _register_skill_roots(self._codex, self._active_skills)
             sandbox = _map_sandbox(self.config.get("sandbox"), self.config)
             approval_mode = _map_approval_mode(self.config)
+            # ThreadStartParams / ThreadResumeParams の serviceTier。省略すると既定速度。
+            tier = {"service_tier": self.service_tier} if self.service_tier is not None else {}
             if self.session_id:
                 self._thread = await self._codex.thread_resume(
                     self.session_id,
@@ -423,6 +473,7 @@ class CodexRuntimeSession:
                     developer_instructions=self.instructions,
                     sandbox=sandbox,
                     approval_mode=approval_mode,
+                    **tier,
                 )
             else:
                 self._thread = await self._codex.thread_start(
@@ -431,6 +482,7 @@ class CodexRuntimeSession:
                     developer_instructions=self.instructions,
                     sandbox=sandbox,
                     approval_mode=approval_mode,
+                    **tier,
                 )
         except Exception:
             # thread_start/resume 失敗時に app-server subprocess を孤児化させない
@@ -440,6 +492,35 @@ class CodexRuntimeSession:
         # turn 前に失敗しても resume できるよう、thread 確立の時点で session_id を確定する。
         self.session_id = self._thread.id
         return self._thread
+
+    def _place_skills(self) -> tuple[RuntimeSkill, ...]:
+        if not self.skill_folders:
+            return self.skills
+        skill_temp = TemporaryDirectory(prefix="kotoyose-codex-skills-")
+        root = Path(skill_temp.name) / "skills"
+        try:
+            write_skill_folders(root, self.skill_folders)
+        except BaseException:
+            skill_temp.cleanup()
+            raise
+        self._skill_temp = skill_temp
+        alias_names = {folder.name for folder in self.skill_folders}
+        return (
+            *(RuntimeSkill(folder.name, str(root / folder.name / "SKILL.md")) for folder in self.skill_folders),
+            *(skill for skill in self.skills if skill.name not in alias_names),
+        )
+
+    def _sdk_config(self) -> CodexConfig:
+        if self.child_launch is not None:
+            return child_sdk_config(
+                self.child_launch, self.cwd, self._build_config_overrides(), self.mcp_servers,
+                self._child_disabled_mcp,
+            )
+        return CodexConfig(
+            codex_bin=_resolve_codex_bin(self.config), cwd=self.cwd,
+            config_overrides=self._build_config_overrides(),
+            env={"CODEX_HOME": self.codex_home} if self.codex_home else None,
+        )
 
     def _build_config_overrides(self) -> tuple[str, ...]:
         """CodexConfig.config_overrides ('key=value' 文字列群) を組み立てる。
@@ -457,9 +538,10 @@ class CodexRuntimeSession:
         if isinstance(profile, str) and profile:
             overrides.append(f"profile={_tomlish_value(profile)}")
 
-        for name, server in self.mcp_servers.items():
-            for key, value in _codex_mcp_config_entries(name, server):
-                overrides.append(f"{key}={value}")
+        if self.child_launch is None:
+            for name, server in self.mcp_servers.items():
+                for key, value in _codex_mcp_config_entries(name, server):
+                    overrides.append(f"{key}={value}")
 
         overrides.extend(_model_provider_overrides(self.config))
         # Codex 自身の multi-agent は使わない。委譲は Kotoyose の MCP だけ。
@@ -476,6 +558,10 @@ def build_codex_session(
     request_headers: dict[str, str] | None = None,
     *,
     effort_override: str | None = None,
+    service_tier: str | None = None,
+    child_launch: ChildCodexLaunch | None = None,
+    skill_folders: tuple[SkillFolder, ...] | None = None,
+    config: HarnessConfig | None = None,
 ) -> CodexRuntimeSession:
     """ModelPreset から CodexRuntimeSession を構築する。
 
@@ -484,9 +570,17 @@ def build_codex_session(
     from ..config import get_config  # 循環 import 回避のため関数内 import
 
     cwd = os.path.expanduser(cwd_override) if cwd_override is not None else preset.cwd
-    cfg = get_config()
+    cfg = config or get_config()
+    folders = skill_folders if skill_folders is not None else resolve_native_folders(cfg, preset)
+    skill_resources = None
+    if folders:
+        names = {folder.name for folder in folders}
+        selected = preset.skills
+        if isinstance(selected, list):
+            selected = [name for name in selected if name not in names]
+        skill_resources = (preset.plugins, selected if selected is not None else [])
     translated = translate_runtime_config(
-        cfg, preset, request_headers, effort_override=effort_override,
+        cfg, preset, request_headers, effort_override=effort_override, skill_resources=skill_resources,
     )
     if translated.plugin_paths:
         log.warning(
@@ -514,10 +608,13 @@ def build_codex_session(
         mcp_servers=mcp_servers,
         skills=translated.skills,
         effort=translated.effort,
+        service_tier=service_tier if service_tier == "priority" else None,
         output_schema=preset.output_schema,
         codex_home=(
             str(Path(preset.codex_home).expanduser()) if preset.codex_home else None
         ),
+        child_launch=child_launch,
+        skill_folders=folders,
     )
 
 

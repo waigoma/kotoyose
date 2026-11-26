@@ -1,0 +1,111 @@
+{
+  "catalog": [
+    {
+      "id": "claude",
+      "name": "Claude",
+      "initial": "A",
+      "tone": "claude",
+      "driver": "claude.agent-sdk",
+      "packages": [
+        "claude-agent-sdk"
+      ],
+      "module": "claude_agent_sdk",
+      "cli": "claude",
+      "windows_cli": [
+        "claude.exe"
+      ],
+      "windows_profile_cli": ".local/bin/claude.exe",
+      "bundled_cli": "claude_agent_sdk/_bundled/claude"
+    },
+    {
+      "id": "codex",
+      "name": "Codex",
+      "initial": "O",
+      "tone": "openai",
+      "driver": "codex.app-server",
+      "packages": [
+        "openai-codex",
+        "openai-codex-cli-bin"
+      ],
+      "module": "openai_codex",
+      "cli": "codex",
+      "windows_cli": [
+        "codex.exe",
+        "codex.cmd"
+      ],
+      "bundled_cli": "codex_cli_bin/bin/codex"
+    }
+  ],
+  "login": {
+    "claude": {
+      "spec": {
+        "command": [
+          "auth",
+          "login",
+          "--claudeai"
+        ],
+        "url_pattern": "https://[^\\s<>\\\"']+",
+        "url_hosts": [
+          "claude.com",
+          "claude.ai",
+          "platform.claude.com"
+        ],
+        "cli_timeout_seconds": 600,
+        "code_prompt_pattern": null,
+        "success_exit_code": 0,
+        "success_json_field": "loggedIn",
+        "success_json_value": true,
+        "user_code_pattern": null,
+        "status_command": [
+          "auth",
+          "status",
+          "--json"
+        ],
+        "public_error_lines": [],
+        "signed_out_pattern": null
+      },
+      "flow": "paste_code",
+      "quota": [
+        "-p",
+        "/usage",
+        "--output-format",
+        "json"
+      ]
+    },
+    "codex": {
+      "spec": {
+        "command": [
+          "login",
+          "--device-auth"
+        ],
+        "url_pattern": "https://auth\\.openai\\.com/[^\\s<>\\\"']+",
+        "url_hosts": [
+          "auth.openai.com"
+        ],
+        "cli_timeout_seconds": 600,
+        "code_prompt_pattern": null,
+        "success_exit_code": 0,
+        "success_json_field": null,
+        "success_json_value": "SUCCESS",
+        "user_code_pattern": "(?i)\\b([a-z0-9]{4}-[a-z0-9]{4,5})\\b",
+        "status_command": [
+          "login",
+          "status"
+        ],
+        "public_error_lines": [],
+        "signed_out_pattern": null
+      },
+      "flow": "device_code",
+      "quota": [
+        "app-server",
+        "--listen",
+        "stdio://"
+      ]
+    }
+  },
+  "requirements_sha256": {
+    "requirements.txt": "be32849a1745c9e8edffb07cf11b4c1533e7cc33a3b78e816ffbcdb9c7e22bfb",
+    "requirements-claude.txt": "2a0a7ed5ce4f26aea89eb98db5d7d26843d2f2a1e896d82e09aff8190566fc63",
+    "requirements-codex.txt": "7122e7723beb95815c5a794d6f06b23eb1262b263073f6c958ee7308113288d1"
+  }
+}

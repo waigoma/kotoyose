@@ -11,8 +11,8 @@ from .conversation_key import derive_lookup_key
 from .execution_resources import ExecutionError
 from .models import ChatCompletionRequest, ChatMessage
 from .runtime.acp import AcpPrompt
-from .runtime.base import RuntimePrompt, RuntimeTextInput, prompt_audit_text, prompt_image_urls, prompt_text
-from .runtime.translation import EFFORT_PROVIDERS
+from .runtime.base import RuntimeChatHistory, RuntimePrompt, RuntimeTextInput, prompt_audit_text, prompt_image_urls, prompt_text
+from .runtime.translation import EFFORT_PROVIDERS, FAST_PROVIDERS
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +37,14 @@ class PreparedChatRequest:
     effective_conversation_key: str | None
     session_identity: tuple[str, str, str]
     cache_hit: bool
+
+
+def client_approvals_opted_in(request: ChatCompletionRequest, headers: Mapping[str, str]) -> bool:
+    return (
+        request.stream
+        and headers.get("x-kotoyose-events") == "1"
+        and headers.get("x-kotoyose-approvals") == "1"
+    )
 
 
 def prepare_chat_request(
@@ -76,7 +84,20 @@ def prepare_chat_request(
         for url in prompt_image_urls(message.runtime_prompt())
     ]
     validate_image_input(preset.provider, image_urls)
-    if preset.provider in {"print_cli", "cli_acp"}:
+    if preset.provider == "openai_compat":
+        if not prompt_text(latest_prompt).strip():
+            raise ChatPolicyViolation("openai.chat requires a non-empty final user message")
+        history = []
+        for message in request.messages:
+            role = "system" if message.role == "developer" else message.role
+            if role not in {"system", "user", "assistant"}:
+                raise ChatPolicyViolation("openai.chat supports only system, developer, user, and assistant roles")
+            content = message.text_content()
+            if role == "assistant" and not content.strip():
+                continue
+            history.append((role, content))
+        prompt = RuntimeChatHistory(tuple(history))
+    elif preset.provider in {"print_cli", "cli_acp"}:
         history = "\n\n".join(
             f"{message.role}: {message.text_content()}" for message in request.messages
         )
@@ -142,6 +163,47 @@ def ensure_reasoning_effort(config: HarnessConfig, alias: str, requested: str | 
         )
 
 
+def ensure_service_tier(config: HarnessConfig, alias: str, requested: str | None) -> str | None:
+    """この turn の service_tier を、Fast として渡すときだけ ``priority`` で返す。
+
+    ``default`` / ``auto`` / 未指定は速度を変えない。``priority`` は Fast に対応する
+    runtime で、discovery cache がその alias のモデルに Fast を覚えているときだけ通す。
+    cache が無いときは不明のまま通さず 422 にする (effort と違い、候補が分かっているときだけ有効)。
+
+    Returns:
+        ``"priority"`` か、速度を変えないときの ``None``。
+
+    Raises:
+        ExecutionError: 未知の値、未対応の provider、またはモデルが Fast を出していないとき HTTP 422。
+    """
+    if requested is None or requested in {"default", "auto"}:
+        return None
+    if requested != "priority":
+        raise ExecutionError(
+            "invalid_request",
+            f"service_tier {requested!r} is not supported (supported: default, auto, priority)",
+            422,
+        )
+    if alias not in config.models:
+        return None
+    preset = config.preset_for(alias)
+    if preset.provider not in FAST_PROVIDERS:
+        raise ExecutionError(
+            "invalid_request",
+            f"service_tier is not supported for provider '{preset.provider}'",
+            422,
+        )
+    from .model_discovery import cached_fast_tier
+
+    if cached_fast_tier(config, alias) is None:
+        raise ExecutionError(
+            "invalid_request",
+            "service_tier 'priority' is not supported for this model",
+            422,
+        )
+    return "priority"
+
+
 def prompt_for_resolved_session(
     messages: list[ChatMessage],
     provider: str,
@@ -164,7 +226,7 @@ def prompt_for_resolved_session(
     Returns:
         runtime へ渡すプロンプト。監査用の本文は最新メッセージのままにする。
     """
-    if not fresh or provider not in _SDK_PROVIDERS:
+    if not fresh or provider not in _SDK_PROVIDERS or isinstance(latest_prompt, RuntimeChatHistory):
         return latest_prompt
     last_user = max((index for index, message in enumerate(messages) if message.role == "user"), default=-1)
     earlier = [

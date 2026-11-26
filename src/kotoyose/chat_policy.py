@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -62,6 +62,16 @@ def validate_cwd(
             f"preset '{model}' は allow_cwd_override=False のため"
             " cwd の上書きを許可していません"
         )
+    # child の path は host の filesystem では解けない。alias の許可 root との照合は文字列だけで行い、
+    # 実体の解決 (symlink など) と root の判定は child が自分の方針ファイルと alias の root の両方で行う。
+    # on を持たないテスト用の preset は local と同じく host で解決する。
+    if str(getattr(preset, "on", "local")).startswith("child:"):
+        if not _lexically_inside(requested_cwd, preset.cwd_allowed_roots or []):
+            raise ChatPolicyViolation(
+                f"cwd {requested_cwd} は許可ルート外です。"
+                f" 許可ルート: {', '.join(preset.cwd_allowed_roots or [])}"
+            )
+        return
 
     expanded_cwd = os.path.expanduser(requested_cwd)
     if not os.path.isdir(expanded_cwd):
@@ -79,6 +89,27 @@ def validate_cwd(
             f"cwd {resolved_cwd} は許可ルート外です。"
             f" 許可ルート: {', '.join(str(root) for root in allowed_roots)}"
         )
+
+
+def _pure(path: str) -> PurePosixPath | PureWindowsPath:
+    """child の path を、その形 (Windows か POSIX か) で読む。filesystem には触れない。"""
+    windows = "\\" in path or (len(path) > 1 and path[1] == ":")
+    return PureWindowsPath(path) if windows else PurePosixPath(path)
+
+
+def _lexically_inside(requested: str, roots: Sequence[str]) -> bool:
+    """requested が roots のどれかの中か (または同じか) を、文字列の path として判定する。"""
+    candidate = _pure(requested)
+    if not candidate.is_absolute() or ".." in candidate.parts:
+        return False
+    for root in roots:
+        base = _pure(root)
+        if type(base) is not type(candidate) or not base.is_absolute():
+            continue
+        # PureWindowsPath の比較は大文字小文字を区別しない。
+        if candidate == base or base in candidate.parents:
+            return True
+    return False
 
 
 def validate_image_input(provider: str, image_urls: Sequence[str]) -> None:

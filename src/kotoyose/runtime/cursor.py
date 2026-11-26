@@ -459,6 +459,7 @@ def build_cursor_session(
     request_headers: dict[str, str] | None = None,
     *,
     effort_override: str | None = None,
+    service_tier: str | None = None,
 ) -> CursorRuntimeSession:
     """preset の prompt/MCP resource を Cursor SDK の設定へ変換する。"""
     from ..config import get_config
@@ -484,6 +485,13 @@ def build_cursor_session(
         raise ValueError(
             "cursor provider は require_isolation=True のとき setting_sources を有効化できません"
         )
+    if preset.repository_skills == "include" and not {"project", "all"}.intersection(setting_sources or ()):
+        setting_sources = [*(setting_sources or ()), "project"]
+    elif preset.repository_skills == "exclude" and setting_sources is not None:
+        if "all" in setting_sources:
+            setting_sources = ["user", "team", "mdm", "plugins"]
+        else:
+            setting_sources = [source for source in setting_sources if source != "project"]
     sandbox_options = _cursor_sandbox_options(cursor_config.get("sandbox_options"))
     model_params = _cursor_model_params(cursor_config.get("model_params"))
     # Common effort is a portable Kotoyose knob. Cursor exposes the same concept as
@@ -502,6 +510,10 @@ def build_cursor_session(
                 fallback=sorted(_CURSOR_FALLBACK_EFFORTS),
             )
         model_params.setdefault("effort", translated.effort)
+    if service_tier == "priority":
+        # Cursor の Fast は model parameter id "fast" の boolean。SDK は値を文字列で受ける。
+        # リクエストの priority は preset の model_params.fast より優先する。
+        model_params["fast"] = "true"
 
     if (
         translated.plugin_paths

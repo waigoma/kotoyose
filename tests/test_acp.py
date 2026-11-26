@@ -5,14 +5,16 @@ from contextlib import aclosing
 from dataclasses import replace
 import json
 from pathlib import Path
+import re
 import sys
 
 import pytest
 from structlog.testing import capture_logs
 
-from kotoyose.acp_client import AcpClient, AcpError
+from kotoyose.acp_client import AcpClient, AcpError, GrokMcpGuardError
 from kotoyose.acp_spec import AcpSpec
 from kotoyose.acp_turn import AcpPermissionPolicy, AcpTurn, acp_mcp_servers
+from kotoyose.chat_approvals import ChatApprovals, TurnApprovals, bind_turn_approvals
 from kotoyose.print_cli_agent import _leader_exited
 from kotoyose.print_cli_profiles import AGY_PROFILE
 from kotoyose.runtime.acp import AcpPrompt, AcpRuntimeSession
@@ -195,6 +197,79 @@ async def test_unadvertised_http_fails_before_session_new(tmp_path):
     assert [msg["method"] for msg in seen(tmp_path)] == ["initialize"]
 
 
+@pytest.mark.parametrize("scenario, error", [
+    ("grok_mcp_empty", None),
+    ("grok_mcp_empty_request", None),
+    # Grok 1.0.89 sends the report before it assigns the session id (measured on the real CLI).
+    ("grok_mcp_empty_unscoped", None),
+    ("grok_mcp_empty_other_session", "for the new session"),
+    ("grok_mcp_native", r"native-files.*native-db.*grok mcp disable <name>"),
+    ("grok_mcp_native_request", r"native-files.*grok mcp disable <name>"),
+    ("grok_mcp_invalid", "invalid native MCP server list"),
+    ("grok_mcp_initialize_only", "did not report"),
+    ("grok_mcp_missing", "did not report"),
+])
+async def test_grok_guard_requires_an_empty_report_in_session_new(tmp_path, scenario, error):
+    spec = AcpSpec((str(FAKE_ACP), scenario))
+    client = await AcpClient.spawn([sys.executable, *spec.argv], cwd=tmp_path, env={})
+    servers = acp_mcp_servers({"workspace": {"command": "fake-mcp", "args": ["serve"]}})
+    try:
+        options = {
+            "cwd": str(tmp_path), "mcp_servers": servers, "session_id": "previous",
+            "require_empty_grok_mcp": True,
+        }
+        if error is None:
+            assert not await client.start_session(spec, **options)
+            assert client.session_id == "fake-session"
+        else:
+            with pytest.raises(GrokMcpGuardError) as raised:
+                await client.start_session(spec, **options)
+            assert re.search(error, raised.value.user_message)
+            assert client.session_id is None
+    finally:
+        await client.close()
+    messages = seen(tmp_path)
+    assert [msg["method"] for msg in messages if "method" in msg] == ["initialize", "session/new"]
+    assert messages[1]["params"]["mcpServers"] == servers
+    if scenario == "grok_mcp_empty_request":
+        assert messages[2] == {"jsonrpc": "2.0", "id": "mcp-update", "result": {}}
+
+
+async def test_grok_native_mcp_warns_when_the_guard_is_optional(tmp_path):
+    runtime = make_runtime(tmp_path, "grok_mcp_native")
+    try:
+        with capture_logs() as logs:
+            assert (await runtime.ask("hello")).text == "hello world"
+        warning, = [log for log in logs if log["event"] == "acp.grok_native_mcp"]
+        assert warning["log_level"] == "warning"
+        assert "native-files" in warning["servers"] and "native-db" in warning["servers"]
+    finally:
+        await runtime.disconnect()
+
+
+@pytest.mark.parametrize("kind, title, raw_input, expected", [
+    ("edit", "Edit", None, "allowed"),
+    ("execute", "Bash", None, "allowed"),
+    ("other", "files__read", {"variant": "UseTool", "tool_name": "files__read"}, "allowed"),
+    ("other", "files-archive__read", {"tool_name": "files-archive__read"}, "denied"),
+    ("other", "files__read", {"tool_name": "files__write"}, "denied"),
+    ("other", "files__read", {"variant": "UseTool"}, "denied"),
+    ("other", "files__read", {"tool_name": None}, "denied"),
+    ("other", "files__read", None, "denied"),
+    ("other", "files__", {"tool_name": "files__"}, "denied"),
+    ("other", "search_tool", {"tool_name": "search_tool"}, "denied"),
+    ("fetch", "files__read", {"tool_name": "files__read"}, "denied"),
+])
+def test_child_mcp_policy_matches_the_full_tool_name(kind, title, raw_input, expected):
+    policy = AcpPermissionPolicy("write", "host", sandboxed_child_write=True, mcp_names=("files",))
+    result, event = policy.decide({
+        "toolCall": {"kind": kind, "title": title, "rawInput": raw_input},
+        "options": [{"kind": "allow_once", "optionId": "yes"}, {"kind": "reject_once", "optionId": "no"}],
+    })
+    assert event.summary == expected
+    assert result["outcome"]["optionId"] == ("yes" if expected == "allowed" else "no")
+
+
 @pytest.mark.parametrize("surface, place, kind, tools, deny, expected", [
     ("read", "host", "read", ("Read",), (), "allowed"),
     ("none", "host", "read", ("Read",), (), "denied"),
@@ -230,6 +305,64 @@ def test_policy_does_not_select_persistent_option():
     })
     assert result == {"outcome": {"outcome": "cancelled"}}
     assert event.summary == "denied"
+
+
+@pytest.mark.parametrize("tool_id", [None, 1, [], {}])
+async def test_permission_rejects_malformed_tool_call_ids(tool_id):
+    registry = ChatApprovals()
+    approvals = TurnApprovals(registry, "client")
+    approvals.queue = asyncio.Queue()
+    turn = AcpTurn(AcpPermissionPolicy("read", "host"), 1024, asyncio.Queue().put, approvals=approvals)
+    result = await turn._permission({
+        "toolCall": {"toolCallId": tool_id, "kind": "read", "title": "Read"},
+        "options": [{"kind": "allow_once", "optionId": "yes"}, {"kind": "reject_once", "optionId": "no"}],
+    })
+    assert result["outcome"] == {"outcome": "selected", "optionId": "no"}
+    assert approvals.queue.empty()
+    assert not registry.pending
+
+
+@pytest.mark.parametrize("answer", ["allow_once", "expire"])
+async def test_permission_wait_preserves_updates_and_turn_budget(tmp_path, answer):
+    runtime = make_runtime(tmp_path, "approval_updates", timeout=2)
+    registry = ChatApprovals()
+    approvals = TurnApprovals(registry, "client")
+    approvals.queue = asyncio.Queue()
+    try:
+        with bind_turn_approvals(approvals):
+            async with asyncio.timeout(4), aclosing(runtime.stream("approve")) as stream:
+                async for item in stream:
+                    if item == "waiting ":
+                        event = approvals.queue.get_nowait()
+                        assert event.tool_call_id == "1"
+                        assert event.request_id in registry.pending["client"]
+                        if answer == "allow_once":
+                            assert registry.decide("client", event.request_id, "allow_once")
+                    elif isinstance(item, RuntimeResult):
+                        assert item.text == "hello waiting world"
+        replies = [item for item in seen(tmp_path) if item.get("id") == "Read"]
+        assert len(replies) == 1
+        assert replies[0]["result"]["outcome"]["optionId"] == ("yes" if answer == "allow_once" else "no")
+        assert not registry.pending
+    finally:
+        await runtime.disconnect()
+
+
+async def test_cancelling_prompt_retires_pending_permission(tmp_path):
+    runtime = make_runtime(tmp_path, "approval_updates")
+    registry = ChatApprovals()
+    approvals = TurnApprovals(registry, "client")
+    approvals.queue = asyncio.Queue()
+    with bind_turn_approvals(approvals):
+        async with asyncio.timeout(3), aclosing(runtime.stream("approve")) as stream:
+            async for item in stream:
+                if item == "waiting ":
+                    event = approvals.queue.get_nowait()
+                    assert event.request_id in registry.pending["client"]
+                    break
+    assert seen(tmp_path)[-1]["method"] == "session/cancel"
+    assert not registry.pending
+    assert runtime._process is None
 
 
 async def test_live_process_cap_evicts_idle_session(tmp_path, monkeypatch):
@@ -308,3 +441,12 @@ async def test_turn_reads_standard_usage_before_profile_hook(result, expected):
     turn = AcpTurn(AcpPermissionPolicy("read", "host", None), 1024, lambda item: None, usage_parser=hook)
     await turn.run(_ResultClient(result), "hi", timeout=1)
     assert {key: value for key, value in turn.usage.items() if value is not None} == expected
+
+
+async def test_ignores_responses_to_requests_the_client_never_sent(tmp_path):
+    runtime = make_runtime(tmp_path, "stray_response")
+    try:
+        items = [item async for item in runtime.stream("first")]
+        assert items[-1].text == "hello world"
+    finally:
+        await runtime.disconnect()

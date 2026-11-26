@@ -1,0 +1,192 @@
+{
+  "version": "1:4da4e6bef4641d4154b6d62139de31ca42071c609ba66a8998c204f85a13700a",
+  "providers": [
+    {
+      "id": "claude",
+      "name": "Claude",
+      "initial": "A",
+      "tone": "claude",
+      "aliases": [
+        "anthropic"
+      ],
+      "driver": "claude.agent-sdk",
+      "packages": [
+        "claude-agent-sdk"
+      ],
+      "module": "claude_agent_sdk",
+      "cli": "claude",
+      "cli_name": "Claude Code",
+      "windows_cli": [
+        "claude.exe"
+      ],
+      "bundled_cli": "claude_agent_sdk/_bundled/claude",
+      "cli_package": "claude-agent-sdk",
+      "windows_profile_cli": ".local/bin/claude.exe",
+      "login": {
+        "command": [
+          "claude",
+          "auth",
+          "login",
+          "--claudeai"
+        ],
+        "cli_name": "Claude Code",
+        "flow": "paste_code",
+        "transports": {
+          "linux": "pty",
+          "win32": "console"
+        },
+        "status": [
+          "auth",
+          "status",
+          "--json"
+        ]
+      },
+      "quota": true
+    },
+    {
+      "id": "codex",
+      "name": "Codex",
+      "initial": "O",
+      "tone": "openai",
+      "aliases": [],
+      "driver": "codex.app-server",
+      "packages": [
+        "openai-codex",
+        "openai-codex-cli-bin"
+      ],
+      "module": "openai_codex",
+      "cli": "codex",
+      "cli_name": "Codex",
+      "windows_cli": [
+        "codex.exe",
+        "codex.cmd"
+      ],
+      "bundled_cli": "codex_cli_bin/bin/codex",
+      "cli_package": "openai-codex-cli-bin",
+      "login": {
+        "command": [
+          "codex",
+          "login",
+          "--device-auth"
+        ],
+        "cli_name": "Codex",
+        "flow": "device_code",
+        "transports": {
+          "linux": "pty",
+          "win32": "console"
+        },
+        "status": [
+          "login",
+          "status"
+        ]
+      },
+      "quota": true
+    },
+    {
+      "id": "agy",
+      "provider": "antigravity",
+      "name": "Antigravity",
+      "initial": "A",
+      "tone": "cli",
+      "aliases": [],
+      "driver": "cli.acp",
+      "profile": "agy",
+      "packages": [],
+      "cli": "agy",
+      "windows_cli": [
+        "agy.exe"
+      ],
+      "managed": {
+        "version": "1.5.13",
+        "platforms": [
+          "linux-x64"
+        ]
+      },
+      "login": {
+        "command": [
+          "agy",
+          "-p",
+          "/usage",
+          "--output-format",
+          "json"
+        ],
+        "cli_name": "Antigravity",
+        "flow": "paste_code",
+        "transports": {},
+        "status": []
+      },
+      "quota": true
+    },
+    {
+      "id": "cursor",
+      "provider": "cursor",
+      "name": "Cursor",
+      "initial": "C",
+      "tone": "cli",
+      "aliases": [],
+      "driver": "cli.acp",
+      "profile": "cursor",
+      "packages": [],
+      "cli": "agent",
+      "windows_cli": [
+        "agent.exe"
+      ],
+      "managed": {
+        "version": "2026.11.19-f005e9d",
+        "platforms": [
+          "linux-x64"
+        ]
+      },
+      "login": {
+        "command": [
+          "agent",
+          "login"
+        ],
+        "cli_name": "Cursor",
+        "flow": "browser_wait",
+        "transports": {},
+        "status": [
+          "status",
+          "--format",
+          "json"
+        ]
+      },
+      "quota": false
+    },
+    {
+      "id": "grok",
+      "provider": "grok",
+      "name": "Grok Build",
+      "initial": "G",
+      "tone": "cli",
+      "aliases": [],
+      "driver": "cli.acp",
+      "profile": "grok",
+      "packages": [],
+      "cli": "grok",
+      "windows_cli": [
+        "grok.exe"
+      ],
+      "managed": {
+        "version": "1.0.89",
+        "platforms": [
+          "linux-x64"
+        ]
+      },
+      "login": {
+        "command": [
+          "grok",
+          "login",
+          "--device-auth"
+        ],
+        "cli_name": "Grok Build",
+        "flow": "device_code",
+        "transports": {},
+        "status": [
+          "models"
+        ]
+      },
+      "quota": true
+    }
+  ]
+}

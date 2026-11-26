@@ -36,6 +36,10 @@ def configure_logging() -> None:
         level=level,
     )
 
+    # HTTP client のログには上流の reason phrase、応答ヘッダ、生の例外が含まれ得る。
+    for logger_name in ("httpx", "httpcore"):
+        logging.getLogger(logger_name).setLevel(max(level, logging.WARNING))
+
     for handler in logging.getLogger().handlers:
         if not isinstance(handler.formatter, _DelegationSafeFormatter):
             handler.setFormatter(_DelegationSafeFormatter(handler.formatter))

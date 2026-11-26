@@ -3,7 +3,7 @@
 import { api } from "../api.js";
 import { pathPicker } from "../path-picker.js";
 import { dot, el, errorLine, attachmentTags, rowMeta, responsiveTable } from "../dom.js";
-import { count, timeLabel } from "../format.js";
+import { count, placeGateMessage, timeLabel } from "../format.js";
 import { createDirtyTracker, openPeek } from "../peek.js";
 
 export const NEW_CLIENT = "__new__";
@@ -12,6 +12,7 @@ const CLIENT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const PLACE_LABELS = [
   ["host", "Host"],
   ["isolated", "Jail"],
+  ["child", "Any child"],
 ];
 const SURFACE_OPTIONS = [
   ["", "Unrestricted (alias default)"],
@@ -248,7 +249,16 @@ function clientSummaryParts(client) {
   return [`Models: ${models}`, `Places: ${places}`, `Max permission: ${surface}`, wsText];
 }
 
-function clientsCard(clientsList, selectedName) {
+function unenrolledPlaces(client, enrolledPlaces) {
+  if (enrolledPlaces === null) return [];
+  return (client.places || []).filter((place) => place.startsWith("child:") && !enrolledPlaces.has(place));
+}
+
+function enrollmentWarning(places) {
+  return places.length ? el("span", { class: "hint" }, `No enrolled child for ${places.join(", ")}.`) : null;
+}
+
+function clientsCard(clientsList, selectedName, enrolledPlaces) {
   const newBtn = el("a", { class: "btn btn-sm btn-primary", href: clientHash(NEW_CLIENT) }, "New client");
   const body = clientsList.length === 0
     ? el("p", { class: "card-body muted" }, "No clients configured yet. Create one to scope API keys and workspace access.")
@@ -261,6 +271,7 @@ function clientsCard(clientsList, selectedName) {
       el("div", { class: "row-main" },
         el("span", { class: "row-title" }, client.name),
         rowMeta(clientSummaryParts(client)),
+        enrollmentWarning(unenrolledPlaces(client, enrolledPlaces)),
         attachmentTags(client.active_keys || []),
         ),
       el("span", { class: "row-status small muted" }, "Edit"));
@@ -346,7 +357,7 @@ function boundKeysSection(client) {
           })))));
 }
 
-function clientForm(config, existing, refresh, tracker) {
+function clientForm(config, existing, enrolledPlaces, refresh, tracker) {
   const isNew = existing === null;
   const start = existing || {
     name: "",
@@ -369,7 +380,7 @@ function clientForm(config, existing, refresh, tracker) {
     "aria-label": "Client name",
   });
 
-  const configuredAliases = Object.keys((config && config.models) || {});
+  const configuredAliases = [...Object.keys(config.models || {}), ...Object.keys(config.pools || {})];
   const extraAliases = (start.models || []).filter((m) => m !== "*" && !configuredAliases.includes(m));
   const aliasChoices = Array.from(new Set([...configuredAliases, ...extraAliases])).sort();
 
@@ -414,21 +425,28 @@ function clientForm(config, existing, refresh, tracker) {
         box,
         el("span", { class: "item-name" }, alias)))));
 
-  const placeBoxes = PLACE_LABELS.map(([value, label]) => {
+  const childPlaces = new Set(enrolledPlaces);
+  for (const place of start.places || []) {
+    if (place.startsWith("child:")) childPlaces.add(place);
+  }
+  const placeChoices = [...PLACE_LABELS, ...[...childPlaces].sort().map((place) => [place, place])];
+  const placeBoxes = placeChoices.map(([value, label]) => {
     const box = el("input", {
       type: "checkbox",
       value,
       "aria-label": label,
     });
     box.checked = (start.places || []).includes(value);
-    return { value, box };
+    return { value, label, box };
   });
 
   const placesField = el("div", { class: "field", role: "group", "aria-label": "Places" },
     el("span", { class: "field-label" }, "Places"),
-    el("div", { class: "check-box" }, placeBoxes.map(({ box }, idx) => el("label", { class: "check-row" },
+    el("div", { class: "check-box" }, placeBoxes.map(({ box, label }) => el("label", { class: "check-row" },
       box,
-      el("span", {}, PLACE_LABELS[idx][1])))));
+      el("span", {}, label)))),
+    enrollmentWarning(unenrolledPlaces(start, enrolledPlaces)),
+    enrolledPlaces === null ? el("span", { class: "hint" }, "Could not load enrolled children.") : null);
 
   const surfaceSelect = el("select", { class: "input", "aria-label": "Max permission" },
     SURFACE_OPTIONS.map(([value, label]) => el("option", { value }, label)));
@@ -527,6 +545,7 @@ function clientForm(config, existing, refresh, tracker) {
     };
     if (existing) {
       for (const fieldName of [
+        "allow_full",
         "external_mcps",
         "allowed_env_vars",
         "allowed_provenance",
@@ -563,7 +582,7 @@ function clientForm(config, existing, refresh, tracker) {
   return form;
 }
 
-function openClientPeek(config, selectedName, clientsList, refresh) {
+function openClientPeek(config, selectedName, clientsList, enrolledPlaces, refresh) {
   if (!selectedName) return;
   const onClose = () => {
     location.hash = "#/endpoint";
@@ -583,8 +602,15 @@ function openClientPeek(config, selectedName, clientsList, refresh) {
   }
 
   const tracker = createDirtyTracker();
-  const sections = [clientForm(config, existing, refresh, tracker)];
+  const sections = [clientForm(config, existing, enrolledPlaces, refresh, tracker)];
   if (existing) {
+    const blocked = Object.entries(existing.place_blocked_models || {});
+    if (blocked.length) {
+      sections.push(el("div", { class: "field-stack" },
+        el("span", { class: "field-label" }, "Aliases hidden by saved places"),
+        el("ul", {}, blocked.map(([alias, places]) => el("li", {},
+          el("strong", {}, alias), " — ", placeGateMessage(places))))));
+    }
     sections.push(boundKeysSection(existing));
   }
   openPeek({
@@ -608,8 +634,15 @@ export async function renderEndpoint(main, { config = {}, rest = [], refresh }) 
 
   let keysData;
   let clientsData;
+  let enrolledPlaces;
   try {
-    [keysData, clientsData] = await Promise.all([api.apiKeys(), api.clients()]);
+    [keysData, clientsData, enrolledPlaces] = await Promise.all([
+      api.apiKeys(),
+      api.clients(),
+      api.children().then(({ children }) => new Set(
+        children.filter((child) => !child.revoked).map((child) => `child:${child.name}`),
+      )).catch(() => null),
+    ]);
   } catch (error) {
     if (!main.isConnected) return;
     main.append(el("section", { class: "card card-body" },
@@ -624,7 +657,7 @@ export async function renderEndpoint(main, { config = {}, rest = [], refresh }) 
   main.append(
     baseUrlCard(),
     keysCard(keysData, clientsList, refresh),
-    clientsCard(clientsList, selectedClient),
+    clientsCard(clientsList, selectedClient, enrolledPlaces),
   );
-  openClientPeek(config, selectedClient, clientsList, refresh);
+  openClientPeek(config, selectedClient, clientsList, enrolledPlaces, refresh);
 }

@@ -17,8 +17,10 @@ from fastapi.responses import JSONResponse
 
 from . import auth, db, process_env
 from .api_key_store import ApiKeyStore
+from .child_identity import default_host_child_home
+from .child_server import ChildHub, child_listen_config
 from .config import SESSION_TTL_SECONDS, get_config, missing_data_policy_message
-from .config_paths import resolve_execution_config_path
+from .config_paths import resolve_config_file_path, resolve_execution_config_path
 from .claude_login import shutdown_claude_login_sessions
 from .cli_login import shutdown_cli_login_sessions
 from .codex_login import shutdown_login_sessions
@@ -33,7 +35,7 @@ from .logging_setup import configure_logging
 from .middleware import RequestIDMiddleware
 from .models import ErrorDetail, ErrorResponse
 from .routes import (
-    admin, admin_clients, admin_secrets, admin_settings, admin_ui, api_keys, chat,
+    admin, admin_children, admin_clients, admin_provider_data, admin_secrets, admin_settings, admin_ui, api_keys, chat,
     conversations, executions, health, models_api, observability, playground,
 )
 from .secret_store import SecretKeyError, SecretStore, set_secret_store
@@ -127,10 +129,22 @@ async def lifespan(app: FastAPI):
     ttl_task = asyncio.create_task(_ttl_loop())
     probe_task = asyncio.create_task(connection_probe_loop(app_state=app.state))
     effort_task = asyncio.create_task(_effort_warm_loop(app.state))
-    log.info("app.started")
     try:
+        listen = child_listen_config()
+        if listen is not None and getattr(app.state, "child_hub", None) is None:
+            app.state.child_hub = ChildHub(default_host_child_home())
+        if listen is not None and app.state.child_hub is not None and not app.state.child_hub.listening:
+            await app.state.child_hub.start(*listen)
+        if resolve_config_file_path() == os.devnull:
+            from .provider_data_host import reload_catalog
+
+            reload_catalog()
+        log.info("app.started")
         yield
     finally:
+        hub = getattr(app.state, "child_hub", None)
+        if hub is not None:
+            await hub.stop()
         probe_task.cancel()
         try:
             await probe_task
@@ -201,6 +215,7 @@ app = FastAPI(
 )
 app.state.api_key_store = ApiKeyStore()
 app.state.secret_store = None
+app.state.child_hub = None
 app.add_middleware(RequestIDMiddleware)
 app.router.routes.append(delegation_route())
 app.include_router(health.router)
@@ -212,6 +227,8 @@ app.include_router(admin.router)
 app.include_router(admin_clients.router)
 app.include_router(admin_secrets.router)
 app.include_router(admin_settings.router)
+app.include_router(admin_provider_data.router)
+app.include_router(admin_children.router)
 app.include_router(api_keys.router)
 app.include_router(api_keys.client_router)
 app.include_router(admin_ui.router)

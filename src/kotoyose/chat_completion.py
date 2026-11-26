@@ -75,6 +75,7 @@ async def finalize_chat_turn(
         context.latest_text,
         answer,
     )
+    cost = (usage or {}).get("cost_usd") if context.provider == "openai_compat" else None
     await ports.record_completed(
         interaction_id=context.interaction_id,
         response=answer,
@@ -87,9 +88,10 @@ async def finalize_chat_turn(
         ),
         provider=context.provider,
         runtime_session_id=runtime_session_id,
+        **({"metadata": {"cost_usd": cost}} if cost is not None else {}),
     )
 
-    if context.provider == "print_cli":
+    if context.provider in {"print_cli", "openai_compat"}:
         if context.lookup_key is None and not context.conversation_key:
             await ports.backfill_conversation_key(
                 context.interaction_id, derive_storage_key(context.messages, answer),

@@ -40,7 +40,10 @@ async function request(method, path, body, options = {}) {
     headers: { Accept: "application/json", "X-Kotoyose-Admin": "1" },
   };
   if (options.signal) init.signal = options.signal;
-  if (body !== undefined) {
+  if (options.raw !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = options.raw;
+  } else if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
   }
@@ -165,7 +168,13 @@ export const api = {
   deleteMcp: (name) => request("DELETE", `/admin/mcps/${enc(name)}`),
   probeMcp: (name, options = {}) => request("POST", `/admin/mcps/${enc(name)}/probe`, {}, options),
   probeMcpDraft: (server, options = {}) => request("POST", "/admin/mcp-probe", { server }, options),
+  children: () => request("GET", "/admin/children"),
+  issueChildCode: (address) => request("POST", "/admin/children/enrollment-codes", { address }),
+  revokeChild: (name) => request("POST", `/admin/children/${enc(name)}/revoke`, {}),
   secrets: () => request("GET", "/admin/secrets"),
   putSecret: (name, value, purpose = "") => request("PUT", `/admin/secrets/${enc(name)}`, { value, purpose }),
   deleteSecret: (name) => request("DELETE", `/admin/secrets/${enc(name)}`),
+  providerDeclarations: () => request("GET", "/admin/provider-declarations"),
+  uploadProviderDeclaration: (bytes) => request("POST", "/admin/provider-declarations", undefined, { raw: bytes }),
+  deleteProviderDeclaration: (id) => request("DELETE", `/admin/provider-declarations/${enc(id)}`),
 };

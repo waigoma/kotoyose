@@ -151,7 +151,8 @@ def test_pin_retains_full_pm_recipe_and_actual_auth_convention(owner, monkeypatc
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://unapproved.invalid")
     pinned = pin_pm_saved_preset(owner, request(), HEADERS)
     options = pinned.options
-    assert options.tools == ["Read", "Grep", "Agent"] and options.disallowed_tools == ["Bash", "Task", "Agent"]
+    # skills があるので Skill の道具が足される (無いと skill がモデルに提示されない)。
+    assert options.tools == ["Read", "Grep", "Agent", "Skill"] and options.disallowed_tools == ["Bash", "Task", "Agent"]
     assert options.mcp_servers["memory-taskhub"]["headers"]["Authorization"] == "Bearer synthetic-project-token"
     assert options.system_prompt["append"] == "Synthetic TaskHub PM instructions.\nSynthetic Memory Gateway discipline."
     assert options.system_prompt["snapshot"] is False

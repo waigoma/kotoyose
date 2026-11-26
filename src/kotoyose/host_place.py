@@ -104,7 +104,7 @@ def session_processes(session_id: int, *, proc_root: Path = Path("/proc")) -> li
     return pids
 
 
-def kill_session(session_id: int, sig: int = signal.SIGKILL) -> int:
+def kill_session(session_id: int, sig: int = getattr(signal, "SIGKILL", signal.SIGTERM)) -> int:
     """Signal every process left in the session; returns how many were signalled."""
     count = 0
     for pid in session_processes(session_id):

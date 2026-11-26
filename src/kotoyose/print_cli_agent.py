@@ -5,27 +5,33 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 import contextlib
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import re
 import tempfile
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
 from .agent_deadlines import AgentStartRejected
 from .execution_resources import ExecutionError
+from .grok_skills import grok_skill_env, uses_grok_native_skills
 from .host_place import _shutdown, _watch_limits, _watch_work_timeout, kill_session
-from .native_claude import NativeAgentResult, _extract_json_object
 from .print_cli_events import PrintCliStreamOutcome, create_print_cli_parser, read_stderr_tail
 from .print_cli_hooks import classify_stderr
 from .secret_store import SecretStoreError, resolve_secret_async
+from .runtime.skill_resources import CliInstructions
 from .print_cli_home import PrintCliHomeBusyError, use_login_home
 from .print_cli_profiles import PrintCliProfile, build_print_cli_env, get_print_cli_profile
 from .provider_usage_limits import classify_print_cli_usage_limit
+from .repository_skills import RepositorySkills
+
+if TYPE_CHECKING:
+    from .native_claude import NativeAgentResult
+
 
 log = structlog.get_logger()
 
@@ -153,6 +159,28 @@ class PrintCliJob:
     acp: bool = False
     acp_tools: tuple[str, ...] | None = None
     acp_deny: tuple[str, ...] = ()
+    alias_skills: CliInstructions | None = field(default=None, repr=False)
+    repository_skills: RepositorySkills | None = None
+
+    def place_alias_skills(
+        self, root: Path, profile: PrintCliProfile, *, visible_root: Path | None = None,
+        layout: Literal["prefix", "grok"] = "prefix",
+    ) -> PrintCliJob:
+        """alias スキルを配置し、CLI に見えるパスと本文を実行指示へ加える。"""
+        if self.alias_skills is None:
+            return self
+        try:
+            prefix = self.alias_skills.place_grok(root) if layout == "grok" else self.alias_skills.place(root, visible_root=visible_root)
+        except ValueError as exc:
+            raise AgentStartRejected("unsupported_input", str(exc), 422) from None
+        instructions = "\n\n".join(filter(None, (prefix, self.instructions)))
+        prompt = compose_print_cli_prompt(
+            instructions, self.prompt, output_contract=self.output_contract, output_schema=self.output_schema,
+        )
+        if len(prompt.encode("utf-8")) > profile.max_prompt_bytes:
+            raise AgentStartRejected("payload_too_large", "Prompt exceeds print CLI limit after skill placement", 413)
+        return replace(self, instructions=instructions, alias_skills=None)
+
 
 
 def classify_print_cli_outcome(
@@ -211,6 +239,8 @@ def classify_print_cli_outcome(
         return "failed", "provider_error", content, output_bytes, None
 
     if job.output_contract == "json":
+        from .native_claude import _extract_json_object
+
         extracted = _extract_json_object(content)
         if extracted is None:
             return "failed", "invalid_json_output", content, output_bytes, None
@@ -240,7 +270,17 @@ async def read_print_cli_stdout_events(
     on_event: Callable[[str, dict[str, Any]], Awaitable[None]],
     secret: str | None = None,
 ) -> tuple[PrintCliStreamOutcome, bool]:
-    """Read newline-delimited stream events from stdout until EOF or line-limit overrun."""
+    """Read stdout through EOF or until the output limit is exceeded."""
+    if profile.parser == "text":
+        try:
+            raw = await stdout.readexactly(job.output_limit_bytes + 1)
+        except asyncio.IncompleteReadError as exc:
+            raw = exc.partial
+        content = raw.decode("utf-8", errors="replace")
+        if secret:
+            content = content.replace(secret, "[REDACTED]")
+        return PrintCliStreamOutcome(saw_result=True, result_status="SUCCESS", content=content), len(raw) > job.output_limit_bytes
+
     parser = create_print_cli_parser(profile.parser)
     streamed_bytes = 0
     line_overflow = False
@@ -358,6 +398,8 @@ class PrintCliWorker:
         on_event: Callable[[str, dict[str, Any]], Awaitable[None]],
         on_runtime_stopped: Callable[[], None] | None,
     ) -> NativeAgentResult:
+        from .native_claude import NativeAgentResult
+
         profile = get_print_cli_profile(job.profile_id)
         if profile.host_only and job.execution_environment != "host":
             raise AgentStartRejected("unsupported_capability", f"{profile.id} supports host placement only", 422)
@@ -414,6 +456,7 @@ class PrintCliWorker:
         provider_limit = None
         session_id = None
         acp = None
+        skill_temp = None
         deadline = asyncio.get_running_loop().time() + job.timeout_seconds
 
         try:
@@ -443,13 +486,42 @@ class PrintCliWorker:
             if job.validate_start is not None:
                 await job.validate_start()
 
+            native = uses_grok_native_skills(profile, Path(job.cli_binary))
+            if job.repository_skills is not None and not native:
+                raise AgentStartRejected(
+                    "unsupported_capability", "repository_skills requires the pinned Linux x64 Grok 1.0.89 binary", 422,
+                )
+            grok_home = None
+            if native:
+                skill_temp = tempfile.TemporaryDirectory(prefix="kotoyose-print-home-")
+                grok_home = Path(skill_temp.name)
+                job = job.place_alias_skills(grok_home, profile, layout="grok")
+            elif job.alias_skills is not None:
+                skill_temp = tempfile.TemporaryDirectory(prefix="kotoyose-print-skills-")
+                job = job.place_alias_skills(Path(skill_temp.name) / "skills", profile)
+
             # Keep --print-timeout strictly below Kotoyose's own hard deadline.
             print_timeout_seconds = max(0.1, remaining_now * 0.85)
 
             with tempfile.TemporaryDirectory(prefix="kotoyose-print-cli-") as settings_dir:
-                env = build_print_cli_env(profile, job.login_home or settings_dir, minimal=self.chat)
-                secret = None
-                if job.api_key_secret is not None:
+                prompt = compose_print_cli_prompt(
+                    job.instructions, job.prompt,
+                    output_contract=job.output_contract, output_schema=job.output_schema,
+                )
+                stdin_text = None
+                if profile.data_declaration is not None:
+                    from .provider_data_runtime import data_env
+
+                    env = data_env()
+                    secret = None
+                    if not job.acp and profile.data_declaration.prompt_via == "stdin":
+                        stdin_text = prompt
+                else:
+                    env = build_print_cli_env(profile, job.login_home or settings_dir, minimal=self.chat)
+                    secret = None
+                    if grok_home is not None:
+                        grok_skill_env(env, grok_home, job.repository_skills, profile)
+                if profile.data_declaration is None and job.api_key_secret is not None:
                     if profile.api_key_env is None:
                         raise AgentStartRejected("unsupported_capability", "cli.print profile does not declare api_key_env", 422)
                     try:
@@ -469,10 +541,7 @@ class PrintCliWorker:
                     settings_path = profile.write_settings_file(job.surface, Path(settings_dir))
                     argv = profile.render_argv(
                         model=job.model,
-                        prompt=compose_print_cli_prompt(
-                            job.instructions, job.prompt,
-                            output_contract=job.output_contract, output_schema=job.output_schema,
-                        ),
+                        prompt=prompt,
                         timeout_seconds=print_timeout_seconds,
                         surface=job.surface,
                         settings_path=settings_path,
@@ -485,7 +554,7 @@ class PrintCliWorker:
                         *argv,
                         cwd=job.workspace,
                         start_new_session=True,
-                        stdin=asyncio.subprocess.PIPE if job.acp else asyncio.subprocess.DEVNULL,
+                        stdin=asyncio.subprocess.PIPE if job.acp or stdin_text is not None else asyncio.subprocess.DEVNULL,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         limit=stream_limit,
@@ -493,6 +562,15 @@ class PrintCliWorker:
                     )
                 )
                 process = await asyncio.shield(spawn)
+                if profile.data_declaration is not None and process.pid:
+                    from .provider_data_runtime import register_declared_process
+
+                    register_declared_process(profile.data_declaration.id, process.pid)
+                if stdin_text is not None and process.stdin is not None:
+                    process.stdin.write(stdin_text.encode())
+                    async with asyncio.timeout_at(deadline):
+                        await process.stdin.drain()
+                    process.stdin.close()
 
                 assert process.stdout is not None
                 assert process.stderr is not None
@@ -636,6 +714,10 @@ class PrintCliWorker:
                     except asyncio.CancelledError:
                         continue
                 stop = cleanup.result()
+                if profile.data_declaration is not None and process.pid:
+                    from .provider_data_runtime import untrack_process
+
+                    untrack_process(profile.data_declaration.id, process.pid)
                 if stop == "confirmed" and on_runtime_stopped is not None:
                     try:
                         on_runtime_stopped()
@@ -648,6 +730,8 @@ class PrintCliWorker:
                 await asyncio.gather(stderr_task, return_exceptions=True)
             if sem_acquired:
                 sem.release()
+            if skill_temp is not None:
+                skill_temp.cleanup()
 
         with contextlib.suppress(Exception):
             await on_event(

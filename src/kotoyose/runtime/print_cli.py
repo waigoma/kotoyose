@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import aclosing
+from contextlib import ExitStack, aclosing
 from pathlib import Path
 import tempfile
 
@@ -13,9 +13,12 @@ from anyio import CancelScope
 from ..agent_deadlines import AgentStartRejected
 from ..config import HarnessConfig, ModelPreset, get_config
 from ..execution_resources import NativeExecutionConfig
+from ..grok_skills import uses_grok_native_skills
 from ..print_cli_agent import PrintCliJob, PrintCliWorker, compose_print_cli_prompt
 from ..print_cli_profiles import PrintCliProfile, get_print_cli_profile, resolve_print_cli_binary
+from ..repository_skills import RepositorySkills
 from .base import RuntimePrompt, RuntimeResult, RuntimeTurnError, prompt_has_images, prompt_text
+from .skill_resources import CliInstructions, resolve_cli_resources
 
 
 class PrintCliRuntimeSession:
@@ -25,7 +28,8 @@ class PrintCliRuntimeSession:
 
     def __init__(
         self, profile: PrintCliProfile, binary: Path, model: str, login_home: Path,
-        timeout: float, instructions: str,
+        timeout: float, instructions: str, *, resources: CliInstructions | None = None,
+        repository_skills: RepositorySkills | None = None, cwd: Path | None = None,
     ) -> None:
         self.profile = profile
         self.binary = binary
@@ -33,6 +37,9 @@ class PrintCliRuntimeSession:
         self.login_home = login_home
         self.timeout = timeout
         self.instructions = instructions
+        self._resources = resources
+        self._repository_skills = repository_skills
+        self._cwd = cwd
         self.worker = PrintCliWorker(chat=True)
 
     async def disconnect(self) -> None:
@@ -49,9 +56,6 @@ class PrintCliRuntimeSession:
         if prompt_has_images(prompt):
             raise self._error("unsupported_input", "cli.print does not support image input")
         text = prompt_text(prompt)
-        if len(compose_print_cli_prompt(self.instructions, text).encode()) > self.profile.max_prompt_bytes:
-            raise self._error("unsupported_input", "cli.print prompt exceeds the profile size limit")
-
         cancel = asyncio.Event()
         queue: asyncio.Queue[str | None] = asyncio.Queue()
 
@@ -62,11 +66,32 @@ class PrintCliRuntimeSession:
             if kind == "provider_progress" and payload["kind"] == "text" and payload["summary"]:
                 queue.put_nowait(payload["summary"])
 
-        with tempfile.TemporaryDirectory(prefix="kotoyose-print-chat-") as cwd:
+        with ExitStack() as leases:
+            instructions = self.instructions
+            native = uses_grok_native_skills(self.profile, self.binary)
+            if self._resources is not None and self._resources.folders and not native:
+                root = Path(leases.enter_context(tempfile.TemporaryDirectory(prefix="kotoyose-print-skills-")))
+                instructions = self._resources.place(root / "skills")
+            if not native and len(compose_print_cli_prompt(instructions, text).encode()) > self.profile.max_prompt_bytes:
+                raise self._error("unsupported_input", "cli.print prompt exceeds the profile size limit")
+
+            binary = self.binary
+            if declaration := self.profile.data_declaration:
+                from ..provider_data_child import execution_home
+                from ..provider_data_runtime import DeclarationRejected, managed_binary
+
+                try:
+                    binary = managed_binary(declaration, execution_home())
+                except DeclarationRejected as exc:
+                    raise self._error("provider_error", str(exc)) from None
+
+            cwd = self._cwd or Path(leases.enter_context(tempfile.TemporaryDirectory(prefix="kotoyose-print-chat-")))
             job = PrintCliJob(
-                profile_id=self.profile.id, cli_binary=self.binary, model=self.model,
-                workspace=Path(cwd), login_home=self.login_home, surface="read",
-                instructions=self.instructions, prompt=text, output_contract="text",
+                profile_id=self.profile.id, cli_binary=binary, model=self.model,
+                workspace=cwd, login_home=self.login_home, surface="read",
+                instructions="" if native and self._resources is not None else instructions,
+                alias_skills=self._resources if native else None,
+                repository_skills=self._repository_skills, prompt=text, output_contract="text",
                 timeout_seconds=self.timeout, grace_seconds=0.5, output_limit_bytes=1024 * 1024,
                 memory_bytes=2 * 1024**3, pids_limit=128, cpus=2,
             )
@@ -127,10 +152,9 @@ class PrintCliRuntimeSession:
 
 
 def build_print_cli_session(
-    preset: ModelPreset, _cwd: str | None, _session_id: str | None, _headers: dict[str, str] | None,
+    preset: ModelPreset, cwd_override: str | None, _session_id: str | None, _headers: dict[str, str] | None,
     *, config: HarnessConfig | None = None, settings: NativeExecutionConfig | None = None,
 ) -> PrintCliRuntimeSession:
-    from ..config import resolve_prompt_texts
     from ..session import SDKConnectionError
 
     config = config or get_config()
@@ -140,14 +164,20 @@ def build_print_cli_session(
     if preset.place == "jail" or (preset.agent is not None and preset.agent.place != "host"):
         raise SDKConnectionError("cli.print chat requires host placement")
     connection = config.connections[route.connection]
-    if connection.config_dir is None or connection.kind != "subscription":
-        raise SDKConnectionError("cli.print chat requires a CLI login home")
     profile = get_print_cli_profile(route.profile)
+    if profile.data_declaration is not None and connection.kind == "subscription" and connection.config_dir is None:
+        login_home = Path.home()
+    elif connection.config_dir is not None and connection.kind == "subscription":
+        login_home = connection.config_dir.expanduser().absolute()
+    else:
+        raise SDKConnectionError("cli.print chat requires a CLI login home")
     binary = resolve_print_cli_binary(profile, settings)
     if binary is None:
         raise SDKConnectionError(f"Set drivers.cli.print.profile_binaries.{profile.id} to an available executable")
-    instructions = "\n".join(resolve_prompt_texts(config.resolve_prompt_files(preset)))
+    resources = resolve_cli_resources(config, preset)
+    cwd = (cwd_override or preset.cwd) if preset.repository_skills is not None else None
     return PrintCliRuntimeSession(
-        profile, binary.absolute(), route.model, connection.config_dir.expanduser().absolute(),
-        preset.timeout_seconds or 600.0, instructions,
+        profile, binary.absolute(), route.model, login_home, preset.timeout_seconds or 600.0, resources.text(),
+        resources=resources, repository_skills=preset.repository_skills,
+        cwd=Path(cwd).expanduser().resolve() if cwd else None,
     )

@@ -13,15 +13,17 @@ import time
 import uuid
 
 import structlog
-from fastapi import APIRouter, Depends, Header, Request, Response
+from anyio import CancelScope
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 from .. import delegation
 from ..activity import bind_event_queue, start_event_writer, stream_activity
 from ..execution_http import authorize_execution, enforce_model_scope
 from ..output_guard import CredentialLeakSuspected, LEAK_REASON, check_answer, guard_enabled, redact_event
 from ..compatibility_http import native_chat_response, uses_native_execution
-from ..execution_resources import ExecutionError, _profile_within
+from ..execution_resources import ExecutionError, agent_pool_candidates
 from ..capabilities import unsupported_capabilities
 from ..chat_completion import (
     record_turn_failure,
@@ -29,6 +31,7 @@ from ..chat_completion import (
     TurnContext,
     finalize_chat_turn,
 )
+from ..chat_approvals import ChatApprovals, Decision, TurnApprovals, bind_turn_approvals
 from ..chat_policy import (
     ChatPolicyViolation,
     validate_cwd,
@@ -36,7 +39,9 @@ from ..chat_policy import (
 )
 from ..chat_request import (
     RequestPreparationPorts,
+    client_approvals_opted_in,
     ensure_reasoning_effort,
+    ensure_service_tier,
     prepare_chat_request,
     prompt_for_resolved_session,
 )
@@ -78,8 +83,13 @@ from ..models import (
     ErrorDetail,
     ErrorResponse,
 )
+from ..child_registry import child_on_name
+from ..child_server import child_generation
 from ..runtime.acp import AcpPrompt, acp_binding
 from ..runtime.base import RuntimeTurnError
+from ..runtime.child import child_cli_binding
+from ..runtime.claude_options import claude_approval_scope
+from ..runtime.skill_resources import folder_binding, resolve_cli_resources, resolve_native_folders
 from ..session import (
     SDKConnectionError,
     _cache_identity,
@@ -100,6 +110,28 @@ log = structlog.get_logger()
 SESSION_EVENT_HEADER = "X-Session-Event"
 # pool alias を名指した chat に、選ばれた候補 alias を返す header。
 RESOLVED_MODEL_HEADER = "X-Resolved-Model"
+
+
+class ApprovalDecision(BaseModel):
+    decision: Decision
+
+
+class _ChatStreamingResponse(StreamingResponse):
+    async def stream_response(self, send) -> None:
+        try:
+            await super().stream_response(send)
+        finally:
+            with CancelScope(shield=True):
+                await self.body_iterator.aclose()
+
+
+@router.post("/v1/chat/approvals/{request_id}", status_code=204)
+async def decide_chat_approval(request_id: str, body: ApprovalDecision, request: Request) -> Response:
+    registry = getattr(request.app.state, "chat_approvals", None)
+    if registry is None or not registry.decide(request.state.execution_principal, request_id, body.decision):
+        raise HTTPException(status_code=404, detail="Approval request not found")
+    return Response(status_code=204)
+
 
 def _invalid_request_error(message: str, request_id: str) -> JSONResponse:
     """Policy 違反を OpenAI 互換の 400 response へ変換する。"""
@@ -225,13 +257,20 @@ async def _resolve_pool_model(request: Request, req: ChatCompletionRequest):
     cfg = get_config()
     refuse = getattr(service.config, "sanction_enforcement", "off") == "all"
     capabilities = request_capabilities(req)
-    ordered = await store.model_pools.select(
-        cfg, req.model, refuse_needs_ack=refuse,
-        **({"training_capabilities": capabilities} if capabilities else {}),
-    )
     policy = getattr(getattr(request, "state", None), "execution_policy", None)
+    selection = {"training_capabilities": capabilities} if capabilities else {}
     if policy is not None:
-        ordered = [candidate for candidate in ordered if _profile_within(candidate, policy, service.config, cfg)]
+        candidates = agent_pool_candidates(req.model, policy, service.config, cfg)
+        if candidates != cfg.pools[req.model].candidates:
+            selection["candidate_aliases"] = candidates
+    ordered = await store.model_pools.select(
+        cfg, req.model, refuse_needs_ack=refuse, **selection,
+    )
+    if policy is not None:
+        current = get_config()
+        if current is not cfg:
+            candidates = agent_pool_candidates(req.model, policy, service.config, current)
+        ordered = [candidate for candidate in ordered if candidate in candidates]
         if not ordered:
             raise ExecutionError("permission_denied", f"Model '{req.model}' is outside this API key's client scope", 403)
     return req.model_copy(update={"model": ordered[0]}), ordered[0]
@@ -242,7 +281,7 @@ async def delegated_chat_turn(
 ):
     enforce_model_scope(request, alias)
     preset = get_config().models.get(alias)
-    if preset is None or not preset.is_direct_host_chat:
+    if preset is None or not preset.is_direct_host_chat or child_on_name(preset.on) is not None:
         raise ExecutionError("unsupported_capability", "Delegation requires a direct host chat alias", 501)
     req = ChatCompletionRequest(model=alias, messages=[ChatMessage(role="user", content=task)])
     return await _chat_completions(req, request, Response(), conversation_key, delegation_metadata=metadata)
@@ -257,10 +296,17 @@ async def _chat_completions(req, request, response, x_conversation_key, *, deleg
     cfg = get_config()
     pm_requirements = req.metadata.kotoyose.pm_saved_preset if req.metadata and req.metadata.kotoyose else None
     native_chat = pm_requirements is None and uses_native_execution(request, req.model)
+    capabilities = request_capabilities(req)
+    route = cfg.routes.get(cfg.models[req.model].route) if req.model in cfg.models else None
+    if route is not None and route.driver == "openai.chat":
+        if req.tool_choice == "none":
+            capabilities = request_capabilities(req.model_copy(update={"tool_choice": None}))
+        if req.functions or req.function_call is not None or capabilities.intersection({"tools", "attachments", "workspace"}):
+            return _invalid_request_error("openai.chat supports text only (no tools, images, attachments, or cwd)", request_id)
     decision = alias_data_policy(cfg, req.model)
     if decision.restricted:
         declared = cfg.models[req.model]
-        if message := decision.refusal(request_capabilities(req) | configured_capabilities(declared)):
+        if message := decision.refusal(capabilities | configured_capabilities(declared)):
             raise ExecutionError("permission_denied", message, 403, reason_code="data_policy_restricted")
     if any(isinstance(item.content, list) and any(isinstance(part, FileContentPart) for part in item.content)
            for item in req.messages):
@@ -277,6 +323,7 @@ async def _chat_completions(req, request, response, x_conversation_key, *, deleg
 
     if req.reasoning_effort is not None and req.model in cfg.models:
         ensure_reasoning_effort(cfg, req.model, req.reasoning_effort)
+    service_tier = ensure_service_tier(cfg, req.model, req.service_tier)
 
     if req.metadata is not None and req.metadata.kotoyose is not None:
         missing = unsupported_capabilities(req.metadata.kotoyose.required_capabilities)
@@ -305,11 +352,19 @@ async def _chat_completions(req, request, response, x_conversation_key, *, deleg
     except ChatPolicyViolation as exc:
         return _invalid_request_error(str(exc), request_id)
     provider = preset.provider
+    turn_approvals = None
+    if delegation_metadata is None and preset.approval == "client" and provider in {"claude", "cli_acp"}:
+        if child_on_name(preset.on) is not None:
+            raise ExecutionError("unsupported_capability", "Client approval requires a local chat runtime", 501)
+        registry = getattr(request.app.state, "chat_approvals", None)
+        if registry is None:
+            registry = request.app.state.chat_approvals = ChatApprovals()
+        turn_approvals = TurnApprovals(registry, request.state.execution_principal)
     delegation_client = None
-    if delegation_metadata is None and delegation.MCP_NAME in preset.mcp_refs:
+    if delegation_metadata is None and preset.has_delegation_mcp:
         delegation_client = getattr(request.state, "api_key_caller", None)
 
-    if provider in {"print_cli", "cli_acp"} and "attachments" in request_capabilities(req):
+    if provider in {"print_cli", "cli_acp"} and "attachments" in capabilities:
         driver = "cli.acp" if provider == "cli_acp" else "cli.print"
         return _invalid_request_error(f"{driver} does not support images or attachments", request_id)
 
@@ -341,7 +396,7 @@ async def _chat_completions(req, request, response, x_conversation_key, *, deleg
     )
 
     secret_versions: dict[str, int] = {}
-    if selection is None and provider != "print_cli":
+    if selection is None and provider not in {"print_cli", "openai_compat"} and child_on_name(preset.on) is None:
         try:
             _, secret_versions = await resolve_preset_secrets_with_versions_async(cfg, preset)
         except ClaudeSubscriptionAuthError as exc:
@@ -370,17 +425,44 @@ async def _chat_completions(req, request, response, x_conversation_key, *, deleg
                 ).model_dump(),
             )
 
+    client_allows_full = getattr(getattr(request.state, "execution_policy", None), "allow_full", False) is True
     identity_kwargs = {}
+    if turn_approvals is not None and provider == "claude":
+        identity_kwargs["claude_approval_scope"] = claude_approval_scope(preset)
+    if child_on_name(preset.on) is not None:
+        identity_kwargs["on"] = preset.on
+        identity_kwargs["child_generation"] = child_generation(child_on_name(preset.on))
+        try:
+            scope = child_cli_binding(cfg, preset, req.cwd, client_allows_full)
+        except SDKConnectionError as exc:
+            return _invalid_request_error(str(exc), request_id)
+        if scope:
+            identity_kwargs["acp_scope"] = scope
+    skill_folders = None
+    if selection is None and child_on_name(preset.on) is None and provider in {"claude", "codex"} and preset.skill_refs:
+        try:
+            skill_folders = resolve_native_folders(cfg, preset)
+        except SDKConnectionError as exc:
+            return _invalid_request_error(str(exc), request_id)
+        identity_kwargs["skill_scope"] = folder_binding(skill_folders)
     if req.reasoning_effort is not None:
         identity_kwargs["reasoning_effort"] = req.reasoning_effort
+    if service_tier is not None:
+        identity_kwargs["service_tier"] = service_tier
     resolve_identity = functools.partial(_cache_identity, **identity_kwargs)
+    acp_instructions = None
     if decision.restricted:
         resolve_identity = functools.partial(
             _cache_identity, training_binding=training_binding(cfg, req.model), **identity_kwargs,
         )
-    elif provider == "cli_acp":
+    elif provider == "cli_acp" and child_on_name(preset.on) is None:
+        if preset.skill_refs:
+            try:
+                acp_instructions = resolve_cli_resources(cfg, preset)
+            except SDKConnectionError as exc:
+                return _invalid_request_error(str(exc), request_id)
         resolve_identity = functools.partial(
-            _cache_identity, acp_scope=acp_binding(cfg, preset, req.cwd),
+            _cache_identity, acp_scope=acp_binding(cfg, preset, req.cwd, instructions=acp_instructions),
             execution_environment=preset.execution_environment,
             **identity_kwargs,
         )
@@ -438,9 +520,11 @@ async def _chat_completions(req, request, response, x_conversation_key, *, deleg
     # ── セッション取得 ──────────────────────────────────────────
     try:
         client_kwargs: dict[str, object] = {"cwd_override": req.cwd}
+        if "acp_scope" in identity_kwargs and client_allows_full:
+            client_kwargs["client_allows_full"] = True
         if selection is not None:
             client_kwargs["selection"] = selection
-        elif decision.restricted or preset.route is not None or cfg is not get_config():
+        elif turn_approvals is not None or decision.restricted or preset.route is not None or cfg is not get_config():
             client_kwargs["config_snapshot"] = cfg
         # 既存 preset の session 生成 API は変えず、MCP request header を宣言した
         # preset だけに接続設定の解決値を渡す。
@@ -450,8 +534,14 @@ async def _chat_completions(req, request, response, x_conversation_key, *, deleg
             client_kwargs["execution_settings"] = getattr(
                 getattr(request.app.state, "execution_service", None), "config", None,
             )
+        if acp_instructions is not None:
+            client_kwargs["acp_instructions"] = acp_instructions
+        if skill_folders is not None:
+            client_kwargs["skill_folders"] = skill_folders
         if req.reasoning_effort is not None:
             client_kwargs["reasoning_effort"] = req.reasoning_effort
+        if service_tier is not None:
+            client_kwargs["service_tier"] = service_tier
         if delegation_metadata is not None:
             client_kwargs.update(delegated=True, config_snapshot=cfg)
         elif delegation_client:
@@ -461,6 +551,8 @@ async def _chat_completions(req, request, response, x_conversation_key, *, deleg
             client_kwargs["delegation_parent"] = delegation.DelegationParent(
                 delegation_client, request.state.api_key_name, targets,
             )
+            if child_on_name(preset.on) is not None:
+                client_kwargs["delegation_app"] = request.app
         async with delegation.serialize_conversation(lookup_key if delegation_client else None):
             client, was_resumed = await get_or_resume_client(lookup_key, req.model, **client_kwargs)
     except asyncio.CancelledError:
@@ -486,7 +578,7 @@ async def _chat_completions(req, request, response, x_conversation_key, *, deleg
             status_code=503,
             content=ErrorResponse(
                 error=ErrorDetail(
-                    message=f"Claude SDK connection failed: {e}",
+                    message=str(e) if provider == "openai_compat" else f"Claude SDK connection failed: {e}",
                     type="service_unavailable",
                     request_id=request_id,
                 )
@@ -542,13 +634,15 @@ async def _chat_completions(req, request, response, x_conversation_key, *, deleg
 
     # ── ストリーミング ───────────────────────────────────────────
     if req.stream:
-        return StreamingResponse(
+        return _ChatStreamingResponse(
             stream_chat_response(
                 StreamContext(
                     turn=turn_context,
                     prompt=runtime_prompt,
                     inspect_output=guard_enabled() or delegation_client is not None,
                     include_events=request.headers.get("x-kotoyose-events") == "1",
+                    approvals=turn_approvals,
+                    deliver_approvals=client_approvals_opted_in(req, request.headers),
                 ),
                 StreamingPorts(
                     stream_runtime=stream_claude,
@@ -566,7 +660,7 @@ async def _chat_completions(req, request, response, x_conversation_key, *, deleg
     event_queue = start_event_writer(interaction_id)
     runtime_session_id: str | None = None
     try:
-        with bind_event_queue(event_queue):
+        with bind_event_queue(event_queue), bind_turn_approvals(turn_approvals):
             answer, usage, runtime_session_id = await ask_claude(client, runtime_prompt)
         if guard_enabled() or delegation_client is not None:
             check_answer(answer)
@@ -589,13 +683,14 @@ async def _chat_completions(req, request, response, x_conversation_key, *, deleg
         await record_turn_failure(record_failed, interaction_id, e)
         if lookup_key is None:
             await _safe_disconnect_client(client)
-        if provider in {"print_cli", "cli_acp"} and isinstance(e, RuntimeTurnError):
+        if provider in {"print_cli", "cli_acp", "openai_compat"} and isinstance(e, RuntimeTurnError):
             code = str(e.terminal_reason or "provider_error")
             status = {
                 "authentication_failed": 401,
                 "provider_usage_limit": 429,
                 "unsupported_input": 400,
                 "timeout": 504,
+                "service_unavailable": 503,
                 "capacity_exhausted": 409,
                 "login_in_progress": 409,
             }.get(code, 502)
@@ -612,6 +707,8 @@ async def _chat_completions(req, request, response, x_conversation_key, *, deleg
             headers={SESSION_EVENT_HEADER: session_event},
         )
     finally:
+        if turn_approvals is not None:
+            turn_approvals.close()
         event_queue.put_nowait(None)
 
     completion = await finalize_chat_turn(

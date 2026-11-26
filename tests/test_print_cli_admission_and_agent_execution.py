@@ -1073,9 +1073,25 @@ async def test_isolated_admission_requires_agent_container_and_coding_image_and_
 async def test_executor_runs_isolated_print_cli_and_records_container_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from kotoyose.agent_container import AgentContainer, CONTAINER_ALIAS_SKILLS
+    from kotoyose.config import SkillDefinition, get_config
+
     _HOME_SEMAPHORES.clear()
     adm, store, ncfg, image_id, req_iso, _ = _make_isolated_setup(tmp_path / "exec", monkeypatch)
+    plugin = tmp_path / "plugin"
+    manifest = plugin / ".claude-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"name":"fixture"}')
+    skill = plugin / "skills" / "guide"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("Read the guide.")
+    asset = skill / "guide.bin"
+    asset.write_bytes(b"pinned")
+    cfg = get_config()
+    cfg.skill_definitions["guide"] = SkillDefinition(plugin=str(plugin), skill="guide")
+    cfg.models["agy-iso"].skill_refs = ["guide"]
     plan = await adm.resolve("caller-a", get_client("caller-a"), req_iso)
+    asset.write_bytes(b"changed after admission")
 
     executor = AgentExecutor(ncfg, store, worker=SimpleNamespace())
 
@@ -1083,9 +1099,18 @@ async def test_executor_runs_isolated_print_cli_and_records_container_identity(
         instance = "test-inst"
 
         async def create(self, spec) -> str:
+            self.staged = spec.ro_dirs[CONTAINER_ALIAS_SKILLS]
+            assert (self.staged / "guide/guide.bin").read_bytes() == b"pinned"
+            assert not self.staged.is_relative_to(spec.workspace)
+            assert f"type=bind,src={self.staged},dst={CONTAINER_ALIAS_SKILLS},readonly" in AgentContainer._extra_mount_args(spec)
             return f"cid-{spec.job_id}"
 
         async def exec(self, job_id: str, argv: list[str], *, env: dict[str, str], limit: int):
+            assert any(
+                f"This skill's files are at \"{CONTAINER_ALIAS_SKILLS}/guide\"" in arg and "guide.bin" in arg
+                for arg in argv
+            )
+            assert all(str(self.staged) not in arg for arg in argv)
             return await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-c",
@@ -1102,7 +1127,8 @@ async def test_executor_runs_isolated_print_cli_and_records_container_identity(
         async def remove(self, job_id: str, grace_seconds: int = 0) -> str:
             return "confirmed"
 
-    executor.print_cli_runtime.container_runtime = (_FakeExecContainer(), ncfg.agent_container, image_id)
+    container = _FakeExecContainer()
+    executor.print_cli_runtime.container_runtime = (container, ncfg.agent_container, image_id)
     attempt = {
         "id": "att-exec-iso-1",
         "principal": "caller-a",
@@ -1118,6 +1144,7 @@ async def test_executor_runs_isolated_print_cli_and_records_container_identity(
     )
     assert result.status == "succeeded"
     assert result.content == b"done"
+    assert not container.staged.exists()
     ops = store.operations_by_attempt[attempt["id"]]
     assert len(ops) == 1
     assert ops[0]["state"] == "confirmed"

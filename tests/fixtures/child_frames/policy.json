@@ -1,0 +1,30 @@
+[
+  [
+    "{\"workspace_roots\": [\"D:\\Programming\\ai\\tmp\"]}",
+    "D:\\Programming\\ai\\tmp"
+  ],
+  [
+    "{\"workspace_roots\": [\"D:\\\\Programming\\\\ai\\\\tmp\"]}",
+    "D:\\Programming\\ai\\tmp"
+  ],
+  [
+    "{\"workspace_roots\": [\"D:\\tmp\"]}",
+    "D:\\tmp"
+  ],
+  [
+    "{\"workspace_roots\": [\"C:\\new\\users\"]}",
+    "C:\\new\\users"
+  ],
+  [
+    "{\"workspace_roots\": [\"\\\\server\\share\\x\"]}",
+    "\\\\server\\share\\x"
+  ],
+  [
+    "{\"workspace_roots\": [\"/srv/a/b\"]}",
+    "/srv/a/b"
+  ],
+  [
+    "{\"workspace_roots\": [",
+    null
+  ]
+]

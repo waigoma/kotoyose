@@ -6,12 +6,16 @@ import asyncio
 import contextlib
 import json
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from tempfile import TemporaryDirectory
 
 from claude_agent_sdk import (
     AssistantMessage,
+    ClaudeAgentOptions,
     ClaudeSDKClient,
     ConversationResetMessage,
+    PermissionResultAllow,
+    PermissionResultDeny,
     ResultError,
     ResultMessage,
     SystemMessage,
@@ -20,13 +24,16 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
+from claude_agent_sdk.types import ToolPermissionContext
 from ..activity import emit_runtime_event
+from ..chat_approvals import APPROVAL_REJECTED, OPT_IN_REQUIRED, TOOL_KIND_BY_NAME, TurnApprovals, current_turn_approvals
 from ..connections_probe import record_claude_rate_limit, record_connection_auth_failure
 from ..logging_setup import log
 from .claude_observations import OBSERVATION_MESSAGES, TASK_MESSAGES, claude_observation
 
 from ..output_guard import guard_enabled, redact_event
 from .base import (
+    RuntimeChatHistory,
     RuntimeEvent,
     RuntimeImageInput,
     RuntimePrompt,
@@ -34,11 +41,97 @@ from .base import (
     RuntimeTextInput,
     RuntimeTurnError,
     image_data_url_parts,
+    prompt_text,
 )
 
 _SUMMARY_LIMIT = 500
 _CLEANUP_TIMEOUT_SECONDS = 5.0
 _cleanup_tasks: set[asyncio.Task[None]] = set()
+# 許可の呼び出しが、その tool_use の message より先に届いたときに待つ上限。
+_SEEN_WAIT_SECONDS = 30.0
+
+
+class ClaudeToolApprovals:
+    def __init__(self, options: ClaudeAgentOptions):
+        self.tools = frozenset(options.tools) if isinstance(options.tools, list) else None
+        # The CLI evaluates scoped denies. A callback for a tool with such a
+        # rule cannot establish that it is safe for the client to override.
+        self.denied = frozenset(rule.partition("(")[0] for rule in options.disallowed_tools)
+        self.lock = asyncio.Lock()
+        self.turn: TurnApprovals | None = None
+        self.tool_use_ids: set[str] = set()
+        self.turn_deadline: float | None = None
+        self._changed = asyncio.Event()
+
+    def _notify(self) -> None:
+        changed, self._changed = self._changed, asyncio.Event()
+        changed.set()
+
+    def remember(self, ids) -> None:
+        """この turn の stream で見えた tool_use の id。待っている許可の呼び出しを起こす。"""
+        self.tool_use_ids.update(ids)
+        self._notify()
+
+    def forget(self) -> None:
+        self.tool_use_ids.clear()
+        self._notify()
+
+    async def _seen(self, tool_id: str, tool_use_ids: set[str]) -> bool:
+        """許可の呼び出しは、その tool_use を含む message を stream が読むより先に届くことがある。
+
+        同じ turn のあいだだけ、id が見えるまで待つ。turn が終わるか期限が来たら見えなかった扱い。
+        """
+        loop = asyncio.get_running_loop()
+        end = loop.time() + _SEEN_WAIT_SECONDS
+        if self.turn_deadline is not None:
+            end = min(end, self.turn_deadline)
+        while tool_id not in tool_use_ids:
+            if self.turn is None or tool_use_ids is not self.tool_use_ids:
+                return False
+            remaining = end - loop.time()
+            if remaining <= 0:
+                return False
+            changed = self._changed
+            try:
+                await asyncio.wait_for(changed.wait(), remaining)
+            except TimeoutError:
+                return False
+        return True
+
+    @contextlib.asynccontextmanager
+    async def bind(self, timeout_seconds: float | None = None):
+        async with self.lock:
+            self.turn = current_turn_approvals.get()
+            self.tool_use_ids = set()
+            if timeout_seconds is not None:
+                self.turn_deadline = asyncio.get_running_loop().time() + timeout_seconds
+            try:
+                yield
+            finally:
+                self.turn = None
+                self.tool_use_ids.clear()
+                self.turn_deadline = None
+                self._notify()
+
+    async def decide(self, name: str, _input: dict, context: ToolPermissionContext):
+        tool_id = context.tool_use_id
+        tool_use_ids = self.tool_use_ids
+        if not isinstance(tool_id, str) or not await self._seen(tool_id, tool_use_ids):
+            return PermissionResultDeny(message=APPROVAL_REJECTED)
+        if context.agent_id or name in self.denied or (
+            self.tools is not None and name not in self.tools and not name.startswith("mcp__")
+        ):
+            return PermissionResultDeny(message=APPROVAL_REJECTED)
+        turn = self.turn
+        if turn is None:
+            return PermissionResultDeny(message=OPT_IN_REQUIRED)
+        message = await turn.request(
+            tool_id, context.title or name, TOOL_KIND_BY_NAME.get(name.lower(), "other"),
+            turn_deadline=self.turn_deadline,
+        )
+        if tool_use_ids is not self.tool_use_ids or tool_id not in tool_use_ids:
+            return PermissionResultDeny(message=APPROVAL_REJECTED)
+        return PermissionResultDeny(message=message) if message else PermissionResultAllow()
 
 
 @dataclass(slots=True)
@@ -50,9 +143,16 @@ class ClaudeRuntimeSession:
     provider: str = "claude"
     invalidated: bool = False
     connection_id: str | None = None
+    tool_approvals: ClaudeToolApprovals | None = None
+    skill_temp: TemporaryDirectory[str] | None = field(default=None, repr=False)
 
     async def disconnect(self) -> None:
-        await self.client.disconnect()
+        try:
+            await self.client.disconnect()
+        finally:
+            if self.skill_temp is not None:
+                self.skill_temp.cleanup()
+                self.skill_temp = None
 
     async def ask(self, prompt: RuntimePrompt) -> RuntimeResult:
         """Claude SDK 応答を RuntimeResult に正規化して返す。"""
@@ -97,6 +197,14 @@ class ClaudeRuntimeSession:
     async def _stream(
         self, prompt: RuntimePrompt, *, enforce_timeout: bool
     ) -> AsyncIterator[str | RuntimeEvent | RuntimeResult]:
+        binding = self.tool_approvals.bind(self.timeout_seconds) if self.tool_approvals else contextlib.nullcontext()
+        async with binding, contextlib.aclosing(self._query_stream(prompt, enforce_timeout=enforce_timeout)) as items:
+            async for item in items:
+                yield item
+
+    async def _query_stream(
+        self, prompt: RuntimePrompt, *, enforce_timeout: bool
+    ) -> AsyncIterator[str | RuntimeEvent | RuntimeResult]:
         """Claude SDK の応答を変換し、非ストリーミング時だけ idle timeout を適用する。"""
         usage: dict | None = None
         session_id: str | None = None
@@ -125,6 +233,8 @@ class ClaudeRuntimeSession:
                 return
             cleanup_attempted = True
             self.invalidated = True
+            if self.tool_approvals is not None:
+                self.tool_approvals.forget()
             await _bounded_disconnect(self)
 
         try:
@@ -166,6 +276,8 @@ class ClaudeRuntimeSession:
                         structured_output = None
                         observation_session_id = None
                         tool_names.clear()
+                        if self.tool_approvals is not None:
+                            self.tool_approvals.forget()
                         yield RuntimeEvent(kind="session_reset", summary="Claude conversation reset")
                         continue
                     if isinstance(message, UserMessage):
@@ -177,6 +289,10 @@ class ClaudeRuntimeSession:
                         parent_id = message.parent_tool_use_id
                         metadata = _event_metadata(active_origin, parent_id)
                         foreground = active_origin in (None, "human") and parent_id is None
+                        if self.tool_approvals is not None and foreground and message.error is None:
+                            self.tool_approvals.remember(
+                                block.id for block in message.content if isinstance(block, ToolUseBlock)
+                            )
                         yield RuntimeEvent(
                             kind="turn",
                             summary=f"Assistant turn {turn}",
@@ -255,6 +371,8 @@ class ClaudeRuntimeSession:
                             unclassified_text = False
                             continue
                         terminal_received = True
+                        if self.tool_approvals is not None:
+                            self.tool_approvals.forget()
                         usage = _extract_usage(message)
                         structured_output = message.structured_output
                         # The result ID is authoritative, including result-only
@@ -366,8 +484,8 @@ async def _bounded_disconnect(session: ClaudeRuntimeSession) -> None:
 
 def _claude_query_input(prompt: RuntimePrompt):
     """runtime 共通入力を Claude streaming input protocol へ変換する。"""
-    if isinstance(prompt, str):
-        return prompt
+    if isinstance(prompt, (str, RuntimeChatHistory)):
+        return prompt_text(prompt)
 
     async def _messages():
         content: list[dict[str, object]] = []

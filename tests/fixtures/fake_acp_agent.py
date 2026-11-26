@@ -49,6 +49,9 @@ def prompt(msg):
         while True:
             print("x" * (1024 * 1024 + 1), flush=True)
     chunk("hello ")
+    if SCENARIO == "stray_response":
+        # Grok Build 1.0.89 は自分の内部要求への応答を文字列 id で stdout に流す。
+        send(id="skills-reload", result={"result": {"reloaded": 1}})
     if SCENARIO == "crash":
         sys.exit(2)
     if SCENARIO == "helper":
@@ -72,7 +75,12 @@ def prompt(msg):
             "options": [{"kind": "allow_once", "optionId": "yes", "name": "Allow"},
                         {"kind": "reject_once", "optionId": "no", "name": "Reject"}],
         })
+        if SCENARIO == "approval_updates" and name == "Read":
+            chunk("waiting ")
         decision = receive()
+        if decision.get("method") == "session/cancel":
+            reply(msg, stopReason="cancelled")
+            return
         assert decision["id"] == name
         assert decision["result"]["outcome"]["outcome"] == "selected"
     update(sessionUpdate="tool_call_update", toolCallId="1", status="completed")
@@ -127,6 +135,8 @@ def main():
             assert params["clientCapabilities"] == {
                 "fs": {"readTextFile": False, "writeTextFile": False}, "terminal": False,
             }
+            if SCENARIO == "grok_mcp_initialize_only":
+                send(method="_x.ai/mcp/servers_updated", params={"sessionId": SID, "mcpServers": []})
             reply(
                 msg, protocolVersion=2 if SCENARIO == "protocol" else 1,
                 agentCapabilities={
@@ -154,6 +164,20 @@ def main():
                 chunk("prior context must not be emitted")
                 reply(msg, **state)
             else:
+                reports = {
+                    "grok_mcp_empty": {"sessionId": SID, "mcpServers": []},
+                    "grok_mcp_empty_request": {"sessionId": SID, "mcpServers": []},
+                    "grok_mcp_empty_unscoped": {"mcpServers": []},
+                    "grok_mcp_empty_other_session": {"sessionId": "previous", "mcpServers": []},
+                    "grok_mcp_native": {"sessionId": SID, "mcpServers": [{"name": "native-files"}, {"name": "native-db"}]},
+                    "grok_mcp_native_request": {"sessionId": SID, "mcpServers": [{"name": "native-files"}]},
+                    "grok_mcp_invalid": {"sessionId": SID, "mcpServers": None},
+                }
+                if SCENARIO.endswith("_request") and SCENARIO in reports:
+                    send(id="mcp-update", method="_x.ai/mcp/servers_updated", params=reports[SCENARIO])
+                    assert receive() == {"jsonrpc": "2.0", "id": "mcp-update", "result": {}}
+                elif SCENARIO in reports:
+                    send(method="_x.ai/mcp/servers_updated", params=reports[SCENARIO])
                 reply(msg, sessionId=SID, **state)
         elif method == "session/set_model":
             assert params["sessionId"] == SID

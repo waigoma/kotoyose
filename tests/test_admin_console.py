@@ -118,7 +118,7 @@ def test_console_js_does_not_assign_innerhtml():
                  "pages/routes.js", "pages/combos.js", "pages/aliases.js",
                  "pages/prompts.js", "pages/skills.js", "pages/mcps.js",
                  "pages/usage.js", "pages/executions.js",
-                 "pages/machine.js", "pages/secrets.js", "path-picker.js"):
+                 "pages/machine.js", "pages/secrets.js", "pages/children.js", "path-picker.js"):
         body = client.get(f"/admin/ui/console/{version}/js/{name}", auth=AUTH).text
         assert not re.search(r"\.innerHTML\s*=", body), name
 
@@ -1076,6 +1076,10 @@ const apiResponses = {{
   }},
   '/admin/secrets': {{ secrets: [{{ name: 'my-secret', set: true }}] }},
   '/admin/tools': {{ tools: [{{ profile: 'grok', provider: 'grok', version: '1.0.89', installed: false }}] }},
+  '/admin/provider-declarations': {{
+    declarations: [{{ id: 'grok-build', status: 'invalid', filename: 'operator-grok.json', reason: 'Unsupported arguments' }}],
+    startup_warnings: ["Skipped models.'grok-read' at startup"],
+  }},
 }};
 
 let finishInstall;
@@ -1164,6 +1168,13 @@ const findAll = (root, pred, acc = []) => {{
 
 mainEl.replaceChildren();
 await renderProviders(mainEl, {{ config, rest: [], query: new URLSearchParams(''), refresh: async () => {{}} }});
+
+const [dataDeclarations] = findAll(mainEl, (n) => n.getAttribute('id') === 'data-declarations');
+assert.match(dataDeclarations.textContent, /grok-build/);
+assert.match(dataDeclarations.textContent, /Invalid: Unsupported arguments/);
+assert.match(dataDeclarations.textContent, /Configuration entries skipped at startup/);
+assert.match(dataDeclarations.textContent, /grok-read/);
+assert.ok(findAll(dataDeclarations, (n) => n.tagName === 'BUTTON' && n.textContent === 'Remove').length);
 
 const sections = () => findAll(mainEl, (n) => n.classList?.contains('family-section'));
 const ids = () => sections().map((s) => s.getAttribute('data-provider'));
@@ -1288,6 +1299,16 @@ assert.equal(byClass(sections().find((section) => section.getAttribute('data-pro
 assert.equal(byClass(sections().at(-1), 'family-toggle')[0].getAttribute('aria-expanded'), 'true');
 const [providerSelect] = findAll(doc.body, (n) => n.tagName === 'SELECT' && n.getAttribute('aria-label') === 'Provider');
 assert.equal(providerSelect.value, 'plugin-provider');
+assert.ok(providerSelect.children.some((n) => n.textContent === 'openai_compat'));
+assert.equal(familyForProvider('openai_compat'), 'other');
+providerSelect.value = 'openai_compat';
+providerSelect.dispatch('change');
+const [kindSelect] = findAll(doc.body, (n) => n.tagName === 'SELECT' && n.getAttribute('aria-label') === 'Kind');
+const [dataPolicySelect] = findAll(doc.body, (n) => n.tagName === 'SELECT' && n.getAttribute('name') === 'data_policy');
+assert.equal(kindSelect.value, 'endpoint');
+assert.equal(kindSelect.disabled, true);
+assert.equal(dataPolicySelect.value, 'unknown');
+
 
 mainEl.replaceChildren();
 await renderProviders(mainEl, {{ config, rest: [], query: new URLSearchParams('attention=1'), refresh: async () => {{}} }});
@@ -1719,9 +1740,11 @@ assert.ok(peekPanel.textContent.includes('via claude-host'));
 
 def test_console_providers_show_quota_hiding_header_and_form_in_node(tmp_path):
     """Providers respects show_quota in attention, keeps the peek quota, and submits the setting."""
+    import json
     import shutil
     import subprocess
     from pathlib import Path
+    from kotoyose.child_catalog import host_connections
 
     node = shutil.which("node")
     if node is None:
@@ -1904,6 +1927,7 @@ const apiResponses = {{
   '/admin/config': config,
   '/admin/session': {{ user: 'admin' }},
   '/admin/machine': {{ enabled: false, drivers: {{}} }},
+  '/admin/tools': {{ tools: [], connections: {json.dumps(host_connections())} }},
   '/admin/connections': {{
     connections: [
       // Claude family: c-hidden has 95% quota + show_quota:false, c-shown has 42% + show_quota:true
@@ -2023,13 +2047,13 @@ globalThis.fetch = async (url, init = {{}}) => {{
   }};
 }};
 
-const {{ connectionAttention, connectionBody, renderProviders }} =
+const {{ connectionAttention, connectionAuthBadge, connectionBody, renderProviders }} =
   await import({repr((console_dir / "js/pages/providers.js").as_uri())});
 const {{ renderDashboard }} = await import({repr((console_dir / "js/pages/dashboard.js").as_uri())});
 const {{ routeBody }} = await import({repr((console_dir / "js/pages/routes.js").as_uri())});
 const cursorConn = connectionBody({{
   provider: 'cursor', kind: 'subscription', configDir: '/tmp/cursor-home', dataPolicy: 'no_training',
-}});
+}}, apiResponses['/admin/tools'].connections);
 assert.deepEqual(cursorConn, {{
   provider: 'cursor', kind: 'subscription', profile: 'cursor', config_dir: '/tmp/cursor-home', data_policy: 'no_training',
 }});
@@ -2058,6 +2082,10 @@ assert.ok(!expAtt.reasons.includes('quota >= 90%'));
 
 const hiddenError = {{ provider: 'cursor', kind: 'api_key', data_policy: 'no_training', secret: 'env:K', show_quota: false, state: {{ auth: 'unknown', last_error: 'bad' }} }};
 assert.equal(connectionAttention(hiddenError).needsAttention, true);
+
+const child = {{ provider: 'claude', kind: 'subscription', on: 'child:box', state: {{ auth: 'ok', quota: [] }} }};
+assert.deepEqual(connectionAuthBadge(child), {{ tone: 'positive', label: 'ok' }});
+assert.equal(connectionAuthBadge({{ ...child, state: {{ ...child.state, auth: 'logged_out' }} }}).label, 'logged out');
 
 // 2. Render providers page
 mainEl.replaceChildren();
@@ -2090,6 +2118,7 @@ mainEl.replaceChildren();
 await renderProviders(mainEl, {{ config, rest: ['connection', 'c-hidden'], query: new URLSearchParams(''), refresh: async () => {{}} }});
 let peekPanel = doc.body.children.find((n) => n.classList && n.classList.contains('peek-root'));
 assert.ok(peekPanel);
+assert.ok(peekPanel.textContent.includes("CLAUDE_CONFIG_DIR='/tmp/claude-hidden' claude"));
 assert.equal(findAll(peekPanel, (n) => n.classList && n.classList.contains('quota-win')).length, 1);
 const editCheck = findAll(peekPanel, (n) => n.tagName === 'INPUT' && n.getAttribute('aria-label') === 'Show quota on Dashboard')[0];
 assert.ok(editCheck, 'Show quota on Dashboard checkbox present on edit form');
@@ -2666,12 +2695,20 @@ const apiResponses = {{
     clients: [{{
       name: 'taskhub',
       models: ['sonnet'],
-      places: ['isolated'],
+      places: ['isolated', 'child:retired', 'child:missing'],
       max_surface: 'exec',
+      place_blocked_models: {{ sonnet: ['child:dev'] }},
       workspace_roots: ['/srv/work'],
       active_keys: ['k-prod'],
       keys: [{{ name: 'k-prod', prefix: 'kys_', last4: '9999', revoked_at: null }}],
     }}],
+  }},
+  '/admin/children': {{
+    children: [
+      {{ name: 'dev', online: false, revoked: false }},
+      {{ name: 'retired', online: false, revoked: true }},
+      {{ name: 'revoked-only', online: false, revoked: true }},
+    ],
   }},
 }};
 
@@ -2696,6 +2733,7 @@ globalThis.fetch = async (url, init = {{}}) => {{
 }};
 
 const {{ renderEndpoint }} = await import({repr((console_dir / "js/pages/endpoint.js").as_uri())});
+const {{ renderAliases }} = await import({repr((console_dir / "js/pages/aliases.js").as_uri())});
 
 const findAll = (root, pred, acc = []) => {{
   if (pred(root)) acc.push(root);
@@ -2706,7 +2744,7 @@ const findByAttr = (root, attr, val) => findAll(root, (n) => n.getAttribute && n
 
 const config = {{
   models: {{
-    sonnet: {{}},
+    sonnet: {{ on: 'child:dev', agent: {{ place: 'host', surface: 'write' }} }},
     'claude-haiku': {{}},
   }},
 }};
@@ -2723,6 +2761,7 @@ assert.ok(clientsCard.textContent.includes('New client'));
 assert.ok(clientsCard.textContent.includes('taskhub'));
 assert.ok(clientsCard.textContent.includes('Jail'));
 assert.ok(clientsCard.textContent.includes('Run commands'));
+assert.ok(clientsCard.textContent.includes('No enrolled child for child:retired, child:missing.'));
 
 // 2. Edit peek for existing client 'taskhub'
 mainEl.replaceChildren();
@@ -2751,6 +2790,13 @@ const hostBox = findByAttr(editPeek, 'aria-label', 'Host');
 const jailBox = findByAttr(editPeek, 'aria-label', 'Jail');
 assert.equal(hostBox.checked, false);
 assert.equal(jailBox.checked, true);
+assert.equal(findByAttr(editPeek, 'aria-label', 'Any child').checked, false);
+assert.equal(findByAttr(editPeek, 'aria-label', 'child:dev').checked, false);
+assert.equal(findByAttr(editPeek, 'aria-label', 'child:retired').checked, true);
+assert.equal(findByAttr(editPeek, 'aria-label', 'child:missing').checked, true);
+assert.equal(findByAttr(editPeek, 'aria-label', 'child:revoked-only'), null);
+assert.ok(editPeek.textContent.includes('Aliases hidden by saved places'));
+assert.ok(editPeek.textContent.includes('Hidden by client places. Allow child:dev or child.'));
 
 const surfaceSelect = findByAttr(editPeek, 'aria-label', 'Max permission');
 assert.equal(surfaceSelect.value, 'exec');
@@ -2789,6 +2835,9 @@ const newHost = findByAttr(newPeek, 'aria-label', 'Host');
 const newJail = findByAttr(newPeek, 'aria-label', 'Jail');
 newHost.checked = true;
 newJail.checked = false;
+findByAttr(newPeek, 'aria-label', 'Any child').checked = true;
+findByAttr(newPeek, 'aria-label', 'child:dev').checked = true;
+assert.equal(findByAttr(newPeek, 'aria-label', 'child:missing'), null);
 const newSurface = findByAttr(newPeek, 'aria-label', 'Max permission');
 newSurface.value = 'read';
 
@@ -2800,10 +2849,17 @@ assert.equal(putRequests.length, 1);
 assert.equal(putRequests[0].path, '/admin/clients/new-chat');
 assert.deepEqual(putRequests[0].body, {{
   models: ['*'],
-  places: ['host'],
+  places: ['host', 'child', 'child:dev'],
   max_surface: 'read',
   workspace_roots: [],
 }});
+
+// 4. Alias detail shows the same place decision and links to the client.
+mainEl.replaceChildren();
+await renderAliases(mainEl, {{ config, rest: ['sonnet'], refresh: async () => {{}} }});
+const aliasPeek = doc.body.children.filter((n) => n.classList?.contains('peek-root')).at(-1);
+assert.ok(aliasPeek.textContent.includes('Hidden by client places. Allow child:dev or child.'));
+assert.ok(findByAttr(aliasPeek, 'href', '#/endpoint/clients/taskhub'));
 """
     script_path = tmp_path / "verify_endpoint_clients_ui.mjs"
     script_path.write_text(script, encoding="utf-8")
@@ -2971,7 +3027,7 @@ assert.deepEqual(groupProviderItems(routes, resolve, config), [
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("case", ["reload", "picker", "settings"])
+@pytest.mark.parametrize("case", ["reload", "picker", "settings", "childConnections"])
 def test_console_admin_actions_in_node(tmp_path, case):
     import shutil
     import subprocess

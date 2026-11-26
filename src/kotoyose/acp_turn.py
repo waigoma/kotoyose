@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from functools import partial
 
 from .acp_client import AcpClient, AcpError
+from .chat_approvals import TurnApprovals
 from .runtime.base import RuntimeEvent
 
 _READ_KINDS = frozenset({"read", "search", "think"})
@@ -24,8 +27,11 @@ class AcpPermissionPolicy:
     # drivers). A tuple (even empty) is an allowlist matched against the tool kind or title.
     tools: tuple[str, ...] | None = None
     deny: tuple[str, ...] = ()
+    sandboxed_child_write: bool = False
+    mcp_names: tuple[str, ...] = ()
+    unrestricted_child: bool = False
 
-    def decide(self, params: dict) -> tuple[dict, RuntimeEvent]:
+    def decide(self, params: dict, *, client_denied: bool = False) -> tuple[dict, RuntimeEvent]:
         """1 回限りの選択を返す。判断材料が不足した場合は拒否する。"""
         call = params.get("toolCall")
         call = call if isinstance(call, dict) else {}
@@ -33,9 +39,17 @@ class AcpPermissionPolicy:
         named = {value for value in (title, kind) if isinstance(value, str)}
         explicit = (self.tools is None or bool(named & set(self.tools))) and not (named & set(self.deny))
         allowed_kinds = _READ_KINDS if self.surface in {"read", "write"} else frozenset()
-        if self.surface == "write" and self.place == "isolated":
+        data_child_write = self.sandboxed_child_write or self.unrestricted_child
+        if self.surface == "write" and (self.place == "isolated" or data_child_write):
             allowed_kinds = allowed_kinds | _WRITE_KINDS | {"execute"}
-        allow = explicit and isinstance(kind, str) and kind in allowed_kinds and kind not in self.deny
+        allowed_kind = isinstance(kind, str) and kind in allowed_kinds
+        if kind == "other" and self.surface == "write" and data_child_write and self.mcp_names:
+            raw_input = call.get("rawInput")
+            allowed_kind = (
+                isinstance(title, str) and isinstance(raw_input, dict) and raw_input.get("tool_name") == title
+                and any(title.startswith(name + "__") and len(title) > len(name) + 2 for name in self.mcp_names)
+            )
+        allow = not client_denied and explicit and allowed_kind
         option_kind = "allow_once" if allow else "reject_once"
         options = params.get("options")
         options = options if isinstance(options, list) else []
@@ -55,6 +69,22 @@ class AcpPermissionPolicy:
         )
 
 
+def _expand_loopback_header(value: object) -> object:
+    """ACP carries MCP headers in the session message, not on the CLI command line."""
+    if not isinstance(value, str) or "${" not in value:
+        return value
+    from .child_mcp_proxy import relay_process_env
+
+    env = relay_process_env()
+    if not env:
+        return value
+
+    def replace(match):
+        return env.get(match.group(1), match.group(0))
+
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", replace, value)
+
+
 def acp_mcp_servers(servers: Mapping[str, dict]) -> list[dict]:
     """解決済みの MCP 設定を ACP の stdio / HTTP / SSE union に変換する。"""
     result = []
@@ -68,7 +98,7 @@ def acp_mcp_servers(servers: Mapping[str, dict]) -> list[dict]:
         elif transport in {"http", "sse"}:
             result.append({
                 "type": transport, "name": name, "url": server["url"],
-                "headers": [{"name": k, "value": v} for k, v in (server.get("headers") or {}).items()],
+                "headers": [{"name": k, "value": _expand_loopback_header(v)} for k, v in (server.get("headers") or {}).items()],
             })
         else:
             raise AcpError("unsupported_mcp_transport")
@@ -123,6 +153,7 @@ class AcpTurn:
         "source": "unknown", "input_tokens": None, "output_tokens": None, "cost": None,
     })
     usage_parser: Callable[[dict], dict] | None = None
+    approvals: TurnApprovals | None = None
     _updates: int = 0
     _tool_calls: dict[str, dict] = field(default_factory=dict)
 
@@ -187,19 +218,40 @@ class AcpTurn:
         if self._updates > 10_000:
             raise AcpError("output_limit_exceeded")
 
-    async def _permission(self, params: dict) -> dict:
+    async def _permission(self, params: dict, *, deadline: float | None = None) -> dict:
         self._count_update()
         update = params.get("toolCall")
+        tool_id = update.get("toolCallId") if isinstance(update, dict) else None
         if isinstance(update, dict):
-            params = {**params, "toolCall": self._merge_tool_call(update)}
-        outcome, event = self.policy.decide(params)
-        await self.emit(event)
+            call = self._merge_tool_call(update)
+            if self.policy.mcp_names and call.get("kind") == "other":
+                # Match the MCP identity in this request without inheriting it from tool updates.
+                call = {key: call[key] for key in ("kind", "title") if key in update}
+                call["rawInput"] = update.get("rawInput")
+            params = {**params, "toolCall": call}
+        outcome, event = self.policy.decide(params, client_denied=not isinstance(tool_id, str))
+        if self.approvals is None or event.summary != "allowed":
+            await self.emit(event)
+            return outcome
+
+        call = params["toolCall"]
+        message = await self.approvals.request(
+            tool_id, call.get("title") or event.tool_name, event.tool_name, turn_deadline=deadline,
+        )
+        if message is not None:
+            outcome, _ = self.policy.decide(params, client_denied=True)
+            outcome["_meta"] = {"kotoyose": {"permission_denial": message}}
+            await self.emit(RuntimeEvent(
+                kind="tool_call_update", tool_name=event.tool_name, summary="failed",
+                payload={"tool_call_id": tool_id, "permission_denial": message},
+            ))
         return outcome
 
-    async def run(self, client: AcpClient, prompt: str, *, timeout: float) -> None:
+    async def run(self, client: AcpClient, prompt: str, *, timeout: float | None, turn_deadline: float | None = None) -> None:
         """ACP の正常終了を確認する。失敗時もバッファ済みの出力と usage を残す。"""
         result = await client.prompt(
-            prompt, timeout=timeout, update=self._update, permission=self._permission,
+            prompt, timeout=timeout, update=self._update,
+            permission=partial(self._permission, deadline=turn_deadline),
         )
         # 標準の PromptResponse.usage が無い agent は、profile の hook が拡張から取り出す。
         found = acp_usage(result.get("usage"))

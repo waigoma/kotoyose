@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 import hashlib
 import json
@@ -12,10 +14,16 @@ import re
 import shutil
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from .acp_spec import AcpSpec
 from .cli_install_spec import CliArtifact, CliInstallSpec, installed_binary_version, managed_install_paths
+from .provider_login import PrintCliLoginSpec as PrintCliLoginSpec
+from .provider_spec import ChildTurnSpec, LocalLogin
+
+
+if TYPE_CHECKING:
+    from .provider_data import Declaration
 
 
 def _freeze_value(value: Any) -> Any:
@@ -79,60 +87,6 @@ class QuotaErrorPattern:
             "patterns": list(self.patterns),
             "window": self.window,
             "default_retry_seconds": self.default_retry_seconds,
-        }
-
-
-@dataclass(frozen=True)
-class PrintCliLoginSpec:
-    """Trusted PTY login declaration.
-
-    URL candidates must match the pattern and an HTTPS host in url_hosts.
-    Device code patterns capture the code in group 1. Browser and device flows
-    run status_command after login and apply the success fields to its result.
-    An unset success_json_field checks the exit code alone.
-    """
-
-    command: tuple[str, ...]
-    url_pattern: str
-    url_hosts: tuple[str, ...]
-    cli_timeout_seconds: int
-    code_prompt_pattern: str | None = None
-    success_exit_code: int = 0
-    success_json_field: str | None = "status"
-    success_json_value: str | bool | int | None = "SUCCESS"
-    user_code_pattern: str | None = None
-    status_command: tuple[str, ...] = ()
-    public_error_lines: tuple[str, ...] = ()
-    # Some CLIs exit 0 from their status command even when signed out (Grok's `models`
-    # prints "You are not authenticated." and still lists defaults). This regex marks that.
-    signed_out_pattern: str | None = None
-
-    def matches_status(
-        self, returncode: int | None, payload: dict[str, Any] | None, output: str = "",
-    ) -> bool:
-        """Check the declared exit code, the signed-out marker and optional JSON status field."""
-        if returncode != self.success_exit_code:
-            return False
-        if self.signed_out_pattern and re.search(self.signed_out_pattern, output):
-            return False
-        if self.success_json_field is None:
-            return True
-        return payload is not None and payload.get(self.success_json_field) == self.success_json_value
-
-    def to_canonical_dict(self) -> dict[str, Any]:
-        return {
-            "command": list(self.command),
-            "url_pattern": self.url_pattern,
-            "url_hosts": list(self.url_hosts),
-            "user_code_pattern": self.user_code_pattern,
-            "status_command": list(self.status_command),
-            "public_error_lines": list(self.public_error_lines),
-            "signed_out_pattern": self.signed_out_pattern,
-            "code_prompt_pattern": self.code_prompt_pattern,
-            "cli_timeout_seconds": self.cli_timeout_seconds,
-            "success_exit_code": self.success_exit_code,
-            "success_json_field": self.success_json_field,
-            "success_json_value": self.success_json_value,
         }
 
 
@@ -211,8 +165,17 @@ class PrintCliProfile:
     install: CliInstallSpec | None = None
     quota_rpc: PrintCliQuotaRpc | None = None
     acp: AcpSpec | None = None
+    child_turn: ChildTurnSpec | None = None
+    child_local_login: LocalLogin = LocalLogin()
+    host_sdk_packages: tuple[str, ...] = ()
+    terminal_login: Literal["command", "interactive", "hidden"] = "command"
+
+    data_declaration: Declaration | None = None
+    native_skill_layout: str | None = None
 
     def __post_init__(self) -> None:
+        if self.child_local_login.transports and (self.login is None or self.login_flow not in ("paste_code", "browser_wait", "device_code")):
+            raise ValueError("child local login requires a supported login flow")
         if self.quota_rpc is not None and self.quota_command:
             raise ValueError("quota_rpc and quota_command are mutually exclusive")
         if self.bundle_root not in (None, "realpath_parent"):
@@ -270,6 +233,10 @@ class PrintCliProfile:
         add_dirs: Sequence[Path | str] = (),
     ) -> list[str]:
         """Render CLI arguments safely without `str.format` interpretation of prompt text."""
+        if any("{model}" in token for token in self.argv_template):
+            from .provider_data import reject_option_value
+
+            reject_option_value(model, "model")
         spec = self.surface_spec(surface)
         timeout_str = self.format_timeout(timeout_seconds)
         replacements = {
@@ -290,6 +257,8 @@ class PrintCliProfile:
                 argv.extend(extra_args)
                 continue
             if token in replacements:
+                if token == "{prompt}" and self.data_declaration is not None and (not argv or argv[-1] != "--"):
+                    raise ValueError("prompt can become an option")
                 argv.append(replacements[token])
                 continue
             argv.append(re.sub(r"\{(?:model|prompt|timeout)\}", lambda match: replacements[match[0]], token))
@@ -345,6 +314,7 @@ class PrintCliProfile:
             "egress_hosts": list(self.egress_hosts),
             "egress_ports": list(self.egress_ports),
             **({"install": asdict(self.install)} if self.install else {}),
+            **({"native_skill_layout": self.native_skill_layout} if self.native_skill_layout else {}),
             **({"host_only": True} if self.host_only else {}),
             **({"bundle_root": self.bundle_root} if self.bundle_root else {}),
             **({"login_home_env_paths": dict(self.login_home_env_paths)} if self.login_home_env_paths else {}),
@@ -367,6 +337,8 @@ class PrintCliProfile:
 
     def profile_digest(self, *, acp: bool = False) -> str:
         """Return a stable SHA-256 digest of the canonical profile definition."""
+        if self.data_declaration is not None:
+            return self.data_declaration.sha256
         encoded = json.dumps(
             self.to_canonical_dict() | ({"acp": asdict(self.acp)} if acp and self.acp else {}),
             ensure_ascii=False,
@@ -427,6 +399,7 @@ AGY_PROFILE = PrintCliProfile(
     settings_flag="--settings",
     parser="agy_stream_json_v1",
     login_home_env="HOME",
+    terminal_login="interactive",
     exit_codes={3: "timeout"},
     quota_error_patterns=(
         QuotaErrorPattern(
@@ -522,23 +495,56 @@ def register_print_cli_profile(profile: PrintCliProfile) -> None:
     _REGISTRY[profile.id] = profile
 
 
+_host_profiles: dict[str, PrintCliProfile] = {}
+_local_profiles: ContextVar[dict[str, PrintCliProfile] | None] = ContextVar("local_cli_profiles", default=None)
+
+
+def set_host_data_profiles(profiles: tuple[PrintCliProfile, ...]) -> None:
+    global _host_profiles
+    _host_profiles = {profile.id: profile for profile in profiles}
+
+
+@contextmanager
+def use_data_profiles(profiles: PrintCliProfile | tuple[PrintCliProfile, ...] | None):
+    if isinstance(profiles, PrintCliProfile):
+        mapping = {profiles.id: profiles}
+    elif profiles:
+        mapping = {profile.id: profile for profile in profiles}
+    else:
+        mapping = {}
+    token = _local_profiles.set(mapping)
+    try:
+        yield
+    finally:
+        _local_profiles.reset(token)
+
+
+def _data_profiles() -> dict[str, PrintCliProfile]:
+    local = _local_profiles.get()
+    return _host_profiles if local is None else local
+
+
+def builtin_print_cli_profiles() -> tuple[PrintCliProfile, ...]:
+    return tuple(PRINT_CLI_PROFILES.values())
+
+
 def get_print_cli_profile(profile_id: str) -> PrintCliProfile:
     """Look up a registered print-CLI profile by id."""
     try:
-        return PRINT_CLI_PROFILES[profile_id]
+        return PRINT_CLI_PROFILES.get(profile_id) or _data_profiles()[profile_id]
     except KeyError as exc:
         raise KeyError(f"Unknown print CLI profile: {profile_id!r}") from exc
 
 
 def list_print_cli_profiles() -> tuple[PrintCliProfile, ...]:
     """Return all registered print-CLI profiles in registration order."""
-    return tuple(PRINT_CLI_PROFILES.values())
+    return (*builtin_print_cli_profiles(), *_data_profiles().values())
 
 
 def get_print_cli_profile_for_provider(provider: str) -> PrintCliProfile | None:
     """Find a unique profile for provider-wide model discovery."""
     target = provider.strip().lower()
-    candidates = [profile for profile in PRINT_CLI_PROFILES.values() if profile.provider.lower() == target]
+    candidates = [profile for profile in list_print_cli_profiles() if profile.provider.lower() == target]
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -572,6 +578,16 @@ def build_print_cli_env(
 
 def resolve_print_cli_binary(profile: PrintCliProfile, settings: Any = None) -> Path | None:
     """Resolve the machine override, managed version, or PATH binary."""
+    if profile.data_declaration is not None:
+        from .provider_data_child import execution_home
+        from .provider_data_runtime import DeclarationRejected, ensure_executable, installed_path
+
+        home = execution_home()
+        try:
+            ensure_executable(profile.data_declaration, home)
+        except DeclarationRejected:
+            return None
+        return installed_path(profile.data_declaration, home)
     drivers = getattr(settings, "drivers", None) or {}
     install = drivers.get("cli.print")
     if install is not None:
@@ -596,7 +612,7 @@ def validate_print_cli_connection(profile, connection, *, placement: str = "host
     if connection.provider != profile.provider:
         raise ValueError(f"{label} requires provider '{profile.provider}'")
     if connection.kind == "subscription":
-        if connection.config_dir is None:
+        if connection.config_dir is None and profile.data_declaration is None:
             raise ValueError(f"{label} requires config_dir (login home)")
     elif connection.kind == "api_key":
         if not profile.api_key_env:

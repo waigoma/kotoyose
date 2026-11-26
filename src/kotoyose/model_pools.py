@@ -60,9 +60,9 @@ class ModelPools:
     def __init__(self, store, *, clock=lambda: datetime.now(timezone.utc)):
         self.store, self.clock = store, clock
 
-    def _candidates(self, config, pool_alias: str, states: dict, last: dict) -> list[PoolCandidate]:
+    def _candidates(self, config, aliases: list[str], states: dict, last: dict) -> list[PoolCandidate]:
         out = []
-        for alias in config.pools[pool_alias].candidates:
+        for alias in aliases:
             name = pool_name(config, alias)
             row = states.get(name)
             provider, driver = pool_provider(config, alias)
@@ -74,13 +74,15 @@ class ModelPools:
 
     async def select(self, config, pool_alias: str, *, refuse_needs_ack: bool,
                      training_capabilities: set[str] | None = None,
-                     defer_data_policy: bool = False) -> list[str]:
+                     defer_data_policy: bool = False,
+                     candidate_aliases: list[str] | None = None) -> list[str]:
         """戦略が並べた候補を返し、先頭を選択済みとして記録する。全て不可なら理由つきで断る。"""
         pool = config.pools[pool_alias]
         context = PoolContext(pool_alias, frozenset(pool.requires), self.clock())
         strategy = get_strategy(pool.policy)
-        names = sorted({pool_name(config, alias) for alias in pool.candidates})
-        refused = {alias for alias in pool.candidates
+        candidates = pool.candidates if candidate_aliases is None else candidate_aliases
+        names = sorted({pool_name(config, alias) for alias in candidates})
+        refused = {alias for alias in candidates
                    if refuse_needs_ack and (found := alias_route_sanction(config, alias)) is not None
                    and found[1].status == "needs_ack"}
         training_refused = {}
@@ -89,7 +91,7 @@ class ModelPools:
             if "images" in pool.requires:
                 required.add("attachments")
             training_refused = {
-                alias: message for alias in pool.candidates
+                alias: message for alias in candidates
                 if (message := alias_data_policy(config, alias).refusal(
                     required | configured_capabilities(config.models[alias])
                 ))
@@ -99,7 +101,7 @@ class ModelPools:
 
         def choose(states, last):
             nonlocal seen
-            seen = [item for item in self._candidates(config, pool_alias, states, last) if item.alias not in refused]
+            seen = [item for item in self._candidates(config, candidates, states, last) if item.alias not in refused]
             return [item.alias for item in strategy(seen, context)]
 
         ordered = await self.store.select(pool_alias, names, choose)
@@ -149,14 +151,15 @@ class ModelPools:
         elif status == "succeeded":
             await self.observe_success(name)
 
-    async def view(self, config) -> dict:
+    async def view(self, config, *, candidate_aliases: dict[str, list[str]] | None = None) -> dict:
         """GET /v1/pools と /v1/models の根拠。読み取りだけで、状態は更新しない。"""
         now = self.clock()
         states = await self.store.states(sorted(pool_names_in_use(config)))
         last = await self.store.last_selected(list(config.pools))
         out = {}
         for pool_alias, pool in config.pools.items():
-            candidates = self._candidates(config, pool_alias, states, {a: last.get((pool_alias, a)) for a in pool.candidates})
+            aliases = pool.candidates if candidate_aliases is None else candidate_aliases.get(pool_alias, pool.candidates)
+            candidates = self._candidates(config, aliases, states, {a: last.get((pool_alias, a)) for a in aliases})
             context = PoolContext(pool_alias, frozenset(pool.requires), now)
             out[pool_alias] = {
                 "policy": pool.policy, "requires": list(pool.requires),
@@ -171,14 +174,15 @@ class ModelPools:
         return out
 
 
-def published_pool(config, pool_alias: str, view: dict | None) -> dict:
+def published_pool(config, pool_alias: str, view: dict | None, *, candidate_aliases: list[str] | None = None) -> dict:
     """/v1/models の pool alias。place と surface は候補が共有する値。
 
     provider と driver は現在の第一候補のもの。使える候補が無い (または状態を読めない) ときは、
     config で最初の候補のもの。sanction は最も重い候補に従う (official なら key を足さない)。
     """
     pool = config.pools[pool_alias]
-    first = (view or {}).get("first_choice") or pool.candidates[0]
+    candidates = pool.candidates if candidate_aliases is None else candidate_aliases
+    first = (view or {}).get("first_choice") or candidates[0]
     agent_cell = config.models[pool.candidates[0]].agent
     provider, driver = pool_provider(config, first)
     agent = {"place": agent_cell.place, "surface": agent_cell.surface, "provider": provider, "driver": driver,
@@ -189,7 +193,7 @@ def published_pool(config, pool_alias: str, view: dict | None) -> dict:
                           if (found := alias_route_sanction(config, alias)) is not None and found[1].status == worst
                           for reason in found[1].reasons})
         agent.update({"sanction": worst, "sanction_reasons": reasons})
-    return {"agent": agent, "candidates": list(pool.candidates), "policy": pool.policy}
+    return {"agent": agent, "candidates": list(candidates), "policy": pool.policy}
 
 
 def pool_data_policy(config, pool_alias: str) -> dict:

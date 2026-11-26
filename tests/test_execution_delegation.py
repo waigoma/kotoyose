@@ -347,6 +347,95 @@ async def test_child_without_alias_timeout_is_bounded_by_the_parent(delegated, m
     assert datetime.fromisoformat(child["deadline"]) <= deadline
 
 
+async def test_jailed_parent_records_bounded_delegation_progress(delegated, monkeypatch):
+    from kotoyose.execution_delegation import MAX_PROGRESS_NOTES, note_child_tool
+    from kotoyose.native_claude import NativeAgentResult
+    from kotoyose.runtime.base import RuntimeEvent
+
+    parent = await parent_attempt(delegated)
+    parent.update(status="dispatched", generation=0, workspace_id="ws")
+    service = object.__new__(ExecutionService)
+    service.config = delegated.settings
+    service.admission = delegated.admission
+    service._accepting = True
+    service._cancels, service._tasks, service._task_jobs = {}, {}, {}
+    service._observe_pool = AsyncMock()
+    monkeypatch.setattr("kotoyose.execution_service.AgentInteraction", lambda _: SimpleNamespace(finish=lambda *args: None))
+    events = []
+
+    async def append_event(attempt_id, kind, payload):
+        events.append((attempt_id, kind, payload))
+
+    async def admit(principal, request, snapshot, max_concurrent):
+        return {"id": "child", "status": "dispatched", "principal": principal, "workspace_id": "ws",
+                "generation": 0, "snapshot": snapshot, "request": request}, True
+
+    service.store = SimpleNamespace(
+        resource=delegated.admission.store.resource, mark_running=AsyncMock(return_value=True),
+        admit=admit, operations=AsyncMock(return_value=[]), finish=AsyncMock(return_value=None),
+        append_event=append_event,
+    )
+    usage = {"source": "reported", "cost": None, "input_tokens": 4, "output_tokens": 2}
+
+    async def execute(attempt, cancel, *, worker, interaction, runtime_entry, delegation_call=None):
+        if attempt["id"] == "child":
+            await note_child_tool(attempt["id"], RuntimeEvent(kind="text", summary="SECRET_FINDINGS"))
+            await note_child_tool(attempt["id"], RuntimeEvent(kind="tool_use", tool_name="Read", summary="README.md"))
+            for index in range(MAX_PROGRESS_NOTES + 5):
+                await note_child_tool(
+                    attempt["id"], RuntimeEvent(kind="tool_result", tool_name="Read", summary=f"body {index}"),
+                )
+            return NativeAgentResult("succeeded", "completed", b"SECRET_FINDINGS", "confirmed", usage)
+        outcome = await delegation_call(ASK_AGENT, {"alias": "researcher", "task": "Inspect shared files"}, lambda: 20)
+        assert outcome.result["text"] == "SECRET_FINDINGS"
+        return NativeAgentResult("succeeded", "completed", b"parent summary", "confirmed", usage)
+
+    service.agent_executor = SimpleNamespace(execute=execute, runtime_for=lambda _: None)
+    service._schedule(parent)
+    async with asyncio.timeout(2):
+        result = await service._tasks["parent"]
+    assert result[0] == "succeeded"
+    progress = [payload for attempt_id, kind, payload in events if attempt_id == "parent" and kind == "delegation_progress"]
+    assert progress[0]["tool_call_id"] == "delegate:child"
+    assert progress[0]["status"] == "in_progress"
+    assert progress[0]["title"] == "researcher: Inspect shared files"
+    assert progress[0]["tool_kind"] == "other"
+    notes = [item["summary"] for item in progress if item.get("summary") and item["status"] == "in_progress"]
+    assert notes[0] == "Read: README.md (in_progress)"
+    assert len(notes) == MAX_PROGRESS_NOTES
+    assert progress[-1] == {"tool_call_id": "delegate:child", "status": "completed", "summary": "completed"}
+    assert "SECRET_FINDINGS" not in json.dumps(progress)
+    assert "body " not in json.dumps(progress)
+
+
+async def test_progress_writer_forwards_child_tool_status_only(monkeypatch):
+    from kotoyose.execution_agent import _ProgressWriter
+    from kotoyose.execution_delegation import DelegationProgress, bind_child_progress, unbind_child_progress
+    from kotoyose.runtime.base import RuntimeEvent
+
+    monkeypatch.setattr("kotoyose.execution_agent.guard_enabled", lambda: False)
+    events = []
+
+    async def append_event(attempt_id, kind, payload):
+        events.append((attempt_id, kind, payload))
+
+    store = SimpleNamespace(append_event=append_event)
+    reporter = DelegationProgress(store, "parent", "child")
+    bind_child_progress("child", reporter)
+    writer = _ProgressWriter(store, "child")
+    try:
+        writer.emit(RuntimeEvent(kind="text", summary="SECRET_FINDINGS"))
+        writer.emit(RuntimeEvent(kind="tool_use", tool_name="Grep", summary="README.md"))
+        await writer.finish()
+    finally:
+        unbind_child_progress("child", reporter)
+    forwarded = [payload for attempt_id, kind, payload in events if kind == "delegation_progress"]
+    assert forwarded == [{
+        "tool_call_id": "delegate:child", "status": "in_progress", "summary": "Grep: README.md (in_progress)",
+    }]
+    assert any(kind == "provider_progress" and payload["kind"] == "text" for _, kind, payload in events)
+
+
 def test_raise_site_reports_module_and_line_without_the_message():
     from kotoyose.execution_service import _raise_site
 

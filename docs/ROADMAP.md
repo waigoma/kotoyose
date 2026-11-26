@@ -2,7 +2,7 @@
 
 ## いまの到達点
 
-2026 年 11 月時点の最新版は 1.2.0。
+2026 年 11 月時点の最新版は 1.3.0。
 
 - 1.0.0 で、Claude、Codex、Cursor、Antigravity、Grok Build の公式 CLI と SDK に対応した。alias、jail、学習の方針、コンソール、OpenAI 互換の chat API、実行 API を備える。公開は `release` ブランチからの CI で行う。
 - 1.1.0 で、agy、Cursor、Grok Build を共通の ACP driver (`cli.acp`) で動かすようにした。ホストのチャットと jail のコーディングの両方で、本物の CLI で確かめた。
@@ -12,6 +12,10 @@
 - agy 専用の古い `antigravity.agy` driver は削除した。
 - 1.2.0 で、Kotoyose を ACP のエージェントとして使えるようにした (`kotoyose-acp`。T3 Code で確認)。途中で model を切り替えても会話を引き継ぎ、effort は model ごとに使えるものだけを選べる。
 - 1.2.0 で、agent が別の alias に作業を頼めるようにした (組み込みの MCP、`list_agents` / `ask_agent`)。jail のコーディングの agent からも、同じ作業場を読み取り専用で開く alias に頼める。孫は作れない。provider ごとのサブエージェント (`agent_refs`) はこれに置き換えて削除した。
+- 1.3.0 で、child (別の機械の Linux / Windows) の provider を、コードを変えずにデータの宣言で足せるようにした。Grok Build は Linux では閉じ込め (Landlock) で、Windows では `unrestricted` の別承認で使える。
+- 1.3.0 で、同じ alias ならどの機械でも同じ skill (フォルダーごと)・prompt・MCP を使えるようにした。ホストの MCP の中継と、child の alias からホストの alias への委譲も入った。
+- 1.3.0 で、child の機械のローカル LLM (loopback だけ、既定は無効) を使えるようにした。
+- 1.3.0 で、Ubuntu 向けの child の tar.gz を用意し、Windows と Ubuntu の child を設定画面から更新できるようにした。新しい版は、ホストが既存の接続で配る。
 
 ## v1.0 のあと
 
@@ -19,7 +23,7 @@
 2. **委譲の第 2 段。** 頼んだ子の途中経過を親に流す。非同期で頼み、状態の確認と取消をする。
 3. **OpenAI 互換 endpoint を provider として扱う。** Gemini の無料枠や OpenRouter に接続する。あわせて、Claude Code から Anthropic 互換 endpoint へ、Codex から OpenAI 互換 model provider へ接続できるか確かめる。
 4. 3 の実際の追加を通じて、provider とプラグインの構成を固める。
-5. **child**: 別の機械 (例として Windows) に child を入れ、host の alias をその機械のファイルで動かす。配布の単位にもなる。
+5. **child**: 別の機械 (例として Windows) に child を入れ、host の alias をその機械のファイルで動かす。配布の単位にもなる。1.3.0 までに、Windows と Ubuntu の配布物、データの宣言による provider、alias の同一性、画面からの更新が入った。残りは、モデルと実行場所を選べる alias のテンプレートと、Windows の Grok での MCP。
 6. その後、Kotoyose の MCP サーバーを、委譲以外の用途 (別の環境での実行など) にも広げることを検討する。
 
 ## やらないと決めたこと

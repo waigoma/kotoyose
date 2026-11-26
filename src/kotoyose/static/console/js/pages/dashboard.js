@@ -1,6 +1,6 @@
 // Dashboard: what needs attention, and the latest requests. Uses only the existing admin reads.
 
-import { cliVersionLabel, providerOf, providerPanels } from "../provider-ui.js";
+import { childConnectionBadge, cliVersionLabel, providerOf, providerPanels } from "../provider-ui.js";
 import { api } from "../api.js";
 import { setNavCount } from "../nav.js";
 import { dot, el, errorLine, rowMeta, responsiveTable } from "../dom.js";
@@ -26,7 +26,7 @@ export function attentionItems(config, pools, connections = []) {
     const state = (conn && conn.state) || {};
     const auth = state.auth;
     if (auth === "expired" || auth === "logged_out" || auth === "expiring") {
-      const statusText = authLabel(state);
+      const statusText = childConnectionBadge(state)?.label || authLabel(state);
       const detailParts = [conn.provider, conn.kind];
       if (state.plan) detailParts.push(state.plan);
       if (state.last_error) detailParts.push(state.last_error);
@@ -151,8 +151,9 @@ function renderQuotaList(connections, config, setSecretNames) {
         el("div", { class: "conn-row-top" },
           el("a", { class: "row-title", href: connectionHash(conn.id) }, conn.id),
           el("span", { class: "row-status" }, dot(badge.tone), badge.label)),
-        rowMeta(state.plan, cliVersionLabel(state.cli_version))),
-      bars || el("span", { class: "small muted" }, "No quota telemetry yet"))];
+        rowMeta(state.plan, cliVersionLabel(state.cli_version), badge.detail)),
+      bars || (!state.child_state || state.child_state === "online" ? el("span", { class: "small muted" },
+        state.child_quota_shared === false ? "Quota not shared" : "No quota telemetry yet") : null))];
   }));
   return el("div", { class: "families-list quota-list" }, hiddenNote,
     providerPanels(subs, (conn) => providerOf(conn, config), config, ["connection", "connections"], (conn) => rows.get(conn)));

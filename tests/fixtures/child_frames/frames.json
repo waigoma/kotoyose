@@ -1,0 +1,303 @@
+[
+  {
+    "name": "hello",
+    "raw": "{\"stream\": 0, \"kind\": \"hello\", \"payload\": {\"version\": \"1.2.0\", \"protocol\": 2, \"adapters\": [\"claude.agent-sdk\"], \"mcp\": []}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "hello accepted",
+    "raw": "{\"stream\": 0, \"kind\": \"hello_ok\", \"payload\": {\"generation\": 1, \"heartbeat_interval\": 20}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "heartbeat",
+    "raw": "{\"stream\": 0, \"kind\": \"heartbeat\", \"payload\": {}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "reject",
+    "raw": "{\"stream\": 0, \"kind\": \"reject\", \"payload\": {\"reason\": \"child revoked\"}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "runner init",
+    "raw": "{\"stream\": 0, \"kind\": \"runner_init\", \"payload\": {\"ipc\": 1, \"version\": \"1.2.0\", \"runner_idle_seconds\": 0}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "runner ready",
+    "raw": "{\"stream\": 0, \"kind\": \"runner_ready\", \"payload\": {\"ipc\": 1, \"version\": \"1.2.0\"}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "runner shutdown",
+    "raw": "{\"stream\": 0, \"kind\": \"runner_shutdown\", \"payload\": {}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "runner stopped",
+    "raw": "{\"stream\": 0, \"kind\": \"runner_stopped\", \"payload\": {}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "runner stream done",
+    "raw": "{\"stream\": 0, \"kind\": \"runner_stream_done\", \"payload\": {\"stream\": 1}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "turn",
+    "raw": "{\"stream\": 1, \"kind\": \"turn\", \"payload\": {\"prompt\": {\"text\": \"こんにちは 🌱\"}}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "turn cancellation",
+    "raw": "{\"stream\": 1, \"kind\": \"cancel\", \"payload\": {}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "turn release",
+    "raw": "{\"stream\": 1, \"kind\": \"release\", \"payload\": {\"conversation_key\": \"t\"}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "turn delta",
+    "raw": "{\"stream\": 1, \"kind\": \"delta\", \"payload\": {\"text\": \"応答\"}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "turn event",
+    "raw": "{\"stream\": 1, \"kind\": \"event\", \"payload\": {\"kind\": \"tool\", \"payload\": {}}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "turn result",
+    "raw": "{\"stream\": 1, \"kind\": \"result\", \"payload\": {\"text\": \"結果\"}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "turn error",
+    "raw": "{\"stream\": 1, \"kind\": \"error\", \"payload\": {\"partial_result\": {\"text\": \"続\"}, \"diagnostics\": {\"why\": \"test\"}, \"retryable\": false}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "login",
+    "raw": "{\"stream\": 2, \"kind\": \"login\", \"payload\": {\"provider\": \"claude\", \"flow\": \"paste_code\", \"command\": [\"auth\"]}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "login maximum argv",
+    "raw": "{\"stream\": 2, \"kind\": \"login\", \"payload\": {\"provider\": \"claude\", \"flow\": \"paste_code\", \"command\": [\"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\"]}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "login over argv count",
+    "raw": "{\"stream\": 2, \"kind\": \"login\", \"payload\": {\"provider\": \"claude\", \"flow\": \"paste_code\", \"command\": [\"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\", \"auth\"]}}",
+    "python": false,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "login maximum arg",
+    "raw": "{\"stream\": 2, \"kind\": \"login\", \"payload\": {\"provider\": \"claude\", \"flow\": \"paste_code\", \"command\": [\"~repeat~\"]}}",
+    "python": true,
+    "rust": true,
+    "repeat": 128
+  },
+  {
+    "name": "login over arg length",
+    "raw": "{\"stream\": 2, \"kind\": \"login\", \"payload\": {\"provider\": \"claude\", \"flow\": \"paste_code\", \"command\": [\"~repeat~\"]}}",
+    "python": false,
+    "rust": true,
+    "repeat": 129
+  },
+  {
+    "name": "login maximum input",
+    "raw": "{\"stream\": 2, \"kind\": \"login_input\", \"payload\": {\"code\": \"~repeat~\"}}",
+    "python": true,
+    "rust": true,
+    "repeat": 512
+  },
+  {
+    "name": "login oversize input",
+    "raw": "{\"stream\": 2, \"kind\": \"login_input\", \"payload\": {\"code\": \"~repeat~\"}}",
+    "python": false,
+    "rust": true,
+    "repeat": 513
+  },
+  {
+    "name": "login maximum URL",
+    "raw": "{\"stream\": 2, \"kind\": \"login_output\", \"payload\": {\"url\": \"~repeat~\", \"user_code\": \"AB-CD\"}}",
+    "python": true,
+    "rust": true,
+    "repeat": 4096
+  },
+  {
+    "name": "login oversize URL",
+    "raw": "{\"stream\": 2, \"kind\": \"login_output\", \"payload\": {\"url\": \"~repeat~\"}}",
+    "python": false,
+    "rust": true,
+    "repeat": 4097
+  },
+  {
+    "name": "login cancellation",
+    "raw": "{\"stream\": 2, \"kind\": \"login_cancel\", \"payload\": {}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "login exit",
+    "raw": "{\"stream\": 2, \"kind\": \"login_exit\", \"payload\": {\"returncode\": 0, \"success\": true}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "login error",
+    "raw": "{\"stream\": 2, \"kind\": \"login_error\", \"payload\": {\"message\": \"failed\"}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "quota highest stream",
+    "raw": "{\"stream\": 1000000000, \"kind\": \"quota\", \"payload\": {\"provider\": \"claude\", \"command\": [\"auth\"]}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "quota cancellation",
+    "raw": "{\"stream\": 3, \"kind\": \"quota_cancel\", \"payload\": {}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "quota error",
+    "raw": "{\"stream\": 3, \"kind\": \"quota_error\", \"payload\": {\"message\": \"failed\"}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "quota 32 windows",
+    "raw": "{\"stream\": 3, \"kind\": \"quota_result\", \"payload\": {\"auth\": \"ok\", \"quota\": [{\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}]}}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "quota 33 windows",
+    "raw": "{\"stream\": 3, \"kind\": \"quota_result\", \"payload\": {\"auth\": \"ok\", \"quota\": [{\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}, {\"window\": \"5h\", \"used_percent\": 25}]}}",
+    "python": false,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "quota JSON size 8192",
+    "raw": "{\"stream\": 3, \"kind\": \"quota_result\", \"payload\": {\"auth\": \"ok\", \"quota\": [{\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\", \"source\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\", \"source\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}]}}",
+    "python": true,
+    "rust": true,
+    "repeat": 200
+  },
+  {
+    "name": "quota JSON size 8193",
+    "raw": "{\"stream\": 3, \"kind\": \"quota_result\", \"payload\": {\"auth\": \"ok\", \"quota\": [{\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\", \"source\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\", \"source\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}, {\"window\": \"5h\", \"used_percent\": 1, \"label\": \"~repeat~\"}]}}",
+    "python": false,
+    "rust": true,
+    "repeat": 200
+  },
+  {
+    "name": "missing payload",
+    "raw": "{\"stream\":0,\"kind\":\"heartbeat\"}",
+    "python": true,
+    "rust": true,
+    "repeat": 0
+  },
+  {
+    "name": "wrong payload type",
+    "raw": "{\"stream\":1,\"kind\":\"turn\",\"payload\":null}",
+    "python": false,
+    "rust": false,
+    "repeat": 0
+  },
+  {
+    "name": "bool stream",
+    "raw": "{\"stream\":true,\"kind\":\"turn\"}",
+    "python": false,
+    "rust": false,
+    "repeat": 0
+  },
+  {
+    "name": "negative stream",
+    "raw": "{\"stream\":-1,\"kind\":\"turn\"}",
+    "python": false,
+    "rust": false,
+    "repeat": 0
+  },
+  {
+    "name": "float stream",
+    "raw": "{\"stream\":1.0,\"kind\":\"turn\"}",
+    "python": false,
+    "rust": false,
+    "repeat": 0
+  },
+  {
+    "name": "empty kind",
+    "raw": "{\"stream\":1,\"kind\":\"\"}",
+    "python": false,
+    "rust": false,
+    "repeat": 0
+  },
+  {
+    "name": "oversize stream",
+    "raw": "{\"stream\":1000000001,\"kind\":\"turn\"}",
+    "python": true,
+    "rust": false,
+    "repeat": 0
+  },
+  {
+    "name": "invalid JSON",
+    "raw": "{\"stream\":1,\"kind\":\"turn\"",
+    "python": false,
+    "rust": false,
+    "repeat": 0
+  }
+]

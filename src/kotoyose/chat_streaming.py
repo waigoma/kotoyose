@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 import uuid
@@ -11,7 +12,10 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
 
 import structlog
+from anyio import CancelScope
 
+from . import delegation
+from .chat_approvals import TOOL_KIND_BY_NAME, PermissionRequest, TurnApprovals, bind_turn_approvals
 from .chat_completion import CompletionPorts, TurnContext, finalize_chat_turn, record_turn_failure
 from .chat_usage import build_response_usage
 from .config import get_config
@@ -44,6 +48,8 @@ class StreamContext:
     prompt: RuntimePrompt
     inspect_output: bool = False
     include_events: bool = False
+    approvals: TurnApprovals | None = None
+    deliver_approvals: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,15 +91,69 @@ def _interrupted_tail(chunk_id: str, created: int, model: str) -> list[str]:
     return [f"data: {error_chunk.model_dump_json()}\n\n", "data: [DONE]\n\n"]
 
 
-# ACP の ToolKind へ寄せる、SDK runtime の道具名。載っていない名前は other。
-_TOOL_KIND_BY_NAME = {
-    "read": "read", "edit": "edit", "write": "edit", "multiedit": "edit", "notebookedit": "edit",
-    "apply_patch": "edit", "bash": "execute", "shell": "execute", "grep": "search", "glob": "search",
-    "ls": "search", "webfetch": "fetch", "websearch": "fetch",
-}
 _ACP_TOOL_KINDS = {"read", "edit", "delete", "move", "search", "execute", "think", "fetch"}
 _ACP_TOOL_STATUS = {"pending", "in_progress", "completed", "failed"}
 ACTIVITY_KINDS = frozenset({"tool_call", "tool_call_update", "tool_use", "tool_result"})
+
+
+def _event_sse(data: dict) -> str:
+    return f"data: {json.dumps(data)}\n\n"
+
+
+async def _iter_parent_progress(runtime_iterator, context: StreamContext):
+    """親 runtime を 1 件ずつ取り、待ちのあいだに届いた子の進捗を先に返す。
+
+    先読みしない。資格情報を検知したあとに runtime を引き続けると、閉じる前に
+    次の本文まで読んでしまう。iterator を閉じるのはここだけにする。
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+    key = delegation.parent_stream_key(context.turn.client) if context.include_events else None
+    delegation.register_parent_stream(key, queue)
+    if context.approvals is not None and context.deliver_approvals:
+        context.approvals.queue = queue
+    runtime = runtime_iterator.__aiter__()
+    pending: asyncio.Task | None = None
+    progress_task: asyncio.Task | None = None
+
+    async def next_item():
+        with bind_turn_approvals(context.approvals):
+            return await anext(runtime)
+
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.create_task(next_item())
+            progress_task = asyncio.create_task(queue.get())
+            done, _ = await asyncio.wait(
+                {pending, progress_task}, return_when=asyncio.FIRST_COMPLETED,
+            )
+            if progress_task in done and pending not in done:
+                yield progress_task.result()
+                continue
+            if progress_task not in done:
+                progress_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await progress_task
+            else:
+                queue.put_nowait(progress_task.result())
+            item_task, pending = pending, None
+            try:
+                yield item_task.result()
+            except StopAsyncIteration:
+                break
+    finally:
+        if context.approvals is not None:
+            context.approvals.close()
+        delegation.unregister_parent_stream(key, queue)
+        if progress_task is not None and not progress_task.done():
+            progress_task.cancel()
+        with CancelScope(shield=True):
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            close = getattr(runtime_iterator, "aclose", None)
+            if close is not None:
+                await close()
 
 
 def _activity_chunk(event: RuntimeEvent, inspect_output: bool) -> str | None:
@@ -110,7 +170,7 @@ def _activity_chunk(event: RuntimeEvent, inspect_output: bool) -> str | None:
         # Claude / Codex / Cursor SDK: tool_use が開始、tool_result が終了。summary は引数か結果の要約。
         tool_id = payload.get("tool_use_id")
         name = event.tool_name or "tool"
-        tool_kind = _TOOL_KIND_BY_NAME.get(name.lower(), "other")
+        tool_kind = TOOL_KIND_BY_NAME.get(name.lower(), "other")
         if event.kind == "tool_use":
             kind, status = "tool_call", "in_progress"
             title = f"{name}: {event.summary}" if event.summary else name
@@ -121,7 +181,8 @@ def _activity_chunk(event: RuntimeEvent, inspect_output: bool) -> str | None:
         return None
     if title is not None:
         title = (redact_event(title) if inspect_output else title)[:200]
-    fields = {"tool_call_id": tool_id, "title": title, "tool_kind": tool_kind, "status": status}
+    fields = {"tool_call_id": tool_id, "title": title, "tool_kind": tool_kind, "status": status,
+              "summary": payload.get("permission_denial") if event.kind == "tool_call_update" else None}
     data = {"object": "kotoyose.event", "kind": kind}
     data.update({key: value for key, value in fields.items() if value is not None})
     return f"data: {json.dumps(data)}\n\n"
@@ -210,8 +271,21 @@ def stream_chat_response(
         final_text: str | None = None
         runtime_error_emitted = False
         runtime_iterator = ports.stream_runtime(context.turn.client, context.prompt)
+        items = _iter_parent_progress(runtime_iterator, context)
         try:
-            async for item in runtime_iterator:
+            async for item in items:
+                if isinstance(item, BaseException):
+                    raise item
+                if isinstance(item, PermissionRequest):
+                    yield _event_sse(item.wire())
+                    continue
+                if isinstance(item, delegation.ParentStreamEvent):
+                    event = _event_sse(item.data)
+                    if context.inspect_output and pending:
+                        held_events.append((released_chars + len(pending), event))
+                    else:
+                        yield event
+                    continue
                 if isinstance(item, tuple):
                     final_text, usage, runtime_session_id = item
                     continue
@@ -275,12 +349,9 @@ def stream_chat_response(
                     yield piece
             return
         finally:
-            try:
-                close = getattr(runtime_iterator, "aclose", None)
-                if close is not None:
-                    await close()
-            finally:
-                event_queue.put_nowait(None)
+            event_queue.put_nowait(None)
+            with CancelScope(shield=True):
+                await items.aclose()
 
         final = ChatCompletionChunk(
             id=chunk_id,
@@ -333,7 +404,10 @@ def stream_chat_response(
                 yield piece
             raise
         finally:
-            await iterator.aclose()
+            if context.approvals is not None:
+                context.approvals.close()
+            with CancelScope(shield=True):
+                await iterator.aclose()
             if not state.terminal:
                 _record_failed_detached(
                     ports,

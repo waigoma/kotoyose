@@ -9,23 +9,24 @@ import contextlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import errno
-import fcntl
 import json
 import os
 from pathlib import Path
-import pty
 import re
 import shutil
 import signal
 import struct
 import tempfile
-import termios
 from typing import Any, Literal
 from urllib.parse import urlsplit
 import uuid
 
 import structlog
 
+from .child_pinned import PinnedCommandRejected, login_spec
+from .child_protocol import LOGIN_CAP_SECONDS
+from .child_registry import child_on_name
+from .child_relay import ChildStream, ChildStreamError
 from .config import Connection, HarnessConfig, get_config
 from .connection_state_store import ConnectionStateStore, get_connection_state_store
 from .connections_probe import probe_connection
@@ -157,7 +158,7 @@ class PtyLoginSession:
     connection_id: str
     url: str
     expires_at: datetime
-    cli_binary: Path
+    cli_binary: Path | None
     login_home: Path | None = field(default=None, kw_only=True)
     profile_id: str | None = field(default=None, kw_only=True)
     temp_cwd: Path | None = field(default=None, kw_only=True)
@@ -170,6 +171,9 @@ class PtyLoginSession:
     error: str | None = field(default=None, kw_only=True)
     result: dict[str, Any] | None = field(default=None, kw_only=True)
     _max_output_buffer_chars: int = field(default=_MAX_OUTPUT_BUFFER_CHARS, repr=False, kw_only=True)
+    _child: ChildStream | None = field(default=None, repr=False, kw_only=True)
+    _child_result: asyncio.Task[bool] | None = field(default=None, repr=False, kw_only=True)
+    _child_error: str | None = field(default=None, repr=False, kw_only=True)
     _process: asyncio.subprocess.Process | None = field(default=None, repr=False, kw_only=True)
     _master_fd: int | None = field(default=None, repr=False, kw_only=True)
     _loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False, kw_only=True)
@@ -264,6 +268,16 @@ async def cleanup_session_resources(
                 await session._expiry_task
         session._expiry_task = None
 
+    if session._child is not None:
+        await session._child.close("login_cancel")
+        if session._child_result is not None:
+            session._child_result.cancel()
+            await asyncio.gather(session._child_result, return_exceptions=True)
+        session._child = None
+        session._child_result = None
+        session.url = ""
+        session.user_code = None
+
     proc = session._process
     session._process = None
     await terminate_pty_process(proc)
@@ -340,6 +354,11 @@ async def spawn_pty_process(
     cwd: Path,
 ) -> tuple[asyncio.subprocess.Process, int]:
     """Start a CLI command inside a fresh PTY (never a shell)."""
+    # PTY はログインのときだけ読む。child や kotoyose-acp の import では読まない。
+    import fcntl
+    import pty
+    import termios
+
     master_fd, slave_fd = pty.openpty()
     try:
         with contextlib.suppress(OSError):
@@ -568,12 +587,20 @@ async def watch_expiry(
 def _validate_print_cli_connection(
     cfg: HarnessConfig,
     conn_id: str,
-) -> tuple[Connection, PrintCliProfile, PrintCliLoginSpec, LoginFlow]:
+) -> tuple[Connection, PrintCliProfile | None, PrintCliLoginSpec, LoginFlow]:
     conn = cfg.connections.get(conn_id)
     if conn is None:
         raise KeyError(conn_id)
     if conn.kind != "subscription":
         raise CliLoginNotSupportedError("CLI login is only supported for subscription connections")
+    if child_on_name(conn.on) is not None:
+        try:
+            spec, kind = login_spec(conn.provider, conn.profile)
+        except PinnedCommandRejected as exc:
+            raise CliLoginNotSupportedError(str(exc)) from exc
+        profile = get_print_cli_profile(conn.profile) if conn.profile is not None else None
+        return conn, profile, spec, get_login_flow(kind)
+
     profile = cfg.print_cli_profile_for_connection(conn_id)
     if profile is None:
         raise CliLoginNotSupportedError(
@@ -670,6 +697,7 @@ async def _check_cli_session_state(
         profile = get_print_cli_profile(session.profile_id) if session.profile_id is not None else None
         is_timeout = (
             (profile is not None and profile.classify_exit_code(returncode) == "timeout")
+            or session._child_error == "login timed out"
             or "timed out" in lower_out
             or "timeout" in lower_out
             or "expired" in lower_out
@@ -682,7 +710,7 @@ async def _check_cli_session_state(
             label = profile.provider if profile is not None else "CLI"
             session.error = _public_login_error(
                 profile.login if profile is not None else None, raw_output,
-                fallback=f"{label} CLI exited with status {returncode}",
+                fallback=session._child_error or f"{label} CLI exited with status {returncode}",
             )
         await cleanup_session_resources(
             session,
@@ -714,7 +742,7 @@ async def _spawn_login_command(
         env.update(profile.login_env)
     env.setdefault("TERM", "xterm-256color")
     env["BROWSER"] = profile.fixed_env.get("BROWSER", "true")
-    assert session.temp_cwd is not None
+    assert session.temp_cwd is not None and session.cli_binary is not None
     try:
         proc, master_fd = await spawn_pty_process(
             session.cli_binary, command, env=env, cwd=session.temp_cwd,
@@ -750,8 +778,51 @@ async def _wait_for_login_command(session: PtyLoginSession) -> int:
     return returncode
 
 
+async def _receive_child_login_result(session: PtyLoginSession) -> bool:
+    assert session._child is not None and session._eof_event is not None
+    try:
+        response = await session._child.receive("login_exit")
+        if response.payload["success"]:
+            return True
+        session._child_error = f"Child CLI did not confirm sign-in (status {response.payload['returncode']})"
+    except ChildStreamError as exc:
+        session._child_error = str(exc)
+    finally:
+        session._eof_event.set()
+    return False
+
+
+async def _start_child_login(
+    session: PtyLoginSession, child: str, conn: Connection, spec: PrintCliLoginSpec, timeout: float,
+) -> str:
+    try:
+        session._child = ChildStream(child)
+        async with asyncio.timeout(timeout):
+            await session._child.send("login", {
+                "provider": conn.provider, "profile": conn.profile, "flow": session.flow,
+                "command": list(spec.command),
+            })
+            response = await session._child.receive("login_output")
+    except ChildStreamError as exc:
+        raise CliLoginStartupError(str(exc)) from exc
+    except TimeoutError as exc:
+        raise CliLoginStartupError("Timed out waiting for child CLI sign-in URL") from exc
+
+    url = response.payload["url"]
+    if _extract_official_url(url, spec.url_pattern, spec.url_hosts, require_terminated=False) != url:
+        raise CliLoginStartupError("CLI login requires an approved sign-in URL")
+    if session.flow == "device_code":
+        code = response.payload.get("user_code")
+        if not code or re.search(spec.user_code_pattern, code) is None:
+            raise CliLoginStartupError("Invalid child device code")
+        session.user_code = code
+    session._eof_event = asyncio.Event()
+    session._child_result = asyncio.create_task(_receive_child_login_result(session))
+    return url
+
+
 async def _finish_browser_login(
-    session: PtyLoginSession, profile: PrintCliProfile, spec: PrintCliLoginSpec, flow: LoginFlow,
+    session: PtyLoginSession, profile: PrintCliProfile | None, spec: PrintCliLoginSpec, flow: LoginFlow,
     *, cfg: HarnessConfig | None = None, execution_service: Any = None,
 ) -> None:
     state: Literal["completed", "failed", "expired"] = "failed"
@@ -759,16 +830,25 @@ async def _finish_browser_login(
     try:
         remaining = max(0.0, (session.expires_at - datetime.now(timezone.utc)).total_seconds())
         async with asyncio.timeout(remaining):
-            returncode = await _wait_for_login_command(session)
-            if profile.classify_exit_code(returncode) == "timeout":
-                raise TimeoutError
-            session.wipe_buffers()
-            await _spawn_login_command(session, profile, spec.status_command)
-            status = await _wait_for_login_command(session)
-            if flow.succeeded(spec, status, session._output_buf):
-                state = "completed"
+            if session._child_result is not None:
+                if await asyncio.shield(session._child_result):
+                    state = "completed"
+                elif session._child_error == "login timed out":
+                    raise TimeoutError
+                else:
+                    error = session._child_error
             else:
-                error = f"{profile.id} CLI did not confirm sign-in"
+                assert profile is not None
+                returncode = await _wait_for_login_command(session)
+                if profile.classify_exit_code(returncode) == "timeout":
+                    raise TimeoutError
+                session.wipe_buffers()
+                await _spawn_login_command(session, profile, spec.status_command)
+                status = await _wait_for_login_command(session)
+                if flow.succeeded(spec, status, session._output_buf):
+                    state = "completed"
+                else:
+                    error = f"{profile.id} CLI did not confirm sign-in"
     except TimeoutError:
         state = "expired"
         error = "Login session expired"
@@ -805,16 +885,18 @@ async def start_cli_login_session(
     ttl_seconds: float | None = None,
     start_timeout: float | None = None,
 ) -> dict[str, Any]:
-    """Start an interactive print-CLI PTY login session for a connection with `config_dir`."""
+    """Start a PTY login for a local print CLI or a child subscription connection."""
     active_cfg = cfg or get_config()
     conn, profile, spec, flow = _validate_print_cli_connection(active_cfg, conn_id)
-    assert conn.config_dir is not None
-
-    cli_binary = resolve_print_cli_binary(profile, getattr(execution_service, "config", None))
-    if cli_binary is None:
-        raise CliLoginNotSupportedError(
-            f"{profile.binary} CLI binary is unavailable; set drivers.cli.print.profile_binaries.{profile.id}"
-        )
+    child = child_on_name(conn.on)
+    cli_binary = None
+    if child is None:
+        assert profile is not None and conn.config_dir is not None
+        cli_binary = resolve_print_cli_binary(profile, getattr(execution_service, "config", None))
+        if cli_binary is None:
+            raise CliLoginNotSupportedError(
+                f"{profile.binary} CLI binary is unavailable; set drivers.cli.print.profile_binaries.{profile.id}"
+            )
 
     active_id = _ACTIVE_BY_CONNECTION.get(conn_id)
     if active_id is not None:
@@ -828,6 +910,8 @@ async def start_cli_login_session(
             raise CliLoginConflictError(f"CLI login already in progress for connection '{conn_id}'")
 
     effective_ttl = float(spec.cli_timeout_seconds) if ttl_seconds is None else ttl_seconds
+    if child is not None:
+        effective_ttl = min(effective_ttl, LOGIN_CAP_SECONDS)
     effective_start_timeout = DEFAULT_START_TIMEOUT_SECONDS if start_timeout is None else start_timeout
 
     session = PtyLoginSession(
@@ -836,25 +920,28 @@ async def start_cli_login_session(
         url="",
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=effective_ttl),
         cli_binary=cli_binary,
-        login_home=conn.config_dir,
-        profile_id=profile.id,
+        login_home=conn.config_dir if child is None else None,
+        profile_id=profile.id if profile is not None else None,
         flow=flow.kind,
         state="waiting_for_code" if flow.kind == "paste_code" else "waiting_for_browser",
         _max_output_buffer_chars=_CLI_OUTPUT_BUFFER_CHARS,
     )
 
-    try:
-        session._release_home = acquire_login_home(conn.config_dir)
-    except PrintCliHomeBusyError as exc:
-        raise CliLoginConflictError(str(exc)) from exc
-
     _ACTIVE_BY_CONNECTION[conn_id] = session.session_id
     try:
-        ensure_login_home_0700(conn.config_dir)
-        session.temp_cwd = Path(tempfile.mkdtemp(prefix=f"kotoyose-{profile.id}-pty-cwd-"))
-        if flow.kind != "paste_code":
-            effective_start_timeout = min(effective_start_timeout, effective_ttl)
-        session.url = await flow.start(session, profile, spec, effective_start_timeout)
+        if child is not None:
+            session.url = await _start_child_login(session, child, conn, spec, min(effective_start_timeout, effective_ttl))
+        else:
+            assert conn.config_dir is not None and profile is not None
+            try:
+                session._release_home = acquire_login_home(conn.config_dir)
+            except PrintCliHomeBusyError as exc:
+                raise CliLoginConflictError(str(exc)) from exc
+            ensure_login_home_0700(conn.config_dir)
+            session.temp_cwd = Path(tempfile.mkdtemp(prefix=f"kotoyose-{profile.id}-pty-cwd-"))
+            if flow.kind != "paste_code":
+                effective_start_timeout = min(effective_start_timeout, effective_ttl)
+            session.url = await flow.start(session, profile, spec, effective_start_timeout)
         if _extract_official_url(session.url, spec.url_pattern, spec.url_hosts, require_terminated=False) != session.url:
             raise CliLoginStartupError("CLI login requires an approved sign-in URL")
         # Wipe banner/OAuth URL (state/code_challenge) immediately after extracting URL.
@@ -899,7 +986,8 @@ async def submit_cli_login_code(
     active_cfg = cfg or get_config()
     _conn, profile, spec, flow = _validate_print_cli_connection(active_cfg, conn_id)
 
-    if session.profile_id != profile.id:
+    label = profile.id if profile is not None else _conn.provider
+    if session.profile_id != (profile.id if profile is not None else None):
         raise CliLoginConflictError("Connection profile changed during CLI login")
 
     async with session._lock:
@@ -912,26 +1000,35 @@ async def submit_cli_login_code(
         session.wipe_buffers()
 
         try:
-            if session._process is None or session._master_fd is None:
-                session.error = f"{profile.id} CLI process is no longer running"
+            effective_timeout = DEFAULT_SUBMIT_TIMEOUT_SECONDS if submit_timeout is None else submit_timeout
+            if session._child is not None:
+                async with asyncio.timeout(effective_timeout):
+                    await session._child.send("login_input", {"code": validated_code})
+                    validated_code = ""
+                    if not await asyncio.shield(session._child_result):
+                        session.error = session._child_error or "Child CLI did not confirm sign-in"
+            elif session._process is None or session._master_fd is None:
+                session.error = f"{label} CLI process is no longer running"
             else:
-                effective_timeout = DEFAULT_SUBMIT_TIMEOUT_SECONDS if submit_timeout is None else submit_timeout
                 async with asyncio.timeout(effective_timeout):
                     await write_pty_line(session, validated_code)
                     validated_code = ""
                     returncode = await _wait_for_login_command(session)
                 if not flow.succeeded(spec, returncode, session._output_buf):
                     session.error = _public_login_error(
-                        spec, session._output_buf, fallback=f"{profile.id} CLI exited with status {returncode}",
+                        spec, session._output_buf, fallback=f"{label} CLI exited with status {returncode}",
                     )
         except TimeoutError:
-            session.error = f"{profile.id} CLI timed out waiting for authentication"
+            session.error = f"{label} CLI timed out waiting for authentication"
+        except ChildStreamError as exc:
+            session.error = str(exc)
         except OSError as exc:
-            session.error = f"Failed to send code to {profile.id} CLI: {type(exc).__name__}"
+            session.error = f"Failed to send code to {label} CLI: {type(exc).__name__}"
         except asyncio.CancelledError:
-            session.state = "cancelled"
-            session.error = "Login cancelled"
-            raise
+            if session.state != "cancelled":
+                session.state = "cancelled"
+                session.error = "Login cancelled"
+                raise
         finally:
             await cleanup_session_resources(session)
 
@@ -980,7 +1077,12 @@ async def _cancel_cli_session(session: PtyLoginSession) -> None:
     session.error = "Login cancelled"
     if previous == "submitting":
         # The submit handler owns cleanup and the lease while it waits for exit.
-        await terminate_pty_process(session._process)
+        if session._child is not None:
+            if session._child_result is not None:
+                session._child_result.cancel()
+            await session._child.close("login_cancel")
+        else:
+            await terminate_pty_process(session._process)
         async with session._lock:
             pass
     elif previous == "waiting_for_browser":
@@ -990,7 +1092,7 @@ async def _cancel_cli_session(session: PtyLoginSession) -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await task
         # A task cancelled before its first turn never enters its finally block.
-        if session._release_home is not None:
+        if session._release_home is not None or session._child is not None:
             await cleanup_session_resources(session)
     else:
         await cleanup_session_resources(session)
