@@ -91,35 +91,67 @@ SectionEnd
     StrCpy $InstallerMutex $0
 !macroend
 
+!macro CheckChildLock
+    ; Match lock_state() in stop_child.c. Return the state in $0 and the Win32 error in $1.
+    ; GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, OPEN_EXISTING
+    System::Call 'kernel32::CreateFileW(w "$LOCALAPPDATA\kotoyose-child\instance.lock", i 0xC0000000, i 7, p 0, i 3, i 0, p 0) p .r2 ?e'
+    Pop $1
+    ${If} $2 == -1 ; INVALID_HANDLE_VALUE
+        ${If} $1 == 2 ; ERROR_FILE_NOT_FOUND
+        ${OrIf} $1 == 3 ; ERROR_PATH_NOT_FOUND
+            StrCpy $0 "free"
+        ${Else}
+            StrCpy $0 "unknown"
+        ${EndIf}
+    ${Else}
+        System::Call 'kernel32::LockFile(p r2, i 0, i 0, i 1, i 0) i .r0 ?e'
+        Pop $1
+        ${If} $0 != 0
+            System::Call 'kernel32::UnlockFile(p r2, i 0, i 0, i 1, i 0)'
+            StrCpy $0 "free"
+        ${ElseIf} $1 == 33 ; ERROR_LOCK_VIOLATION
+            StrCpy $0 "held"
+        ${Else}
+            StrCpy $0 "unknown"
+        ${EndIf}
+        System::Call 'kernel32::CloseHandle(p r2)'
+    ${EndIf}
+!macroend
+
 !macro StopChild PREFIX
 Function ${PREFIX}StopChild
-    InitPluginsDir
-    IfFileExists "$PLUGINSDIR\stop-child.exe" +2
-    File /oname=$PLUGINSDIR\stop-child.exe "${PAYLOAD}/stop-child.exe"
-    nsExec::Exec /TIMEOUT=5000 '"$PLUGINSDIR\stop-child.exe" check "$LOCALAPPDATA\kotoyose-child"'
-    Pop $0
-    ${If} $0 == 0
+    !insertmacro CheckChildLock
+    ${If} $0 == "free"
         Return
     ${EndIf}
-    ${If} $0 != 1
-        Goto lock_error
+    ${If} $0 == "unknown"
+        MessageBox MB_ICONSTOP|MB_OK "Setup could not check whether Kotoyose Child is running (Win32 error $1). Check access to the child state folder, then try again." /SD IDOK
+        SetErrorLevel 1
+        Quit
     ${EndIf}
     MessageBox MB_ICONQUESTION|MB_YESNO|MB_DEFBUTTON2 "Kotoyose Child is running. Close it and continue?" /SD IDYES IDYES close_child
     SetErrorLevel 1
     Quit
 
 close_child:
-    nsExec::Exec /TIMEOUT=25000 '"$PLUGINSDIR\stop-child.exe" close "$LOCALAPPDATA\kotoyose-child" "$ShutdownRoot\."'
+    InitPluginsDir
+    ${IfNot} ${FileExists} "$PLUGINSDIR\stop-child.exe"
+        ; If extraction is blocked, nsExec reports the start failure.
+        SetOverwrite try
+        File /oname=$PLUGINSDIR\stop-child.exe "${PAYLOAD}/stop-child.exe"
+        SetOverwrite lastused
+    ${EndIf}
+    nsExec::Exec /TIMEOUT=60000 '"$PLUGINSDIR\stop-child.exe" close "$LOCALAPPDATA\kotoyose-child" "$ShutdownRoot\."'
     Pop $0
     ${If} $0 == 0
         Return
+    ${ElseIf} $0 == "error"
+        MessageBox MB_ICONSTOP|MB_OK "Setup could not start the close helper (nsExec $0). Exit Kotoyose Child from the system tray or allow stop-child.exe, then try again." /SD IDOK
+    ${ElseIf} $0 == "timeout"
+        MessageBox MB_ICONSTOP|MB_OK "The close helper timed out (nsExec $0). Exit Kotoyose Child from the system tray, then try again." /SD IDOK
+    ${Else}
+        MessageBox MB_ICONSTOP|MB_OK "Setup could not close Kotoyose Child (helper exit code $0). Exit it from the system tray, then try again." /SD IDOK
     ${EndIf}
-    MessageBox MB_ICONSTOP|MB_OK "Setup could not close Kotoyose Child. Exit it from the system tray, then try again." /SD IDOK
-    SetErrorLevel 1
-    Quit
-
-lock_error:
-    MessageBox MB_ICONSTOP|MB_OK "Setup could not check whether Kotoyose Child is running. Check access to the child state folder, then try again." /SD IDOK
     SetErrorLevel 1
     Quit
 FunctionEnd

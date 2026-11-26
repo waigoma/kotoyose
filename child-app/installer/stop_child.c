@@ -209,11 +209,9 @@ static int close_child(const wchar_t *lock, const wchar_t *home, const wchar_t *
 
 int wmain(int argc, wchar_t **argv)
 {
-    if (argc < 3) return LOCK_UNKNOWN;
+    if (argc != 4 || wcscmp(argv[1], L"close") != 0) return LOCK_UNKNOWN;
     Path lock;
     int size = swprintf(lock, PATH_CAPACITY, L"%ls\\instance.lock", argv[2]);
     if (size <= 0 || size >= PATH_CAPACITY) return LOCK_UNKNOWN;
-    if (argc == 3 && wcscmp(argv[1], L"check") == 0) return lock_state(lock);
-    if (argc == 4 && wcscmp(argv[1], L"close") == 0) return close_child(lock, argv[2], argv[3]);
-    return LOCK_UNKNOWN;
+    return close_child(lock, argv[2], argv[3]);
 }

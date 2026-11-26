@@ -192,7 +192,7 @@ class AgentExecutionHarness:
 
     def allow(self, create_or_snapshot, **overrides):
         body = create_or_snapshot.get('execution', create_or_snapshot)
-        now = datetime.now(timezone.utc)
+        now = self.agent_executions.clock()
         # 期限の上限は 3 * run_hard_ms + grace_ms (LEASE_WALL_FACTOR)。既定の 50 秒は短い run に対して上限を超える。
         time = body.get('time') or {'run_hard_ms': 10000, 'grace_ms': 1000}
         lifetime_ms = min(50_000, 3 * time['run_hard_ms'] + time['grace_ms'] - 1000)

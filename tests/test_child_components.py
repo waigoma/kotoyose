@@ -107,11 +107,31 @@ def test_installer_and_uninstaller_confirm_before_closing_the_child():
         assert f'!insertmacro StopChild "{prefix}"' in installer
     flow = installer.split("Function ${PREFIX}StopChild", 1)[1].split("FunctionEnd", 1)[0]
     check, close = flow.split("close_child:\n", 1)
-    assert check.index('" check "') < check.index("${If} $0 == 0\n        Return")
+    assert check.index("!insertmacro CheckChildLock") < check.index('${If} $0 == "free"\n        Return')
     prompt, decline = check.split('"Kotoyose Child is running. Close it and continue?"', 1)
     assert "MB_YESNO|MB_DEFBUTTON2" in prompt
     assert "/SD IDYES IDYES close_child\n    SetErrorLevel 1\n    Quit" in decline
-    assert close.index('" close "') < close.index("${If} $0 == 0\n        Return") < close.index("Quit")
+    assert close.index('" close ') < close.index("${If} $0 == 0\n        Return") < close.index("Quit")
+
+
+def test_installer_checks_the_lock_without_starting_the_helper():
+    installer = (ROOT / "child-app/installer/setup.nsi").read_text(encoding="utf-8")
+    native = installer.split("!macro CheckChildLock\n", 1)[1].split("!macroend", 1)[0]
+    flow = installer.split("Function ${PREFIX}StopChild", 1)[1].split("FunctionEnd", 1)[0]
+    check, close = flow.split("close_child:\n", 1)
+    assert "kernel32::CreateFileW" in native
+    assert "kernel32::LockFile" in native
+    assert "kernel32::CloseHandle" in native
+    assert "stop-child.exe" not in native + check
+    assert "nsExec::" not in native + check
+    assert "nsExec::Exec /TIMEOUT=60000" in close
+
+    for branch, codes in ((check, ["Win32 error $1"]), (close, ["nsExec $0", "nsExec $0", "helper exit code $0"])):
+        dialogs = [line for line in branch.splitlines() if "MessageBox MB_ICONSTOP" in line]
+        assert len(dialogs) == len(codes)
+        for dialog, code in zip(dialogs, codes, strict=True):
+            assert code in dialog
+            assert dialog.endswith("/SD IDOK")
 
 
 def test_installer_names_every_provider_repair_marker():

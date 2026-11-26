@@ -32,6 +32,14 @@ async def wait_for_provider(hub):
     return raw, key, snapshot
 
 
+@pytest.mark.asyncio
+async def test_initial_activation_starts_with_frozen_clock_after_setup_delay(provider_agent_execution_harness):
+    hub = provider_agent_execution_harness
+    # Model a slow setup without sleeping or advancing the Hub clock during pickup.
+    hub.clock.advance(seconds=-5)
+    await wait_for_provider(hub)
+
+
 def test_known_reset_waits_past_reset():
     now = datetime.now(timezone.utc).replace(microsecond=0)
     limit = {'detected_at': agent_utc(now), 'reset_at': agent_utc(now + timedelta(seconds=20))}

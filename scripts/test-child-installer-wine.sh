@@ -30,6 +30,15 @@ export WINEDLLOVERRIDES='mscoree,mshtml='
 export HOME="$scratch/home" XDG_CONFIG_HOME="$scratch/home/xdg-config"
 unset KOTOYOSE_CHILD_HOME KOTOYOSE_CHILD_PYTHON
 mkdir -p "$HOME"
+# Setup opens Settings at the end, and Wine hands URLs to the host's xdg-open. Record them instead,
+# so the smoke test never launches a browser or another app on the build machine.
+mkdir -p "$scratch/host-bin"
+cat > "$scratch/host-bin/xdg-open" <<'OPEN'
+#!/bin/sh
+printf '%s\n' "$*" >> "${0%/*}/opened-urls"
+OPEN
+chmod +x "$scratch/host-bin/xdg-open"
+export PATH="$scratch/host-bin:$PATH" BROWSER="$scratch/host-bin/xdg-open"
 cleanup() {
     wineserver -k || true
     wineserver -w || true
