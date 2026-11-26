@@ -2,7 +2,7 @@
 
 ## いまの到達点
 
-2026 年 11 月時点の最新版は 1.3.0。
+2026 年 11 月時点の最新版は 1.3.1。
 
 - 1.0.0 で、Claude、Codex、Cursor、Antigravity、Grok Build の公式 CLI と SDK に対応した。alias、jail、学習の方針、コンソール、OpenAI 互換の chat API、実行 API を備える。公開は `release` ブランチからの CI で行う。
 - 1.1.0 で、agy、Cursor、Grok Build を共通の ACP driver (`cli.acp`) で動かすようにした。ホストのチャットと jail のコーディングの両方で、本物の CLI で確かめた。

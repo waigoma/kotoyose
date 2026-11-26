@@ -1,5 +1,11 @@
 # Kotoyose の変更履歴
 
+## 1.3.1 (2026-11-26)
+
+- 公開リポジトリの CI を GitHub hosted の runner で動く `public-ci.yml` に分けた。非公開リポジトリの self-hosted runner を使う `ci.yml` は公開しない。
+- 公開の手順 (release) が self-hosted runner でも動くように、`jq` と `rsync` に頼らないようにした。
+- 遅い runner でも実行 API の試験が時間切れにならないよう、状態を待つ上限を広げた。
+
 ## 1.3.0 (2026-11-26)
 
 - 公開の GitHub Release に、Windows のインストーラーに加えて Ubuntu/Linux x64 の tar.gz と SHA-256 も添付する。
