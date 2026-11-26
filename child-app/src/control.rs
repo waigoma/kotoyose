@@ -10,6 +10,7 @@ use tokio::sync::watch;
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Changes {
     pub policy: u64,
+    pub components: u64,
     pub saving_policy: bool,
     pub idle: Option<(u64, Duration)>,
 }
@@ -42,6 +43,7 @@ pub type MemoryProbe = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
 
 pub struct Control {
     pub update: crate::update::Update,
+    pub repairs: crate::components::AutoRepairs,
     status: Mutex<Status>,
     wake: Box<dyn Fn() + Send + Sync>,
     changes: watch::Sender<Changes>,
@@ -52,6 +54,7 @@ impl Control {
         Self {
             status: Mutex::default(),
             update: crate::update::Update::default(),
+            repairs: crate::components::AutoRepairs::default(),
             wake: Box::new(wake),
             changes: watch::Sender::new(Changes::default()),
         }

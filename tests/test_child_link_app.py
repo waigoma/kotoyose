@@ -4,6 +4,7 @@ import asyncio
 import base64
 from contextlib import asynccontextmanager
 import ctypes
+import hashlib
 import json
 import os
 import re
@@ -16,6 +17,7 @@ import sys
 import tarfile
 from textwrap import dedent
 from urllib.parse import urlsplit
+from zipfile import ZipFile
 
 import httpx
 import pytest
@@ -257,7 +259,7 @@ async def update_settings(url):
         yield client
 
 
-def packaged_child(folder, binary, env, *, different_build=False, fail_pip=False):
+def packaged_child(folder, binary, env, *, different_build=False, fail_pip=False, provider_pip=""):
     folder.mkdir()
     (folder / "bin" / "parts").mkdir(parents=True)
     (folder / "bin" / "parts" / "kotoyose-fixture.whl").touch()
@@ -276,12 +278,44 @@ def packaged_child(folder, binary, env, *, different_build=False, fail_pip=False
     python = folder / "python" / "bin" / "python3"
     python.parent.mkdir(parents=True)
     python.write_text(
-        f'#!/bin/sh\nif [ "${{4:-}}" = pip ]; then exit {int(fail_pip)}; fi\n'
+        f'#!/bin/sh\nif [ "${{4:-}}" = pip ]; then\n{provider_pip}\nexit {int(fail_pip)}\nfi\n'
         f'exec {shlex.quote(env["KOTOYOSE_CHILD_PYTHON"])} "$@"\n'
     )
     python.chmod(0o700)
     shutil.copy2(ROOT / "child-app" / "installer" / "install-linux.sh", folder / "install.sh")
     return build.decode()
+
+
+def restore_from_fixture_index(index, home):
+    index.mkdir()
+    wheel = index / "claude_agent_sdk-9.9.0-py3-none-any.whl"
+    metadata = "claude_agent_sdk-9.9.0.dist-info"
+    with ZipFile(wheel, "w") as archive:
+        archive.writestr(f"{metadata}/METADATA", "Metadata-Version: 2.1\nName: claude-agent-sdk\nVersion: 9.9.0\n")
+        archive.writestr(f"{metadata}/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+        archive.writestr(f"{metadata}/RECORD", "")
+    requirement = "claude-agent-sdk==9.9.0 --hash=sha256:" + hashlib.sha256(wheel.read_bytes()).hexdigest()
+    pip = dedent(f"""\
+        set -eu
+        for arg do requirements=$arg; done
+        case "$requirements" in
+            */requirements.txt|*.whl) ;;
+            */requirements-claude.txt)
+                case " $* " in
+                    *" --require-hashes "*" --index-url https://pypi.org/simple "*) ;;
+                    *) exit 7 ;;
+                esac
+                test "$(cat "$requirements")" = {shlex.quote(requirement)}
+                echo claude >> {shlex.quote(str(home / "provider-install-calls"))}
+                while [ ! -f {shlex.quote(str(home / "allow-provider-install"))} ]; do sleep 0.05; done
+                site="${{0%/bin/python3}}/lib/python3.13/site-packages"
+                {shlex.quote(sys.executable)} -I -m zipfile -e {shlex.quote(str(wheel))} "$site"
+                echo 9.9.0 > {shlex.quote(str(home / "fake-sdk-claude"))}
+                ;;
+            *) exit 7 ;;
+        esac
+    """)
+    return requirement, pip
 
 
 @pytest.mark.parametrize("outcome", ["updated", "repair_failed", "link_lost"])
@@ -302,7 +336,13 @@ async def test_linux_applies_verified_package_or_keeps_old_running_build(binary,
     assert previous.name == f"{version}-{old_build}"
 
     folder = tmp_path / "next"
-    new_build = packaged_child(folder, binary, env, different_build=True, fail_pip=outcome == "repair_failed")
+    provider_pip = ""
+    if outcome == "updated":
+        (previous / "python/lib/python3.13/site-packages/claude_agent_sdk-9.8.0.dist-info").mkdir(parents=True)
+        requirement, provider_pip = restore_from_fixture_index(tmp_path / "wheel-index", home)
+    new_build = packaged_child(folder, binary, env, different_build=True, fail_pip=outcome == "repair_failed", provider_pip=provider_pip)
+    if outcome == "updated":
+        (folder / "bin/parts/requirements-claude.txt").write_text(requirement + "\n")
     archive = tmp_path / "archive.tar.gz"
     with tarfile.open(archive, "w:gz", format=tarfile.USTAR_FORMAT) as stream:
         stream.add(folder, arcname=f"kotoyose-child-{version}")
@@ -312,6 +352,9 @@ async def test_linux_applies_verified_package_or_keeps_old_running_build(binary,
     host.update_dir = tmp_path / "updates"
     child_update.publish(dist, host.update_dir, version, platform, allow_dirty=True)
     await enroll_child(issue(host), home, name="dev")
+    if outcome == "updated":
+        _policy(home, tmp_path, adapters=["claude.agent-sdk", "codex.app-server"], mcp={})
+        (home / "fake-sdk-codex").write_text("1")
     stale_extract = previous.parent / ".install-stale"
     stale_extract.mkdir()
 
@@ -336,11 +379,27 @@ async def test_linux_applies_verified_package_or_keeps_old_running_build(binary,
             assert status["can_update"] and status["build_id"] == old_build
             assert not status["restart_needed"]
             assert not stale_extract.exists()
-            started = await client.post("/api/update", json={
+            request = {
                 "action": "download", "sha256": metadata["sha256"], "defer": False,
-            })
-            assert started.status_code == 202
-            if outcome != "updated":
+            }
+            if outcome == "updated":
+                async with client.stream(
+                    "POST", "/api/update", json=request, headers={"Accept": "application/x-ndjson"},
+                ) as progress:
+                    assert progress.status_code == 202
+                    views = [json.loads(line) async for line in progress.aiter_lines()]
+                received = [view["received"] for view in views if view["phase"] == "downloading"]
+                assert any(0 < count < metadata["size"] for count in received)
+                assert received == sorted(received) and received[-1] == metadata["size"]
+                assert list(dict.fromkeys(view["phase"] for view in views)) == [
+                    "requested", "downloading", "verifying", "waiting", "installing",
+                ]
+                assert views[-1]["expected_shutdown"] and views[-1]["offer"] == metadata
+                acknowledged = await client.post("/api/update", json={"action": "acknowledge"})
+                assert acknowledged.status_code == 204
+            else:
+                started = await client.post("/api/update", json=request)
+                assert started.status_code == 202
                 error = "disconnect" if outcome == "link_lost" else "setup"
                 async with asyncio.timeout(8):
                     while True:
@@ -356,8 +415,40 @@ async def test_linux_applies_verified_package_or_keeps_old_running_build(binary,
         async with update_settings(await read_settings_url(proc)) as client:
             status = (await client.get("/api/status")).json()
             assert status["build_id"] == new_build and not status["restart_needed"]
-        live = await eventually(lambda: host.list_children()[0]["build_id"] == new_build)
-        assert live and proc.returncode is None
+            calls = home / "provider-install-calls"
+            await eventually(calls.is_file)
+            marker = pointer / "python/bin/claude.needs-reinstall"
+            assert marker.is_file()
+            components = (await client.get("/api/components")).json()
+            assert components["auto_repair"] == {"claude": "installing"}
+            link = await eventually(lambda: live if (live := host.live_for("dev")) and live.build_id == new_build else None)
+            assert host.hello_payloads[-1]["adapters"] == ["codex.app-server"]
+            stream_id = host.allocate_stream()
+            queue = link.mux.queue(stream_id)
+            try:
+                assert await host.send_frame("dev", stream_id, "turn", {"route": {"driver": "claude.agent-sdk"}})
+                refused = await asyncio.wait_for(queue.get(), 3)
+                assert refused.kind == "error" and "needs reinstalling" in refused.payload["message"]
+            finally:
+                link.mux.discard(stream_id)
+            heartbeat = link.last_mono
+            await eventually(lambda: link.last_mono > heartbeat, timeout=3)
+            await host.disconnect("dev")
+            reconnected = await eventually(lambda: live if (live := host.live_for("dev")) and live is not link else None)
+            assert host.hello_payloads[-1]["adapters"] == ["codex.app-server"]
+            assert marker.is_file()
+            (home / "allow-provider-install").touch()
+            await eventually(lambda: (
+                (live := host.live_for("dev")) and live is not reconnected
+                and host.hello_payloads[-1]["adapters"] == ["claude.agent-sdk", "codex.app-server"]
+            ))
+            assert not marker.exists()
+            components = (await client.get("/api/components")).json()
+            assert components["auto_repair"] == {"claude": "done"}
+            assert components["error"] is None
+            assert (pointer / "python/lib/python3.13/site-packages/claude_agent_sdk-9.9.0.dist-info/METADATA").is_file()
+            assert calls.read_text().splitlines() == ["claude"]
+        assert proc.returncode is None
         assert pointer.resolve().name == f"{version}-{new_build}"
         assert previous.is_dir()
         assert not (pointer / ".kotoyose-child-installing").exists()

@@ -65,6 +65,11 @@ class Element {
 function browser(reply, confirm = () => false) {
   const elements = new Map(Array.from(html.matchAll(/\bid="([^"]+)"/g),
     ([, id]) => [id, new Element()]));
+  const progress = elements.get('update-progress');
+  Object.defineProperty(progress, 'value', {
+    get: () => Number(progress.attributes.get('value') ?? 0),
+    set: (value) => progress.setAttribute('value', String(value)),
+  });
   elements.get('closed').hidden = true;
   elements.get('policy-inputs').disabled = true;
   elements.get('connection-enrollment').append(elements.get('enroll-form'));
@@ -657,6 +662,56 @@ test('Providers collapses package details and runs CLI version checks only on Ch
   ui.elements.get('refresh-components').onclick();
   await flush();
   assert.equal(ui.requests.filter(({ path }) => path === '/api/components/check').length, 1);
+});
+
+test('Providers polls automatic reinstall and offers Repair after a failure', async () => {
+  for (const outcome of ['done', 'failed']) {
+    let phase = 'pending';
+    const ui = browser(({ path, method, body }) => {
+      if (path === '/api/session') return [200, { token: 'session-token' }];
+      if (path === '/api/status') return [200, status];
+      if (path === '/api/policy') return [200, policyRead()];
+      if (path === '/api/login/status/claude') return [200, { state: 'logged_out' }];
+      if (path === '/api/components' && method === 'POST') {
+        assert.equal(body.provider, 'claude');
+        phase = undefined;
+        return [200, new ReadableStream({ start(controller) {
+          const result = { event: 'result', ok: true, message: 'Reinstalled manually.' };
+          controller.enqueue(new TextEncoder().encode(JSON.stringify(result) + '\n'));
+          controller.close();
+        } })];
+      }
+      if (path === '/api/components') return [200, {
+        ...component,
+        installed: phase === 'installing' ? [] : component.installed,
+        can_manage_packages: phase !== 'installing',
+        needs_reinstall: phase && phase !== 'done' ? ['claude'] : [],
+        auto_repair: phase ? { claude: phase } : {},
+      }];
+      assert.fail(path);
+    });
+    await flush();
+    ui.showProviders();
+    await flush();
+    const card = () => ui.elements.get('component-rows').querySelectorAll('article')[0];
+    assert.match(cardResult(card()).textContent, /Waiting to reinstall/);
+    phase = 'installing';
+    await ui.timeouts.shift()();
+    assert.match(cardResult(card()).textContent, /Reinstalling automatically/);
+    assert.equal(ui.elements.get('refresh-components').disabled, true);
+    phase = outcome;
+    await ui.timeouts.shift()();
+    assert.equal(ui.timeouts.length, 0);
+    assert.equal(ui.elements.get('refresh-components').disabled, false);
+    if (outcome === 'done') {
+      assert.match(cardResult(card()).textContent, /Reinstalled automatically/);
+      assert.equal(findButton(card(), 'Repair'), undefined);
+    } else {
+      assert.match(cardResult(card()).textContent, /Automatic reinstall failed/);
+      await findButton(card(), 'Repair').listeners.get('click')();
+      assert.match(cardResult(card()).textContent, /Reinstalled manually/);
+    }
+  }
 });
 
 test('SDK install is visible when missing and installed packages put Update and Remove in details', async () => {
@@ -1351,17 +1406,21 @@ test('Settings handles app updates, progress, and a deferred restart', async () 
   const offer = { version: '1.2.1', build_id: 'abcd', sha256: 'digest', size: 100 };
   let current = { ...status, can_update: true, update: { offer, phase: 'idle' } };
   let confirmed = 0;
+  let output;
   const ui = browser(({ path, body }) => {
     if (path === '/api/session') return [200, { token: 'session-token' }];
     if (path === '/api/status') return [200, current];
     if (path === '/api/components') return [200, emptyComponents];
     if (path === '/api/policy') return [200, policyRead()];
     if (path === '/api/settings') return [200, { revision: 'test' }];
-    if (path === '/api/update' && body.action === 'download') {
-      current = { ...current, update: { offer, phase: 'downloading', received: 25 } };
-      return [202, {}];
+    if (path === '/api/update' && body?.action === 'download') {
+      return [202, new ReadableStream({ start(controller) { output = controller; } })];
     }
-    if (path === '/api/update' && body.action === 'interrupt') return [202, {}];
+    if (path === '/api/update' && body?.action === 'interrupt') return [202, {}];
+    if (path === '/api/update') return [200, new ReadableStream({ start(controller) {
+      controller.enqueue(Buffer.from(JSON.stringify(current.update) + '\n'));
+      controller.close();
+    } })];
     if (path === '/api/action') return [200, { message: 'Restarting Kotoyose Child.' }];
     throw new Error(path);
   }, () => ++confirmed > 1);
@@ -1371,6 +1430,11 @@ test('Settings handles app updates, progress, and a deferred restart', async () 
   const get = (id) => ui.elements.get(id);
   const tick = async () => {
     [...ui.intervals.values()].find((timer) => timer.milliseconds === 1000).callback();
+    await flush();
+  };
+  const sendUpdate = async (view) => {
+    current = { ...current, update: { offer, ...view } };
+    output.enqueue(Buffer.from(JSON.stringify(current.update) + '\n'));
     await flush();
   };
 
@@ -1386,28 +1450,101 @@ test('Settings handles app updates, progress, and a deferred restart', async () 
   await tick();
   assert.equal(get('update-start').disabled, false);
   get('update-defer').checked = true;
-  await get('update-start').onclick({ currentTarget: get('update-start') });
+  const download = get('update-start').onclick({ currentTarget: get('update-start') });
+  await flush();
   assert.equal(get('update-message').textContent, '');
   assert.deepEqual(ui.requests.find(({ path }) => path === '/api/update')?.body,
     { action: 'download', sha256: 'digest', defer: true });
-  assert.equal(get('update-progress').value, 25);
-  assert.match(get('update-state').textContent, /25%/);
+  for (const received of [0, 25, 74, 100]) {
+    await sendUpdate({ phase: 'downloading', received });
+    assert.equal(get('update-progress').hidden, false);
+    assert.equal(get('update-progress').max, offer.size);
+    assert.equal(get('update-progress').value, received);
+    assert.equal(get('update-state').textContent, `Downloading… ${received}%`);
+  }
+  await sendUpdate({ phase: 'verifying' });
+  assert.equal(get('update-state').textContent, 'Verifying update…');
+  assert.equal(get('update-progress').attributes.has('value'), false);
 
-  current = { ...current, link: { ...status.link, work: 2 }, update: { offer, phase: 'waiting' } };
-  await tick();
-  assert.match(get('update-state').textContent, /Waiting for active and queued work/);
+  await sendUpdate({ phase: 'waiting' });
+  assert.equal(get('update-state').textContent, 'Waiting for active and queued work to finish…');
+  for (const work of [2, 1]) {
+    current = { ...current, link: { ...status.link, work } };
+    await tick();
+    assert.equal(get('update-state').textContent,
+      `Waiting for active and queued work to finish (${work} ${work === 1 ? 'job' : 'jobs'})…`);
+  }
   const interrupt = () => get('update-interrupt').onclick({ currentTarget: get('update-interrupt') });
   await interrupt();
   assert.equal(ui.requests.filter(({ body }) => body?.action === 'interrupt').length, 0);
   await interrupt();
   assert.equal(ui.requests.filter(({ body }) => body?.action === 'interrupt').length, 1);
 
-  current = { ...current, restart_needed: true, update: { offer, phase: 'deferred' } };
-  await tick();
+  await sendUpdate({ phase: 'deferred' });
+  output.close();
+  await download;
   assert.equal(get('restart').hidden, false);
+  assert.match(get('update-state').textContent, /Select Restart/);
   await get('restart').onclick({ currentTarget: get('restart') });
   assert.deepEqual(ui.requests.find(({ path }) => path === '/api/action').body, { restart: true, interrupt: true });
 });
+
+for (const loss of ['network', 'unauthorized']) {
+  test(`an acknowledged update stays visible after ${loss} shutdown`, async () => {
+    const offer = { version: '1.3.3', build_id: 'abcd', sha256: 'digest', size: 100 };
+    let update = { offer, phase: 'idle' };
+    let output;
+    let stopped = false;
+    const ui = browser(({ path, body }) => {
+      if (path === '/api/session') return [200, { token: 'session-token' }];
+      if (path === '/api/status') {
+        if (stopped && loss === 'network') throw new Error('server closed');
+        if (stopped) return [401, {}];
+        return [200, { ...status, can_update: true, update }];
+      }
+      if (path === '/api/components') return [200, emptyComponents];
+      if (path === '/api/policy') return [200, policyRead()];
+      if (path === '/api/settings') return [200, { revision: 'test' }];
+      assert.equal(path, '/api/update');
+      if (body.action === 'acknowledge') {
+        stopped = true;
+        return [204, {}];
+      }
+      return [202, new ReadableStream({ start(controller) { output = controller; } })];
+    });
+    await flush();
+    ui.showSettings();
+    await flush();
+    const get = (id) => ui.elements.get(id);
+    const download = get('update-start').onclick({ currentTarget: get('update-start') });
+    await flush();
+    const send = (expected_shutdown) => {
+      update = { offer, phase: 'installing', expected_shutdown };
+      output.enqueue(Buffer.from(JSON.stringify(update) + '\n'));
+    };
+    send(false);
+    await flush();
+    assert.equal(get('update-state').textContent, 'Installing 1.3.3…');
+    assert.equal(stopped, false);
+    send(true);
+    output.close();
+    await download;
+    assert.equal(stopped, true);
+    assert.equal(ui.requests.filter(({ body }) => body?.action === 'acknowledge').length, 1);
+    assert.match(get('update-state').textContent, /Installing 1\.3\.3.*open Settings in a new window.*This tab cannot reconnect/);
+    assert.equal(get('update-progress').hidden, false);
+    assert.equal(get('update-progress').attributes.has('value'), false);
+
+    const [interval] = ui.intervals.values();
+    assert.equal(interval.milliseconds, 1_000);
+    await interval.callback();
+    assert.equal(ui.intervals.size, 0);
+    assert.equal(get('closed').hidden, true);
+    assert.equal(get('status-message').attributes.has('data-error'), false);
+    assert.match(get('update-state').textContent, /You can close it/);
+    assert.equal(get('update-progress').hidden, false);
+  });
+}
 
 test('Linux source shows manual instructions without an offer or install button', async () => {
   const update = { offer: null, phase: 'idle' };

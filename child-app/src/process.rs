@@ -11,7 +11,7 @@ mod platform;
 mod platform;
 
 #[cfg(target_os = "linux")]
-pub(crate) use platform::LoginChild;
+pub(crate) use platform::ManagedChild;
 #[cfg(windows)]
 pub(crate) use platform::spawn_in_job;
 pub use platform::{Process, prepare};

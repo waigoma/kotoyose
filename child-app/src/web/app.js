@@ -64,10 +64,14 @@ const text = {
   updateAvailable: (offer) => `Update available: ${offer.version} (${offer.build_id})`,
   updateManual: "Update by hand. In your checkout, switch to the new release, run uv sync and cargo build --locked --release --manifest-path child-app/Cargo.toml, then restart.",
   updateDefer: "Install on restart",
-  updateDownloading: (received, size) => `Downloading and verifying… ${Math.floor(100 * received / size)}%`,
-  updateWaiting: "Waiting for active and queued work to finish before installing.",
+  updateDownloading: (received, size) => `Downloading… ${Math.floor(100 * received / size)}%`,
+  updateVerifying: "Verifying update…",
+  updateWaiting: (count) => count
+    ? `Waiting for active and queued work to finish (${count} ${count === 1 ? text.workOne : text.workOther})…`
+    : "Waiting for active and queued work to finish…",
   updateDeferred: "Update verified. Select Restart under App controls to install it.",
-  updateInstalling: "Installing update. Settings will reopen when the app starts.",
+  updateInstalling: (version) => `Installing ${version}…`,
+  updateHandoff: (version) => `${text.updateInstalling(version)} Kotoyose Child will restart and open Settings in a new window. This tab cannot reconnect. You can close it.`,
   updateInterrupt: "Interrupt and update",
   updateRetry: (seconds) => `The host is busy. Try again in ${seconds} s.`,
   updateError: (code) => ({
@@ -83,6 +87,10 @@ const text = {
   recentLogs: "Recent logs",
   openLogFolder: "Open log folder",
   repairLogHint: "Open the log folder to find repair.log after running Setup or repair.",
+  autoRepairPending: "Waiting to reinstall automatically.",
+  autoReinstallRunning: "Reinstalling automatically…",
+  autoRepairDone: "Reinstalled automatically.",
+  autoRepairFailed: "Automatic reinstall failed. See Recent logs in Settings, then select Repair to try again.",
   connected: "Connected",
   reconnecting: "Reconnecting",
   notConnected: "Not connected",
@@ -242,11 +250,12 @@ function closeSession() {
 
 function disconnected() {
   closeSession();
-  byId('closed').hidden = false;
+  byId('closed').hidden = !!appUpdateView?.expected_shutdown;
 }
 
 async function request(path, data, stream = false, method = data === undefined ? 'GET' : 'POST') {
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  if (stream) headers.Accept = 'application/x-ndjson';
   let response;
   try {
     response = await fetch(`/api/${path}`, data === undefined ? { method, headers, credentials: 'omit' } : {
@@ -294,54 +303,86 @@ async function operate(id, target, task) {
   try {
     await task();
   } catch (error) {
-    message(id, error.message, true);
+    if (!appUpdateView?.expected_shutdown) message(id, error.message, true);
   } finally {
     if (target && !closed) target.disabled = false;
   }
 }
 
 function show(id, value) {
-  byId(id).textContent = value ?? '';
-  byId(id).hidden = value == null;
+  const target = byId(id);
+  if (target.textContent !== (value ?? '')) target.textContent = value ?? '';
+  target.hidden = value == null;
 }
 
-let appUpdateOffer;
-let appUpdateRetryAfter;
 let appUpdateRequestPending = false;
+let appUpdateView;
+let appUpdateStream;
+let appUpdateSupported;
+let appRestartNeeded;
+let appUpdateWork = 0;
 
-function renderUpdate(update, canUpdate, restartNeeded, work) {
-  const { offer, phase, received, error, retry_after: retryAfter } = update ?? {};
-  appUpdateOffer = offer;
-  appUpdateRetryAfter = retryAfter;
-  byId('update-card').hidden = canUpdate !== false && !offer && !error && phase !== 'installing';
+function updating(phase) {
+  return ['requested', 'downloading', 'verifying', 'waiting', 'installing'].includes(phase);
+}
+
+function renderUpdate(update) {
+  const { offer, phase, received, error, retry_after: retryAfter, expected_shutdown: handoff } = update ?? {};
+  const newHandoff = handoff && !appUpdateView?.expected_shutdown;
+  appUpdateView = update;
+  byId('update-card').hidden = appUpdateSupported !== false && !offer && !error && !updating(phase);
   show('update-offer', offer ? text.updateAvailable(offer) : null);
-  const canStart = !!offer && canUpdate && phase === 'idle';
+  const canStart = !!offer && appUpdateSupported && phase === 'idle';
   byId('update-start').hidden = !canStart;
   byId('update-start').disabled = appUpdateRequestPending || !!retryAfter;
   byId('update-defer-field').hidden = !canStart;
-  byId('update-interrupt').hidden = phase !== 'waiting' || !work;
+  byId('update-interrupt').hidden = phase !== 'waiting' || !appUpdateWork;
   const progress = byId('update-progress');
-  progress.hidden = phase !== 'downloading';
-  if (!progress.hidden && offer) {
+  progress.hidden = !['downloading', 'verifying', 'installing'].includes(phase);
+  if (phase === 'downloading' && offer) {
     progress.max = offer.size;
     progress.value = received;
+  } else {
+    progress.removeAttribute('value');
   }
+  const handoffMessage = handoff ? text.updateHandoff(offer.version) : null;
   const next = {
     requested: text.loading,
     downloading: offer && text.updateDownloading(received, offer.size),
-    waiting: text.updateWaiting,
+    verifying: text.updateVerifying,
+    waiting: text.updateWaiting(appUpdateWork),
     deferred: text.updateDeferred,
-    installing: text.updateInstalling,
+    installing: handoffMessage ?? text.updateInstalling(offer?.version ?? ''),
   };
-  show('update-state', canUpdate === false ? text.updateManual :
+  show('update-state', appUpdateSupported === false ? text.updateManual :
     (canStart && retryAfter ? text.updateRetry(retryAfter) : (next[phase] ?? null)));
+  show('update-handoff', activePage === 'settings' ? null : handoffMessage);
   message('update-error', text.updateError(error), !!error);
   const restart = byId('restart');
+  const restartNeeded = phase === 'deferred' || (!updating(phase) && appRestartNeeded);
   if (restartNeeded && restart.hidden) byId('app-controls').open = true;
   restart.hidden = !restartNeeded;
+  if (newHandoff) void api('update', { action: 'acknowledge' }).catch(() => {});
+}
+
+function watchUpdate(download) {
+  appUpdateStream ??= operate('update-message', null, async () => {
+    const response = await request('update', download, true);
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+    let pending = '';
+    while (!closed) {
+      const { value, done } = await reader.read();
+      if (done || closed) break;
+      const lines = (pending + value).split('\n');
+      pending = lines.pop();
+      for (const line of lines) renderUpdate(JSON.parse(line));
+    }
+  }).finally(() => { appUpdateStream = undefined; });
+  return appUpdateStream;
 }
 
 function renderStatus({ link, enrolled, version, runner_bytes: bytes, update, can_update, restart_needed }) {
+  if (closed) return link;
   const needsEnrollment = !enrolled || ['unregistered', 'stopped'].includes(link.connection);
   let state = text.notEnrolled;
   let tone = '';
@@ -379,8 +420,17 @@ function renderStatus({ link, enrolled, version, runner_bytes: bytes, update, ca
   byId('runner-dot').className = link.runner ? 'dot positive' : 'dot';
   show('memory', link.runner ? (bytes == null ? text.noMemory : text.memoryMiB(bytes)) : null);
   message('interrupt-hint', link.work ? text.exitInterrupt(link.work) : '');
-  renderUpdate(update, can_update, restart_needed, link.work);
-  const navigate = enrollmentNeeded === undefined || (needsEnrollment && !enrollmentNeeded);
+  appUpdateSupported = can_update;
+  appRestartNeeded = restart_needed && update?.phase !== 'deferred';
+  appUpdateWork = link.work;
+  if (appUpdateStream || (appUpdateView?.expected_shutdown && !update?.error)) {
+    renderUpdate(appUpdateView);
+  } else {
+    renderUpdate(update);
+    if (updating(update?.phase) && !update.expected_shutdown) watchUpdate();
+  }
+  const navigate = !updating(appUpdateView?.phase) &&
+    (enrollmentNeeded === undefined || (needsEnrollment && !enrollmentNeeded));
   enrollmentNeeded = needsEnrollment;
   if (navigate) {
     selectPage(tabs.find((tab) => tab.dataset.page === (needsEnrollment ? 'connection' : 'providers')));
@@ -698,6 +748,8 @@ function selectPage(tab) {
     else item.removeAttribute('aria-current');
   }
   showMenu(false);
+  show('update-handoff', page !== 'settings' && appUpdateView?.expected_shutdown
+    ? text.updateHandoff(appUpdateView.offer.version) : null);
   updateHeartbeat();
   if (page === 'workspace') {
     if (!policyDirty) operate('policy-message', null, loadPolicy);
@@ -797,18 +849,16 @@ byId('autostart').onchange = (event) => {
 };
 
 byId('update-start').onclick = async (event) => {
-  if (!appUpdateOffer || appUpdateRequestPending || appUpdateRetryAfter) return;
+  const { offer, retry_after } = appUpdateView ?? {};
+  if (!offer || appUpdateRequestPending || retry_after) return;
   const button = event.currentTarget;
-  appUpdateRequestPending = true;
   button.disabled = true;
+  appUpdateRequestPending = true;
   try {
-    await operate('update-message', null, async () => {
-      await api('update', { action: 'download', sha256: appUpdateOffer.sha256, defer: byId('update-defer').checked });
-      await refreshStatus();
-    });
+    await watchUpdate({ action: 'download', sha256: offer.sha256, defer: byId('update-defer').checked });
   } finally {
     appUpdateRequestPending = false;
-    if (!closed) button.disabled = !!appUpdateRetryAfter;
+    if (!closed) button.disabled = !!appUpdateView?.retry_after;
   }
 };
 
@@ -822,9 +872,11 @@ for (const id of ['restart', 'stop']) {
   byId(id).onclick = (event) => operate('action-message', event.currentTarget, async () => {
     const interrupt = await confirmInterruption();
     if (interrupt === null) return;
+    const appliesUpdate = id === 'restart' && appUpdateView?.phase === 'deferred';
     const result = await api('action', { restart: id === 'restart', interrupt });
     message('action-message', result.message);
-    closeSession();
+    if (appliesUpdate) watchUpdate();
+    else closeSession();
   });
 }
 

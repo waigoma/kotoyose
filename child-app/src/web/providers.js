@@ -2,6 +2,7 @@
 
 let componentsBusy = false;
 let componentsLoading = false;
+let repairPollPending = false;
 let providerVisit = 0;
 const providerCards = new Map();
 const declarationCards = new Map();
@@ -161,7 +162,26 @@ function setOperationResult(operation, ok, reason) {
   operation.result.toggleAttribute('data-error', !ok);
 }
 
+function showAutoRepair(operation, phase) {
+  if (operation.autoRepair === phase) return;
+  operation.autoRepair = phase;
+  if (!phase && !operation.showingAutoRepair) return;
+  operation.showingAutoRepair = Boolean(phase);
+  operation.result.textContent = {
+    pending: text.autoRepairPending,
+    installing: text.autoReinstallRunning,
+    done: text.autoRepairDone,
+    failed: text.autoRepairFailed,
+  }[phase] ?? '';
+  operation.result.toggleAttribute('data-error', phase === 'failed');
+}
+
+function autoRepairsPending() {
+  return Object.values(componentView.auto_repair ?? {}).some((phase) => phase === 'pending' || phase === 'installing');
+}
+
 async function applyCardChange(operation, task) {
+  operation.showingAutoRepair = false;
   operation.result.textContent = text.applyingComponent;
   operation.result.removeAttribute('data-error');
   operation.details.open = false;
@@ -407,7 +427,7 @@ function renderProviders(payload) {
 }
 
 function renderProviderPage() {
-  const { providers = [], installed = [], can_manage_packages: canManage, needs_reinstall: needsReinstall = [], error } = componentView;
+  const { providers = [], installed = [], can_manage_packages: canManage, needs_reinstall: needsReinstall = [], auto_repair: repairs = {}, error } = componentView;
   const container = byId('component-rows');
   const previousCards = new Map(providerCards);
   const previousDeclarations = new Map(declarationCards);
@@ -435,6 +455,7 @@ function renderProviderPage() {
     }
     const previous = previousCards.get(provider.id);
     const operation = previous?.operation ?? operationPanel();
+    showAutoRepair(operation, repairs[provider.id]);
     const row = element('article', 'card provider-card');
     const mark = element('span', `provider-mark is-${provider.tone}`, provider.initial);
     mark.setAttribute('aria-hidden', 'true');
@@ -500,12 +521,13 @@ function renderProviderPage() {
 
 function updateProviderRuntimeControls() {
   const loginBusy = startingLogins.size > 0 || [...loginStates.values()].some((view) => view.state === 'running');
+  const changing = closed || componentsBusy || componentsLoading || autoRepairsPending();
   for (const { provider, runtime, loginButton, cancelButton } of [...providerCards.values(), ...declarationCards.values()]) {
-    if (runtime) runtime.disabled = closed || componentsBusy || componentsLoading || loginBusy;
-    if (loginButton) loginButton.disabled = closed || componentsBusy || componentsLoading || startingLogins.has(provider.id);
+    if (runtime) runtime.disabled = changing || loginBusy;
+    if (loginButton) loginButton.disabled = changing || startingLogins.has(provider.id);
     if (cancelButton) cancelButton.disabled = closed || cancellingLogins.has(provider.id);
   }
-  byId('refresh-components').disabled = closed || componentsBusy || componentsLoading;
+  byId('refresh-components').disabled = changing;
 }
 
 function renderLogin(card) {
@@ -665,6 +687,23 @@ function refreshComponents(endpoint) {
   });
 }
 
+function watchAutoRepairs() {
+  if (closed || activePage !== 'providers' || repairPollPending || !autoRepairsPending()) return;
+  repairPollPending = true;
+  setTimeout(async () => {
+    repairPollPending = false;
+    if (closed || activePage !== 'providers') return;
+    await refreshComponents();
+    if (closed || activePage !== 'providers') return;
+    if (autoRepairsPending()) {
+      watchAutoRepairs();
+    } else {
+      await operate('provider-policy-message', null, refreshProviderPolicy);
+      loadProviderLogins(providerVisit);
+    }
+  }, 1000);
+}
+
 function textLine(tag, className, value) {
   const node = element(tag, className);
   node.textContent = value || '';
@@ -711,9 +750,23 @@ async function enterProviders() {
   await refreshComponents();
   await loadHostDeclarations();
   if (closed || activePage !== 'providers' || visit !== providerVisit) return;
+  if (autoRepairsPending()) watchAutoRepairs();
+  else loadProviderLogins(visit);
+}
+
+function loadProviderLogins(visit) {
   for (const { provider } of [...providerCards.values(), ...declarationCards.values()]) {
     if (provider.local_login && (declarationCards.has(provider.id) || provider.login.status.length)) checkLogin(provider.id, visit);
     else if (provider.local_login) setLogin(provider.id, { state: 'unknown' });
+  }
+}
+
+async function refreshProviderPolicy() {
+  if (policyDirty) {
+    availableAdapters = (await api('policy')).available_adapters;
+    updateProviderPolicyControls();
+  } else {
+    await loadPolicy();
   }
 }
 
@@ -758,12 +811,7 @@ async function changeComponent(provider, change) {
     if (closed) return;
     await operate('components-message', null, async () => {
       await loadComponents();
-      if (policyDirty) {
-        availableAdapters = (await api('policy')).available_adapters;
-        updateProviderPolicyControls();
-      } else {
-        await loadPolicy();
-      }
+      await refreshProviderPolicy();
     });
   } catch (error) {
     setOperationResult(operation, false, error.message);

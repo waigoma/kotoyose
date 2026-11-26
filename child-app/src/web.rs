@@ -301,7 +301,7 @@ fn router(web: Web) -> Router {
         .route("/api/logs", get(logs))
         .route("/api/enroll", post(enroll))
         .route("/api/action", post(action))
-        .route("/api/update", post(update_app))
+        .route("/api/update", get(update_progress).post(update_app))
         .route("/api/autostart", post(autostart))
         .route("/api/open-logs", post(open_logs))
         .layer(DefaultBodyLimit::max(1024 * 1024))
@@ -707,6 +707,7 @@ async fn component_status(State(web): State<Web>) -> Json<components::Status> {
             &web.home,
             web.component_runtime.as_ref(),
             components::ProbeMode::Status,
+            &web.state.repairs,
         )
         .await,
     )
@@ -718,6 +719,7 @@ async fn check_components(State(web): State<Web>) -> Json<components::Status> {
             &web.home,
             web.component_runtime.as_ref(),
             components::ProbeMode::Check,
+            &web.state.repairs,
         )
         .await,
     )
@@ -891,15 +893,62 @@ async fn enroll(
 enum Update {
     Download { sha256: String, defer: bool },
     Interrupt,
+    Acknowledge,
+}
+
+async fn update_progress(State(web): State<Web>) -> Response {
+    update_stream(web.state, StatusCode::OK)
+}
+
+fn update_stream(state: Arc<Control>, status: StatusCode) -> Response {
+    use crate::update::Phase;
+    use tokio::sync::broadcast::error::RecvError;
+
+    let views = state.update.views();
+    let initial = Some(state.update.view());
+    let stream = futures_util::stream::unfold(
+        (views, initial, false),
+        |(mut views, initial, done)| async move {
+            if done {
+                return None;
+            }
+            let view = match initial {
+                Some(view) => view,
+                None => loop {
+                    match views.recv().await {
+                        Ok(view) => break view,
+                        Err(RecvError::Lagged(_)) => continue,
+                        Err(RecvError::Closed) => return None,
+                    }
+                },
+            };
+            let done =
+                matches!(view.phase, Phase::Idle | Phase::Deferred) || view.expected_shutdown;
+            let mut line = serde_json::to_vec(&view).expect("serializable update status");
+            line.push(b'\n');
+            Some((Ok::<_, io::Error>(Bytes::from(line)), (views, None, done)))
+        },
+    );
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/x-ndjson; charset=utf-8")],
+        Body::from_stream(stream),
+    )
+        .into_response()
 }
 
 async fn update_app(
     State(web): State<Web>,
+    headers: HeaderMap,
     Input(request): Input<Update>,
-) -> Result<StatusCode, ApiError> {
+) -> Result<Response, ApiError> {
     let accepted = match request {
         Update::Download { sha256, defer } => web.state.update.request(&web.home, &sha256, defer),
         Update::Interrupt => web.state.update.activate(true),
+        Update::Acknowledge => {
+            web.state.update.acknowledge_shutdown();
+            return Ok(StatusCode::NO_CONTENT.into_response());
+        }
     };
     if !accepted {
         return Err(ApiError::new(
@@ -907,7 +956,10 @@ async fn update_app(
             messages::UPDATE_UNAVAILABLE,
         ));
     }
-    Ok(StatusCode::ACCEPTED)
+    if single(&headers, header::ACCEPT) == Some("application/x-ndjson") {
+        return Ok(update_stream(web.state, StatusCode::ACCEPTED));
+    }
+    Ok(StatusCode::ACCEPTED.into_response())
 }
 
 #[derive(Deserialize)]

@@ -125,13 +125,17 @@ async fn linux_restart(
     shutdown: &mut watch::Receiver<bool>,
 ) -> Option<Exit> {
     use crate::update_linux::{self, Activation, Reopen};
-    let reopen = if server.is_some_and(|server| !server.finished()) {
+    let settings_open = server.is_some_and(|server| !server.finished());
+    let reopen = if settings_open {
         Reopen::Settings
     } else {
         Reopen::Quiet
     };
     let result = async {
         let activation = Activation::prepare(home, package, reopen).await?;
+        if settings_open {
+            state.update.announce_shutdown().await;
+        }
         if update_linux::in_service() {
             until_stopped(shutdown, activation.delegate(home))
                 .await
@@ -172,6 +176,7 @@ pub async fn run(
     state.update.restore_error(&home);
     let mut server = None::<web::Server>;
     let login = web::LoginJobs::default();
+    let mut repairs = components::RepairTask::start(&home, &state);
     let exit = 'desktop: loop {
         let (stop, mut stopping) = watch::channel(false);
         let link_task = async {
@@ -202,8 +207,16 @@ pub async fn run(
                 },
                 result = &mut link_task, if !link_done => {
                     if let Ok(Some(installer)) = result {
+                        if let Some(task) = repairs.take() {
+                            task.stop().await;
+                        }
                         #[cfg(not(target_os = "linux"))]
-                        break 'desktop Exit::Install(installer);
+                        {
+                            if server.as_ref().is_some_and(|server| !server.finished()) {
+                                state.update.announce_shutdown().await;
+                            }
+                            break 'desktop Exit::Install(installer);
+                        }
                         #[cfg(target_os = "linux")]
                         if let Some(exit) = linux_restart(&home, &state, Some(installer), server.as_ref(), &mut shutdown).await {
                             break 'desktop exit;
@@ -212,6 +225,9 @@ pub async fn run(
                         }
                     }
                     if matches!(mode, Mode::Terminal) {
+                        if result.is_err() && let Some(task) = repairs.take() {
+                            task.stop().await;
+                        }
                         result?;
                     }
                     link_done = true;
@@ -286,6 +302,9 @@ pub async fn run(
         match action {
             Action::Components(job) => job.run(&home).await,
             Action::Exit { restart } => {
+                if let Some(task) = repairs.take() {
+                    task.stop().await;
+                }
                 report(
                     reply,
                     Ok(if restart {
@@ -325,6 +344,9 @@ pub async fn run(
             }
         }
     };
+    if let Some(task) = repairs {
+        task.stop().await;
+    }
     if let Some(live) = server.take() {
         live.finish().await;
     }

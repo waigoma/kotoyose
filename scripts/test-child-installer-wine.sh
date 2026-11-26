@@ -207,7 +207,8 @@ target = sys.argv[2]
 assert any(target.encode(codec) in raw for codec in ("ascii", "utf-16le"))
 PY
 
-# A previous version directory with Claude metadata must be reinstalled or marked for Repair.
+# Claude metadata in the previous build is carried forward as a marker. The
+# scratch child has no policy allowing Claude, so startup leaves it marked.
 old="$install_root/0.0.1"
 mkdir -p "$old/python/Lib/site-packages/claude_agent_sdk-9.9.0.dist-info"
 mkdir -p "$old/bin"
@@ -237,7 +238,48 @@ test -f "$updated/python/claude.needs-reinstall"
 wine reg query "$arp" /v InstalledBuildDirectory | grep -F "$version-$build_id"
 wine "$updated/bin/kotoyose-child-app.exe" quit
 test ! -e "$endpoint"
-echo 'Wine silent update kept the previous app, recorded provider repair, and reopened Settings.'
+echo 'Wine silent update kept the previous app, carried the provider marker, and reopened Settings.'
+
+# Allow only Claude and give the new build a hash-pinned wheel from the scratch prefix.
+child_home=${endpoint%/*}
+printf '%s\n' '{"adapters":["claude.agent-sdk"],"logins":[],"mcp":{},"workspace_roots":[]}' > "$child_home/policy.json"
+python3 - "$WINEPREFIX/drive_c/kotoyose-provider-index" "$updated/bin/parts/requirements-claude.txt" <<'PY'
+from hashlib import sha256
+from pathlib import Path
+import sys
+from zipfile import ZipFile
+
+index = Path(sys.argv[1])
+index.mkdir()
+wheel = index / "claude_agent_sdk-9.9.0-py3-none-any.whl"
+metadata = "claude_agent_sdk-9.9.0.dist-info"
+with ZipFile(wheel, "w") as archive:
+    archive.writestr("claude_agent_sdk/__init__.py", "")
+    archive.writestr(f"{metadata}/METADATA", "Metadata-Version: 2.1\nName: claude-agent-sdk\nVersion: 9.9.0\n")
+    archive.writestr(f"{metadata}/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+    archive.writestr(f"{metadata}/RECORD", "")
+digest = sha256(wheel.read_bytes()).hexdigest()
+Path(sys.argv[2]).write_text(
+    f"--no-index\nclaude-agent-sdk @ file:///C:/kotoyose-provider-index/{wheel.name} --hash=sha256:{digest}\n",
+    encoding="utf-8",
+)
+PY
+wine "$updated/bin/kotoyose-child-app.exe" ui > "$scratch/restore-url" &
+restore_pid=$!
+wait_for_output "$scratch/restore-url"
+for (( attempt = 0; attempt < 200; attempt++ )); do
+    if grep -Fq 'automatic provider repair [claude]: done' "$child_home/logs/child.log"; then
+        break
+    fi
+    sleep 0.1
+done
+grep -F 'automatic provider repair [claude]: done' "$child_home/logs/child.log"
+test ! -e "$updated/python/claude.needs-reinstall"
+test -f "$updated/python/Lib/site-packages/claude_agent_sdk-9.9.0.dist-info/METADATA"
+test ! -e "$updated/python/Lib/site-packages/openai_codex"
+wine "$updated/bin/kotoyose-child-app.exe" quit
+wait_for_exit "$restore_pid"
+wait "$restore_pid"
 
 # start /wait under Wine does not surface the installer exit code, so check the files.
 wine cmd.exe /c "start /wait C:\kotoyose-setup.exe /S /D=C:\." || true

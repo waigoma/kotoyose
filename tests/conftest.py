@@ -45,13 +45,17 @@ def _reset_process_env():
 
 
 @pytest.fixture(autouse=True)
-def _isolated_xdg_config_home(tmp_path_factory, monkeypatch):
-    """XDG の設定ディレクトリを試験ごとの空ディレクトリへ向ける。
+def _isolated_xdg_homes(tmp_path_factory, monkeypatch):
+    """XDG の設定・データ・状態のディレクトリを試験ごとの空ディレクトリへ向ける。
 
     開発機には本物の ~/.config/kotoyose/execution.json があり、KOTOYOSE_EXECUTION_CONFIG を
     外した試験が既定パス経由でそれを読んでしまう。試験が自分で XDG を設定する場合はそちらが勝つ。
     """
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("xdg-config")))
+    # 既定のデータの置き場 (~/.local/share/kotoyose) には、本物の provider の宣言、host の child の
+    # 識別情報、child の更新の束、master.key がある。試験が既定パス経由で読み書きしないようにする。
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path_factory.mktemp("xdg-data")))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("xdg-state")))
 
 
 

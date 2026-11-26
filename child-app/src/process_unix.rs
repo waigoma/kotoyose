@@ -8,27 +8,30 @@ use tokio::process::{Child, Command};
 use super::{Input, Output, STOP_TIMEOUT};
 
 #[cfg(target_os = "linux")]
-static LOGIN_CHILDREN: Mutex<BTreeSet<i32>> = Mutex::new(BTreeSet::new());
+static MANAGED_CHILDREN: Mutex<BTreeSet<i32>> = Mutex::new(BTreeSet::new());
 
-/// Keep a directly managed login helper out of the runner's orphan cleanup.
+/// Keep a directly managed subprocess out of the runner's orphan cleanup.
 #[cfg(target_os = "linux")]
-pub(crate) struct LoginChild(i32);
+pub(crate) struct ManagedChild(i32);
 
 #[cfg(target_os = "linux")]
-impl LoginChild {
+impl ManagedChild {
     pub(crate) fn track(pid: u32) -> Self {
         let pid = pid as i32;
-        LOGIN_CHILDREN.lock().expect("login child PIDs").insert(pid);
+        MANAGED_CHILDREN
+            .lock()
+            .expect("managed child PIDs")
+            .insert(pid);
         Self(pid)
     }
 }
 
 #[cfg(target_os = "linux")]
-impl Drop for LoginChild {
+impl Drop for ManagedChild {
     fn drop(&mut self) {
-        LOGIN_CHILDREN
+        MANAGED_CHILDREN
             .lock()
-            .expect("login child PIDs")
+            .expect("managed child PIDs")
             .remove(&self.0);
     }
 }
@@ -214,7 +217,7 @@ fn adopted() -> Vec<i32> {
 
 #[cfg(target_os = "linux")]
 fn runner_children(path: &Path) -> Vec<i32> {
-    let excluded = LOGIN_CHILDREN.lock().expect("login child PIDs");
+    let excluded = MANAGED_CHILDREN.lock().expect("managed child PIDs");
     children(path)
         .into_iter()
         .filter(|pid| !excluded.contains(pid))

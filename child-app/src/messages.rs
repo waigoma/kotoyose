@@ -55,6 +55,9 @@ pub const COMPONENT_CLI_FAILED: &str =
     "Could not change the managed CLI. Check that it is available and idle.";
 pub const COMPONENT_UNKNOWN: &str = "Unknown provider.";
 pub const COMPONENT_BUSY: &str = "A component change is already in progress.";
+pub const COMPONENT_CANCELLED: &str = "The package operation was cancelled.";
+pub const COMPONENT_REINSTALL_REQUIRED: &str =
+    "This provider needs reinstalling. Check Providers in child Settings.";
 
 pub const LOGIN_START_FAILED: &str = "Could not start local login.";
 pub const LOGIN_NOT_RUNNING: &str = "No local login is running.";

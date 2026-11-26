@@ -665,7 +665,7 @@ Claude は、既定で Claude Agent SDK の wheel に含まれる CLI を使い�
 
 基本の実行部品の導入に失敗した場合は、トレイから Kotoyose Child を終了し、セットアップを開き直します。選んだインストール先の `<version>\bin` で `kotoyose-child-app.exe repair` を実行する方法もあります。
 
-セットアップから手動で更新する場合、前の版に入っていた provider は新しい版のピンで入れ直します。PyPI に届かない場合は **Providers** の **Repair** から入れ直します。削除する場合はトレイを終了し、Windows の **インストールされているアプリ** から Kotoyose Child をアンインストールします。**Settings and logs** を選ぶと登録情報・方針・ログも削除します。別のフォルダーに既に入っている場合、セットアップはそのフォルダーを使うか、先にアンインストールするかを尋ねます。
+セットアップから手動で更新した場合も、子アプリの起動時に、前の版に入っていて子機の方針で許可されている provider を自動で入れ直します。失敗した場合は **Providers** の **Repair** から再試行できます。削除する場合はトレイを終了し、Windows の **インストールされているアプリ** から Kotoyose Child をアンインストールします。**Settings and logs** を選ぶと登録情報・方針・ログも削除します。別のフォルダーに既に入っている場合、セットアップはそのフォルダーを使うか、先にアンインストールするかを尋ねます。
 
 ### Ubuntu/Linux x64 に子機を入れる
 
@@ -707,7 +707,7 @@ rmdir "$stage"
 1. ホスト管理者は Windows のセットアップを `./scripts/build-child-installer.sh`、Linux x64 の tar.gz を `./scripts/build-child-linux.sh` で作ります。公開するファイルと同名の `.json` をそろえ、ホストのサービスと同じ実行ユーザーで `./scripts/publish-child-update.sh <dist dir>` を実行します。既定の公開先は `${XDG_DATA_HOME:-~/.local/share}/kotoyose/child-updates/` です。変更する場合はホストと公開スクリプトの両方に `KOTOYOSE_CHILD_UPDATES_DIR` を指定します。
 2. 公開後に子機が接続すると、ホストの **Children** にそのプラットフォームの公開版が表示されます。Windows と Linux のパッケージ版では **Settings → App update** で版とビルドを確認し、**Update** を押します。子機は登録先のホストとのリンクでファイルを取得します。Linux のソース版は、新しい版のソースを取得して `uv sync` と後述の `cargo build` を実行し、子機を再起動します。
 3. 取得と検証が終わると、実行中と待機中の仕事が終わるまで待ちます。中断して進めるときは **Interrupt and update** を選んで確認します。取得時に **Install on restart** を選んだ場合は、後で **App controls → Restart** を押して適用します。**Restart** はこの保留中か、インストール済みのビルドに切り替える必要があるときに表示します。
-4. 適用後は子機が再接続し、設定画面を開き直します。Linux では前の版で使っていた provider を新しい版のピンで入れ直します。**Providers** に Needs reinstall が表示された場合は、該当する provider の **Repair** を選びます。適用時のエラーは **Settings** に表示されます。基本ランタイムの導入ログは **Recent logs → Open log folder** の `repair.log` で確認できます。
+4. 適用後は子機が再接続し、設定画面を開き直します。Windows と Linux では、前の版に入っていて子機の方針で許可されている provider を、起動時に新しい版のピンで自動的に入れ直します。進捗と結果は **Providers** で確認できます。PyPI に届かないなどの理由で失敗した場合は、該当する provider の **Repair** から再試行できます。自動再インストールのログは **Settings → Recent logs**、基本ランタイムの導入ログは **Open log folder** の `repair.log` で確認できます。
 
 ### child の状態と host 側の準備
 

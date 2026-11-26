@@ -1,4 +1,10 @@
-use std::{cell::Cell, collections::HashMap, path::Path, rc::Rc, time::Duration};
+use std::{
+    cell::Cell,
+    collections::HashMap,
+    path::{Path, PathBuf},
+    rc::Rc,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use futures_util::{SinkExt, StreamExt};
@@ -11,10 +17,12 @@ use tokio::{
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::{
+    components,
     control::{self, Changes, Control},
     frame::{Frame, MAX_STREAM, Operation, write_timeout},
     link::{self, Socket},
     local_log::{self, Event as LogEvent},
+    messages,
     outbox::Outbox,
     runner::{self, Event, Phase, Runner},
     update,
@@ -65,10 +73,12 @@ impl Work {
 
 struct Mux<'a> {
     home: &'a Path,
+    bundled_python: Option<PathBuf>,
     host_fingerprint: &'a str,
     idle_time: Duration,
     idle_at: Option<Instant>,
     applying_policy: bool,
+    refreshing_components: bool,
     saving_policy: bool,
     draining_update: bool,
     reload_idle: bool,
@@ -86,10 +96,12 @@ impl<'a> Mux<'a> {
         host.enable_data(true);
         Self {
             home,
+            bundled_python: components::Runtime::installed().map(|runtime| runtime.python),
             host_fingerprint: "",
             idle_time,
             idle_at: None,
             applying_policy: false,
+            refreshing_components: false,
             saving_policy: false,
             draining_update: false,
             reload_idle: false,
@@ -146,8 +158,28 @@ impl<'a> Mux<'a> {
                     "",
                 ));
             }
-            let relayed_mcp =
-                operation == Operation::Turn && frame.payload()?.get("host_mcps").is_some();
+            let relayed_mcp = if operation == Operation::Turn {
+                let payload = frame.payload()?;
+                if let Some(driver) = payload["route"]["driver"].as_str()
+                    && components::driver_needs_reinstall(self.bundled_python.as_deref(), driver)
+                {
+                    return self.host_priority(operation.error(
+                        id,
+                        messages::COMPONENT_REINSTALL_REQUIRED,
+                        "",
+                    ));
+                }
+                payload.get("host_mcps").is_some()
+            } else {
+                false
+            };
+            if self.refreshing_components {
+                return self.host_priority(operation.error(
+                    id,
+                    "child providers are being refreshed",
+                    "",
+                ));
+            }
             if self.work.len() == WORK_LIMIT || !self.pipe.push(frame) {
                 return self.host_priority(operation.error(id, "child queue is full", ""));
             }
@@ -191,9 +223,10 @@ impl<'a> Mux<'a> {
         !self.saving_policy && self.work.is_empty() && self.host.is_empty() && !writing
     }
 
-    fn observe_policy(&mut self, current: Changes, applied: Changes) {
+    fn observe_changes(&mut self, current: Changes, applied: Changes) {
         self.saving_policy = current.saving_policy;
         self.applying_policy = current.policy != applied.policy;
+        self.refreshing_components = current.components != applied.components;
     }
 
     fn cancel(&mut self, id: u32, frame: Option<Frame>) -> Result<()> {
@@ -378,7 +411,10 @@ impl<'a> Mux<'a> {
         {
             self.failed(&anyhow::anyhow!("runner lifecycle timed out"))?;
         }
-        if self.work.is_empty() && (self.applying_policy || self.reload_idle) && self.ready() {
+        if self.work.is_empty()
+            && (self.applying_policy || self.refreshing_components || self.reload_idle)
+            && self.ready()
+        {
             self.idle_at = Some(now);
         }
         if self.idle_at.is_some_and(|at| now >= at) {
@@ -386,6 +422,8 @@ impl<'a> Mux<'a> {
             if let Some(runner) = &mut self.runner {
                 let reason = if self.applying_policy {
                     "policy_changed"
+                } else if self.refreshing_components {
+                    "components_changed"
                 } else if self.reload_idle {
                     "settings_changed"
                 } else {
@@ -474,7 +512,7 @@ pub async fn run(
         loop {
             let now = Instant::now();
             let next = control::current(&mut changes);
-            mux.observe_policy(next, applied);
+            mux.observe_changes(next, applied);
             if let Some((_, idle)) = next.idle
                 && next.idle != seen.idle
             {
@@ -495,7 +533,7 @@ pub async fn run(
                     return Ok(());
                 }
             }
-            if !mux.draining_update && mux.applying_policy && !mux.saving_policy && mux.work.is_empty() && mux.runner.is_none()
+            if !mux.draining_update && (mux.applying_policy || mux.refreshing_components) && !mux.saving_policy && mux.work.is_empty() && mux.runner.is_none()
                 && mux.closing.is_none() && mux.host.is_empty() && !writing.0.get()
             {
                 reconnect = true;
@@ -529,7 +567,7 @@ pub async fn run(
             tokio::select! {
                 _ = stop.wait_for(|stop| *stop) => return Ok(()),
                 _ = control::changed(&mut changes) => {},
-                _ = writing.1.notified(), if mux.applying_policy || mux.draining_update => {},
+                _ = writing.1.notified(), if mux.applying_policy || mux.refreshing_components || mux.draining_update => {},
                 _ = async { update.expect("update control").changed().await }, if update.is_some() => {},
                 error = &mut failure => return Err(error.context("host writer stopped")?),
                 _ = sleep_until(tick) => {},
@@ -546,7 +584,7 @@ pub async fn run(
                         let frame = link::parse_host_text(&body)?;
                         if frame.envelope.stream != 0 {
                             if let Some(changes) = &changes {
-                                mux.observe_policy(*changes.borrow(), applied);
+                                mux.observe_changes(*changes.borrow(), applied);
                             }
                             mux.host_frame(frame)?;
                         } else if frame.envelope.kind == "heartbeat" {
@@ -581,7 +619,7 @@ pub async fn run(
                             }
                         } else if frame.envelope.kind.starts_with("app_update_") {
                             if let Some(update) = update {
-                                transfer.frame(update, frame);
+                                transfer.frame(update, frame).await;
                             }
                         } else if frame.envelope.kind == "reject" {
                             return Err(link::reject(&frame));
@@ -696,14 +734,14 @@ mod tests {
         let changes = control.changes();
         let applied = *changes.borrow();
         let write = control.begin_policy_save();
-        mux.observe_policy(*changes.borrow(), applied);
+        mux.observe_changes(*changes.borrow(), applied);
         mux.host_frame(Frame::new(1, "turn", json!({}))).unwrap();
         assert_eq!(mux.host.next().await.envelope.kind, "error");
         assert!(mux.work.is_empty());
         assert!(!mux.applying_policy);
 
         drop(write);
-        mux.observe_policy(*changes.borrow(), applied);
+        mux.observe_changes(*changes.borrow(), applied);
         mux.host_frame(Frame::new(2, "turn", json!({}))).unwrap();
         assert!(mux.pipe.start_pending(2));
         assert!(!mux.applying_policy);

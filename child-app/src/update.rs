@@ -13,7 +13,10 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use ring::digest::{Context, SHA256};
 use serde::{Deserialize, Serialize};
 use tempfile::{Builder, NamedTempFile, TempPath};
-use tokio::{sync::Notify, time::Instant};
+use tokio::{
+    sync::{Notify, broadcast},
+    time::Instant,
+};
 
 use crate::{frame::Frame, state};
 
@@ -105,6 +108,7 @@ pub enum Phase {
     Idle,
     Requested,
     Downloading,
+    Verifying,
     Waiting,
     Deferred,
     Installing,
@@ -117,6 +121,7 @@ pub struct View {
     pub received: u64,
     pub error: Option<Error>,
     pub retry_after: u64,
+    pub expected_shutdown: bool,
 }
 
 #[derive(Default)]
@@ -128,15 +133,30 @@ struct Progress {
     interrupt: bool,
 }
 
-#[derive(Default)]
 pub struct Update {
     progress: Mutex<Progress>,
     changed: Notify,
+    views: broadcast::Sender<View>,
+    shutdown_seen: Notify,
+}
+
+impl Default for Update {
+    fn default() -> Self {
+        Self {
+            progress: Mutex::default(),
+            changed: Notify::new(),
+            views: broadcast::channel(32).0,
+            shutdown_seen: Notify::new(),
+        }
+    }
 }
 
 impl Update {
     pub fn view(&self) -> View {
-        let state = self.progress.lock().expect("update state");
+        Self::snapshot(&self.progress.lock().expect("update state"))
+    }
+
+    fn snapshot(state: &Progress) -> View {
         let mut view = state.view.clone();
         if let Some(deadline) = state.retry_at {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -147,6 +167,36 @@ impl Update {
 
     pub async fn changed(&self) {
         self.changed.notified().await;
+    }
+
+    pub fn views(&self) -> broadcast::Receiver<View> {
+        self.views.subscribe()
+    }
+
+    fn publish(&self, state: &Progress) {
+        if self.views.receiver_count() != 0 {
+            let _ = self.views.send(Self::snapshot(state));
+        }
+    }
+
+    pub async fn announce_shutdown(&self) {
+        let seen = self.shutdown_seen.notified();
+        {
+            let mut state = self.progress.lock().expect("update state");
+            if state.view.phase != Phase::Installing {
+                return;
+            }
+            state.view.expected_shutdown = true;
+            self.publish(&state);
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(2), seen).await;
+    }
+
+    pub fn acknowledge_shutdown(&self) {
+        let state = self.progress.lock().expect("update state");
+        if state.view.expected_shutdown {
+            self.shutdown_seen.notify_waiters();
+        }
     }
 
     fn offer(&self, offer: Option<Offer>) {
@@ -192,6 +242,7 @@ impl Update {
         state.retry_at = None;
         state.view.received = 0;
         state.view.phase = Phase::Requested;
+        self.publish(&state);
         self.changed.notify_one();
         true
     }
@@ -203,6 +254,7 @@ impl Update {
         }
         state.view.phase = Phase::Waiting;
         state.interrupt = interrupt;
+        self.publish(&state);
         self.changed.notify_one();
         true
     }
@@ -213,11 +265,20 @@ impl Update {
             return None;
         }
         state.view.phase = Phase::Downloading;
+        self.publish(&state);
         state.view.offer.clone()
     }
 
     fn advance(&self, received: u64) {
-        self.progress.lock().expect("update state").view.received = received;
+        let mut state = self.progress.lock().expect("update state");
+        state.view.received = received;
+        self.publish(&state);
+    }
+
+    fn verifying(&self) {
+        let mut state = self.progress.lock().expect("update state");
+        state.view.phase = Phase::Verifying;
+        self.publish(&state);
     }
 
     fn ready(&self) {
@@ -227,6 +288,7 @@ impl Update {
         } else {
             Phase::Waiting
         };
+        self.publish(&state);
     }
 
     pub fn draining(&self) -> bool {
@@ -239,6 +301,7 @@ impl Update {
             return false;
         }
         state.view.phase = Phase::Installing;
+        self.publish(&state);
         true
     }
 
@@ -251,7 +314,9 @@ impl Update {
         state.view.phase = Phase::Idle;
         state.view.received = 0;
         state.view.error = Some(error);
+        state.view.expected_shutdown = false;
         state.retry_at = None;
+        self.publish(&state);
     }
 
     fn retry_after(&self, seconds: u64) {
@@ -261,18 +326,23 @@ impl Update {
         state.view.received = 0;
         state.view.error = None;
         state.retry_at = Some(Instant::now() + Duration::from_secs(seconds));
+        self.publish(&state);
     }
 
     pub fn disconnected(&self) {
         let mut state = self.progress.lock().expect("update state");
         state.latest = None;
+        if state.view.phase == Phase::Installing {
+            return;
+        }
         state.view.offer = None;
         state.retry_at = None;
-        if !matches!(state.view.phase, Phase::Idle | Phase::Installing) {
+        if state.view.phase != Phase::Idle {
             state.view.phase = Phase::Idle;
             state.view.received = 0;
             state.view.error = Some(Error::Disconnect);
         }
+        self.publish(&state);
     }
 }
 
@@ -384,7 +454,7 @@ impl Transfer {
         }
     }
 
-    pub fn frame(&mut self, update: &Update, frame: Frame) {
+    pub async fn frame(&mut self, update: &Update, frame: Frame) {
         let kind = frame.envelope.kind.as_str();
         if kind == "app_update_offer" {
             if let Ok(payload) = frame.payload() {
@@ -405,14 +475,21 @@ impl Transfer {
                 .map_err(|_| Error::Verify)
                 .and_then(|chunk| download.chunk(chunk))
                 .map(|()| update.advance(download.received)),
-            "app_update_end" => match self.receiving.take().expect("receiving download").finish() {
-                Ok(path) => {
-                    self.verified = Some(path);
-                    update.ready();
-                    Ok(())
+            "app_update_end" => {
+                update.verifying();
+                let download = self.receiving.take().expect("receiving download");
+                match tokio::task::spawn_blocking(move || download.finish())
+                    .await
+                    .unwrap_or(Err(Error::Storage))
+                {
+                    Ok(path) => {
+                        self.verified = Some(path);
+                        update.ready();
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
                 }
-                Err(error) => Err(error),
-            },
+            }
             "app_update_error" => {
                 if let Ok(retry) = frame.payload_as::<Retry>()
                     && retry.code == "retry"
@@ -705,10 +782,10 @@ mod tests {
 
     const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
-    fn start(home: &Path, size: u64, sha256: &str, defer: bool) -> (Update, Transfer) {
+    async fn start(home: &Path, size: u64, sha256: &str, defer: bool) -> (Update, Transfer) {
         let update = Update::default();
         let mut transfer = Transfer::default();
-        transfer.frame(&update, offer(size, sha256));
+        transfer.frame(&update, offer(size, sha256)).await;
         assert!(update.request_download(sha256, defer));
         assert_eq!(
             transfer
@@ -725,13 +802,75 @@ mod tests {
         Frame::new(0, "app_update_chunk", json!({"offset":offset,"data":data}))
     }
 
-    #[test]
-    fn rejects_oversize_offer_and_owner_cannot_choose_a_different_hash() {
+    #[tokio::test]
+    async fn progress_reports_received_bytes_and_distinct_phases() {
+        let home = tempfile::tempdir().unwrap();
+        let (update, mut transfer) = start(home.path(), 3, ABC, false).await;
+        let mut views = update.views();
+        transfer.frame(&update, chunk(0, "YQ==")).await;
+        transfer.frame(&update, chunk(1, "YmM=")).await;
+        transfer
+            .frame(&update, Frame::new(0, "app_update_end", json!({})))
+            .await;
+        assert!(update.install(true));
+
+        for (phase, received) in [
+            ("downloading", 1),
+            ("downloading", 3),
+            ("verifying", 3),
+            ("waiting", 3),
+            ("installing", 3),
+        ] {
+            let view = serde_json::to_value(views.try_recv().unwrap()).unwrap();
+            assert_eq!(view["phase"], phase);
+            assert_eq!(view["received"], received);
+            assert_eq!(view["offer"]["size"], 3);
+            assert_eq!(view["expected_shutdown"], false);
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_keeps_the_offer_until_a_browser_sees_it_and_failure_clears_it() {
+        let home = tempfile::tempdir().unwrap();
+        let (update, mut transfer) = start(home.path(), 3, ABC, false).await;
+        transfer.frame(&update, chunk(0, "YWJj")).await;
+        transfer
+            .frame(&update, Frame::new(0, "app_update_end", json!({})))
+            .await;
+        assert!(update.install(true));
+        update.disconnected();
+        update.acknowledge_shutdown();
+        let mut views = update.views();
+        let shutdown = update.announce_shutdown();
+        tokio::pin!(shutdown);
+        tokio::select! {
+            view = views.recv() => {
+                let view = serde_json::to_value(view.unwrap()).unwrap();
+                assert_eq!(view["phase"], "installing");
+                assert_eq!(view["expected_shutdown"], true);
+                assert_eq!(view["offer"]["version"], crate::VERSION);
+            }
+            () = &mut shutdown => panic!("shutdown completed before acknowledgement"),
+        }
+        update.acknowledge_shutdown();
+        tokio::time::timeout(Duration::from_millis(100), shutdown)
+            .await
+            .unwrap();
+
+        update.fail(Error::Setup);
+        let view = serde_json::to_value(views.try_recv().unwrap()).unwrap();
+        assert_eq!(view["phase"], "idle");
+        assert_eq!(view["expected_shutdown"], false);
+        assert_eq!(view["error"], "setup");
+    }
+
+    #[tokio::test]
+    async fn rejects_oversize_offer_and_owner_cannot_choose_a_different_hash() {
         let update = Update::default();
         let mut transfer = Transfer::default();
-        transfer.frame(&update, offer(MAX_SIZE + 1, ABC));
+        transfer.frame(&update, offer(MAX_SIZE + 1, ABC)).await;
         assert!(update.view().offer.is_none());
-        transfer.frame(&update, offer(3, ABC));
+        transfer.frame(&update, offer(3, ABC)).await;
         assert!(!update.request_download(&"0".repeat(64), false));
     }
 
@@ -752,30 +891,34 @@ mod tests {
         assert!(offered.valid());
     }
 
-    #[test]
-    fn host_error_clears_stale_offer_and_allows_a_fresh_offer() {
+    #[tokio::test]
+    async fn host_error_clears_stale_offer_and_allows_a_fresh_offer() {
         let home = tempfile::tempdir().unwrap();
-        let (update, mut transfer) = start(home.path(), 3, ABC, true);
-        transfer.frame(&update, Frame::new(0, "app_update_error", json!({})));
+        let (update, mut transfer) = start(home.path(), 3, ABC, true).await;
+        transfer
+            .frame(&update, Frame::new(0, "app_update_error", json!({})))
+            .await;
         assert!(update.view().offer.is_none());
         assert!(matches!(update.view().error, Some(Error::Download)));
         assert!(transfer.deadline().is_none());
-        transfer.frame(&update, offer(3, ABC));
+        transfer.frame(&update, offer(3, ABC)).await;
         assert!(update.request_download(ABC, true));
     }
 
-    #[test]
-    fn retryable_host_error_keeps_the_offer_and_delays_the_next_request() {
+    #[tokio::test]
+    async fn retryable_host_error_keeps_the_offer_and_delays_the_next_request() {
         let home = tempfile::tempdir().unwrap();
-        let (update, mut transfer) = start(home.path(), 3, ABC, true);
-        transfer.frame(
-            &update,
-            Frame::new(
-                0,
-                "app_update_error",
-                json!({"code": "retry", "retry_after": 12}),
-            ),
-        );
+        let (update, mut transfer) = start(home.path(), 3, ABC, true).await;
+        transfer
+            .frame(
+                &update,
+                Frame::new(
+                    0,
+                    "app_update_error",
+                    json!({"code": "retry", "retry_after": 12}),
+                ),
+            )
+            .await;
         let view = update.view();
         assert!(view.offer.is_some() && view.error.is_none() && view.phase == Phase::Idle);
         assert!((1..=12).contains(&view.retry_after));
@@ -795,14 +938,16 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[test]
-    fn hashes_the_bytes_consumed_from_the_open_archive_in_a_private_directory() {
+    #[tokio::test]
+    async fn hashes_the_bytes_consumed_from_the_open_archive_in_a_private_directory() {
         use std::os::unix::fs::PermissionsExt;
 
         let home = tempfile::tempdir().unwrap();
-        let (update, mut transfer) = start(home.path(), 3, ABC, true);
-        transfer.frame(&update, chunk(0, "YWJj"));
-        transfer.frame(&update, Frame::new(0, "app_update_end", json!({})));
+        let (update, mut transfer) = start(home.path(), 3, ABC, true).await;
+        transfer.frame(&update, chunk(0, "YWJj")).await;
+        transfer
+            .frame(&update, Frame::new(0, "app_update_end", json!({})))
+            .await;
         let mut package = transfer.take_verified().unwrap();
         assert_eq!(
             package
@@ -848,27 +993,31 @@ mod tests {
         assert!(path.join(ERROR_FILE).is_file());
     }
 
-    #[test]
-    fn truncated_extra_or_modified_bytes_delete_private_file() {
+    #[tokio::test]
+    async fn truncated_extra_or_modified_bytes_delete_private_file() {
         for (size, data) in [(4, "YWJj"), (2, "YWJj"), (3, "YWJk")] {
             let home = tempfile::tempdir().unwrap();
-            let (update, mut transfer) = start(home.path(), size, ABC, false);
-            transfer.frame(&update, chunk(0, data));
-            transfer.frame(&update, Frame::new(0, "app_update_end", json!({})));
+            let (update, mut transfer) = start(home.path(), size, ABC, false).await;
+            transfer.frame(&update, chunk(0, data)).await;
+            transfer
+                .frame(&update, Frame::new(0, "app_update_end", json!({})))
+                .await;
             assert!(matches!(update.view().error, Some(Error::Verify)));
             assert!(transfer.take_verified().is_none());
             assert_eq!(home.path().read_dir().unwrap().count(), 0);
         }
     }
 
-    #[test]
-    fn disconnect_discards_partial_and_deferred_installers() {
+    #[tokio::test]
+    async fn disconnect_discards_partial_and_deferred_installers() {
         for complete in [false, true] {
             let home = tempfile::tempdir().unwrap();
-            let (update, mut transfer) = start(home.path(), 3, ABC, true);
-            transfer.frame(&update, chunk(0, "YWJj"));
+            let (update, mut transfer) = start(home.path(), 3, ABC, true).await;
+            transfer.frame(&update, chunk(0, "YWJj")).await;
             if complete {
-                transfer.frame(&update, Frame::new(0, "app_update_end", json!({})));
+                transfer
+                    .frame(&update, Frame::new(0, "app_update_end", json!({})))
+                    .await;
             }
             assert_eq!(home.path().read_dir().unwrap().count(), 1);
             drop(transfer);
@@ -879,13 +1028,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn waits_for_active_work_or_explicit_interrupt_and_honors_deferral() {
+    #[tokio::test]
+    async fn waits_for_active_work_or_explicit_interrupt_and_honors_deferral() {
         let home = tempfile::tempdir().unwrap();
         for (defer, interrupt) in [(false, false), (false, true), (true, false)] {
-            let (update, mut transfer) = start(home.path(), 3, ABC, defer);
-            transfer.frame(&update, chunk(0, "YWJj"));
-            transfer.frame(&update, Frame::new(0, "app_update_end", json!({})));
+            let (update, mut transfer) = start(home.path(), 3, ABC, defer).await;
+            transfer.frame(&update, chunk(0, "YWJj")).await;
+            transfer
+                .frame(&update, Frame::new(0, "app_update_end", json!({})))
+                .await;
             assert_eq!(update.draining(), !defer);
             assert!(!update.install(false));
             if defer {

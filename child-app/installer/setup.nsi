@@ -372,7 +372,7 @@ Function ShowFinish
         ${If} $RuntimeFailed == "1"
             ${NSD_SetText} $mui.FinishPage.Text "The base runtime could not be installed. Run Setup again. Providers marked Needs reinstall can also be repaired in Providers once the runtime is ready."
         ${Else}
-            ${NSD_SetText} $mui.FinishPage.Text "One or more providers need reinstalling. Open Settings from the system tray, select Providers, and choose Repair when PyPI is reachable."
+            ${NSD_SetText} $mui.FinishPage.Text "When Kotoyose Child starts, it tries to reinstall previously installed providers allowed by your child policy. You can repair the others in Providers."
         ${EndIf}
     ${EndIf}
 FunctionEnd
@@ -438,15 +438,11 @@ Section -Install
         Call AbortInstall
     ${EndIf}
     SetOutPath "$INSTDIR"
-    StrCpy $1 ""
-    ${If} $AppUpdate == "1"
-        StrCpy $1 "--offline"
-    ${EndIf}
     DetailPrint "Installing the bundled base runtime packages."
     ${If} $PreviousVersion == ""
-        nsExec::ExecToLog '"${APP}" repair $1'
+        nsExec::ExecToLog '"${APP}" repair'
     ${Else}
-        nsExec::ExecToLog '"${APP}" repair $1 --previous "$PreviousVersion"'
+        nsExec::ExecToLog '"${APP}" repair --previous "$PreviousVersion"'
     ${EndIf}
     Pop $0
     ${If} $0 != 0
@@ -460,7 +456,7 @@ Section -Install
     ${EndIf}
     Call ProviderRepairPending
     ${If} $0 == 1
-        DetailPrint "One or more providers need reinstalling. Open Settings, then Providers, and choose Repair once the runtime is ready."
+        DetailPrint "When Kotoyose Child starts, it tries to reinstall previously installed providers allowed by your child policy. You can repair the others in Providers."
     ${EndIf}
 
     ClearErrors

@@ -16,6 +16,7 @@ pub enum Event<'a> {
     RunnerFailure,
     PolicySaved,
     IdleSaved,
+    ProviderRepair { provider: &'a str, message: &'a str },
 }
 
 pub fn diagnostic(error: &anyhow::Error) -> String {
@@ -100,6 +101,9 @@ pub fn record(home: &Path, event: Event<'_>) {
         Event::RunnerFailure => "runner failed".into(),
         Event::PolicySaved => "policy saved".into(),
         Event::IdleSaved => "runner idle timeout saved".into(),
+        Event::ProviderRepair { provider, message } => {
+            format!("automatic provider repair [{provider}]: {message}")
+        }
     };
     let timestamp = time::OffsetDateTime::now_utc()
         .replace_nanosecond(0)

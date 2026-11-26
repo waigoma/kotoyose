@@ -203,21 +203,13 @@ async fn run(
 }
 
 enum Command {
-    Enroll {
-        code: String,
-        name: String,
-    },
-    Run {
-        no_tray: bool,
-    },
+    Enroll { code: String, name: String },
+    Run { no_tray: bool },
     Ui,
     Quit,
     Status,
     Autostart(Autostart),
-    Repair {
-        previous: Option<OsString>,
-        offline: bool,
-    },
+    Repair { previous: Option<OsString> },
 }
 
 enum Autostart {
@@ -256,16 +248,17 @@ fn arguments(args: &[OsString]) -> Result<Option<Command>> {
         }
         [command] if command == "status" => Ok(Some(Command::Status)),
         [command, args @ ..] if command == "repair" => {
-            let (offline, args) = match args {
-                [flag, args @ ..] if flag == "--offline" => (true, args),
-                _ => (false, args),
+            // Older Setup builds explicitly requested offline base repair.
+            let args = match args {
+                [flag, args @ ..] if flag == "--offline" => args,
+                _ => args,
             };
             let previous = match args {
                 [] => None,
                 [flag, version] if flag == "--previous" => Some(version.clone()),
                 _ => bail!("{USAGE}"),
             };
-            Ok(Some(Command::Repair { previous, offline }))
+            Ok(Some(Command::Repair { previous }))
         }
         [command, code, flag, name] if command == "enroll" && flag == "--name" => {
             Ok(Some(Command::Enroll {
@@ -306,12 +299,12 @@ async fn entry(command: Command) -> Result<()> {
     if matches!(command, Command::Quit) {
         return instance::quit(&home);
     }
-    if let Command::Repair { previous, offline } = command {
+    if let Command::Repair { previous } = command {
         #[cfg(windows)]
-        return parts::repair(&home, previous.as_deref(), offline).await;
+        return parts::repair(&home, previous.as_deref()).await;
         #[cfg(not(windows))]
         {
-            let _ = (previous, offline);
+            let _ = previous;
             bail!("repair is available on Windows");
         }
     }

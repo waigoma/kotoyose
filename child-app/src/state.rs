@@ -407,6 +407,11 @@ pub async fn catalog(home: &Path, python: Option<&Path>) -> Result<Catalog> {
     policy.validate(home)?;
     let mut available = match available_adapters(home, python).await {
         Ok(adapters) => adapters,
+        Err(crate::components::AvailabilityError::Busy) => {
+            let mut adapters = crate::components::cached_adapters(home, python).await;
+            adapters.extend(legacy_adapters(python));
+            adapters
+        }
         Err(error)
             if policy
                 .adapters

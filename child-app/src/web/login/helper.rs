@@ -14,7 +14,7 @@ pub(super) struct Helper {
     pub(super) output: Output,
     process: Process,
     #[cfg(target_os = "linux")]
-    _tracked: crate::process::LoginChild,
+    _tracked: crate::process::ManagedChild,
 }
 
 impl Helper {
@@ -41,7 +41,8 @@ impl Helper {
         #[cfg(windows)]
         let (process, input, output) = crate::process::spawn_in_job(python, args)?;
         #[cfg(target_os = "linux")]
-        let tracked = crate::process::LoginChild::track(process.id().expect("spawned helper PID"));
+        let tracked =
+            crate::process::ManagedChild::track(process.id().expect("spawned helper PID"));
         Ok(Self {
             input: Some(input),
             output,

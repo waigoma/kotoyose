@@ -7,7 +7,6 @@ use std::{
     fs::File,
     io::{self, Write},
     process::ExitStatus,
-    time::Duration,
 };
 use std::{path::Path, process::Command};
 
@@ -95,13 +94,13 @@ async fn run_logged_pip(
     command: tokio::process::Command,
     python: &Path,
     log: &RepairLog,
-    deadline: Option<Duration>,
 ) -> Result<ExitStatus> {
     let status = components::run_pip(
-        command,
+        components::start_pip(command)?,
         state::python_root(python),
         |line| log.record(line),
-        deadline,
+        None,
+        std::future::pending(),
     )
     .await?;
     log.record(&format!("pip: {status}"))?;
@@ -109,12 +108,12 @@ async fn run_logged_pip(
 }
 
 #[cfg(windows)]
-pub async fn repair(home: &Path, previous_version: Option<&OsStr>, offline: bool) -> Result<()> {
+pub async fn repair(home: &Path, previous_version: Option<&OsStr>) -> Result<()> {
     state::private_dir(home)?;
     let _lock = state::lock(home)?.context(messages::windows::REPAIR_LOCKED)?;
     let log =
         RepairLog::create(&local_log::folder(home)).context("Could not open logs\\repair.log.")?;
-    let result = repair_runtime(previous_version, offline, &log).await;
+    let result = repair_runtime(previous_version, &log).await;
     if let Err(error) = &result {
         let reason = crate::component_output::redact(&local_log::diagnostic(error), None);
         log.write(&format!("Repair failed: {reason}"))
@@ -124,11 +123,7 @@ pub async fn repair(home: &Path, previous_version: Option<&OsStr>, offline: bool
 }
 
 #[cfg(windows)]
-async fn repair_runtime(
-    previous_version: Option<&OsStr>,
-    offline: bool,
-    log: &RepairLog,
-) -> Result<()> {
+async fn repair_runtime(previous_version: Option<&OsStr>, log: &RepairLog) -> Result<()> {
     let exe = env::current_exe()?;
     let runtime = components::Runtime::installed().context(messages::windows::REPAIR_SOURCE)?;
     let mut previous_python = None;
@@ -154,7 +149,7 @@ async fn repair_runtime(
             previous_python = Some(previous.join("python/python.exe"));
         }
     }
-    install_runtime(&runtime, previous_python.as_deref(), offline, log).await?;
+    install_runtime(&runtime, previous_python.as_deref(), log).await?;
     log.record(messages::windows::REPAIR_DONE)?;
     Ok(())
 }
@@ -169,7 +164,7 @@ pub async fn repair_linux(version: &Path, previous: Option<&Path>, log_dir: &Pat
     let previous_python =
         previous.and_then(|path| state::bundled_python(&path.join("bin/kotoyose-child-app")));
     let log = RepairLog::create(log_dir)?;
-    let result = install_runtime(&runtime, previous_python.as_deref(), false, &log).await;
+    let result = install_runtime(&runtime, previous_python.as_deref(), &log).await;
     if let Err(error) = &result {
         log.write(&format!(
             "Repair failed: {}",
@@ -183,7 +178,6 @@ pub async fn repair_linux(version: &Path, previous: Option<&Path>, log_dir: &Pat
 async fn install_runtime(
     runtime: &components::Runtime,
     previous_python: Option<&Path>,
-    offline: bool,
     log: &RepairLog,
 ) -> Result<()> {
     let python = &runtime.python;
@@ -221,7 +215,7 @@ async fn install_runtime(
             "-r",
         ])
         .arg(requirements);
-    let status = run_logged_pip(command, python, log, None).await?;
+    let status = run_logged_pip(command, python, log).await?;
     ensure!(status.success(), messages::repair_failed(status));
 
     log.record("Installing the bundled Kotoyose wheel.")?;
@@ -235,29 +229,10 @@ async fn install_runtime(
             "--no-warn-script-location",
         ])
         .arg(wheel);
-    let status = run_logged_pip(command, python, log, None).await?;
+    let status = run_logged_pip(command, python, log).await?;
     ensure!(status.success(), messages::repair_failed(status));
 
     fs::write(ready, [])?;
-    for provider in components::providers() {
-        if !offline && components::needs_reinstall(python, &provider.id) {
-            log.record(&format!("Restoring {} from PyPI.", provider.name))?;
-            let result = match components::install_command(runtime, &provider) {
-                Ok(command) => run_logged_pip(command, python, log, Some(Duration::from_secs(180)))
-                    .await
-                    .and_then(|status| {
-                        ensure!(status.success(), messages::COMPONENT_PIP_FAILED);
-                        Ok(())
-                    }),
-                Err(error) => Err(error),
-            };
-            match result {
-                Ok(()) => components::clear_reinstall(python, &provider.id)
-                    .context(messages::COMPONENT_REPAIR_STATE)?,
-                Err(error) => log.record(&format!("{} needs reinstall. {error}", provider.name))?,
-            }
-        }
-    }
     Ok(())
 }
 
@@ -280,7 +255,7 @@ mod tests {
                 ">&2; exit 7",
             ),
         ]);
-        let status = run_logged_pip(fake_pip, Path::new("/opt/python/bin/python"), &log, None)
+        let status = run_logged_pip(fake_pip, Path::new("/opt/python/bin/python"), &log)
             .await
             .unwrap();
         assert_eq!(status.code(), Some(7));

@@ -494,5 +494,6 @@ def test_default_rootfs_parent_uses_xdg_or_home_without_personal_paths():
     assert from_home == Path("/tmp/example/.local/share/kotoyose/rootfs")
     assert "sample-user" not in str(from_home)
     assert ".task-hub" not in str(from_home)
-    assert builder.DEFAULT_PARENT == builder.default_rootfs_parent()
+    # DEFAULT_PARENT is resolved at import time; tests point XDG_DATA_HOME elsewhere, so compare its shape.
+    assert builder.DEFAULT_PARENT.parts[-2:] == ("kotoyose", "rootfs")
     assert ".task-hub" not in str(builder.DEFAULT_PARENT)

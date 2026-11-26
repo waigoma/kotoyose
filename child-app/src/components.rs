@@ -12,12 +12,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
-    process::Command,
+    process::{Child, Command},
     sync::{Mutex, RwLock, RwLockWriteGuard, mpsc, oneshot},
     time::{Instant, timeout},
 };
 
 use crate::{messages, parts, state};
+
+mod auto_repair;
+pub use auto_repair::{AutoRepairs, RepairTask};
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Provider {
@@ -132,15 +135,16 @@ async fn probe(home: &Path, python: &Path, mode: ProbeMode) -> Result<Vec<Probe>
         ProbeMode::Status => ("status", 35),
         ProbeMode::Check => ("check", 35),
     };
-    let output = timeout(
-        Duration::from_secs(seconds),
-        command(python)
-            .args(["-I", "-m", "kotoyose.child_runner", "--home"])
-            .arg(home)
-            .args(["--components", arg])
-            .output(),
-    )
-    .await??;
+    let child = command(python)
+        .args(["-I", "-m", "kotoyose.child_runner", "--home"])
+        .arg(home)
+        .args(["--components", arg])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    #[cfg(target_os = "linux")]
+    let _tracked = crate::process::ManagedChild::track(child.id().expect("spawned probe PID"));
+    let output = timeout(Duration::from_secs(seconds), child.wait_with_output()).await??;
     ensure!(output.status.success(), "runner components probe failed");
     let rows: Vec<Probe> = serde_json::from_slice(&output.stdout)?;
     let catalog = catalog();
@@ -226,6 +230,19 @@ struct CachedAvailability {
 
 static AVAILABILITY: Mutex<Option<CachedAvailability>> = Mutex::const_new(None);
 
+pub async fn cached_adapters(home: &Path, python: Option<&Path>) -> Vec<String> {
+    let cache = AVAILABILITY.lock().await;
+    cache
+        .as_ref()
+        .filter(|cached| cached.home == home)
+        .and_then(|cached| cached.last_good.as_ref())
+        .into_iter()
+        .flatten()
+        .filter(|driver| !driver_needs_reinstall(python, driver))
+        .cloned()
+        .collect()
+}
+
 pub async fn available(
     home: &Path,
     python: Option<&Path>,
@@ -277,6 +294,7 @@ pub struct Status {
     pub installed: Vec<Probe>,
     pub can_manage_packages: bool,
     pub needs_reinstall: Vec<String>,
+    auto_repair: BTreeMap<String, auto_repair::RepairStatus>,
     pub error: Option<&'static str>,
 }
 
@@ -306,6 +324,16 @@ fn reinstall_marker(python: &Path, provider: &str) -> PathBuf {
 
 pub fn needs_reinstall(python: &Path, provider: &str) -> bool {
     reinstall_marker(python, provider).is_file()
+}
+
+pub fn driver_needs_reinstall(python: Option<&Path>, driver: &str) -> bool {
+    python.is_some_and(|python| {
+        catalog().providers.iter().any(|provider| {
+            provider.driver == driver
+                && !provider.packages.is_empty()
+                && needs_reinstall(python, &provider.id)
+        })
+    })
 }
 
 pub fn mark_for_reinstall(python: &Path, provider: &str) -> io::Result<()> {
@@ -352,18 +380,26 @@ pub fn carry_provider_repairs(previous: &Path, python: &Path, sites: &[PathBuf])
     Ok(())
 }
 
-pub async fn status(home: &Path, runtime: Option<&Runtime>, mode: ProbeMode) -> Status {
+pub async fn status(
+    home: &Path,
+    runtime: Option<&Runtime>,
+    mode: ProbeMode,
+    repairs: &AutoRepairs,
+) -> Status {
     let providers = providers();
+    // A busy response must keep polling if it raced with the end of a repair.
+    let auto_repair = repairs.snapshot();
     let Ok(_guard) = COMPONENT_LOCK.try_read() else {
         return Status {
             providers,
             installed: Vec::new(),
             can_manage_packages: false,
             needs_reinstall: Vec::new(),
+            auto_repair,
             error: Some(messages::COMPONENT_BUSY),
         };
     };
-    let needs_reinstall = providers
+    let needs_reinstall: Vec<_> = providers
         .iter()
         .filter(|provider| {
             !provider.packages.is_empty()
@@ -388,10 +424,12 @@ pub async fn status(home: &Path, runtime: Option<&Runtime>, mode: ProbeMode) -> 
         }),
         None => Err(anyhow::anyhow!("runner Python unavailable")),
     };
+    let auto_repair = repairs.reconcile(&needs_reinstall);
     Status {
         providers,
         can_manage_packages,
         needs_reinstall,
+        auto_repair,
         error: result
             .as_ref()
             .err()
@@ -431,9 +469,7 @@ impl Job {
             Ok(message) => (true, message.to_owned()),
             Err(error) => (false, error.to_string()),
         };
-        if let Some(cached) = AVAILABILITY.lock().await.as_mut() {
-            cached.stamp = None;
-        }
+        invalidate_availability().await;
         drop(self.lock);
         drop(self.progress);
         let _ = self.result.send(Event::Result { ok, message });
@@ -478,22 +514,18 @@ impl Job {
                         .args(&self.provider.packages);
                     pip
                 };
-                mark_for_reinstall(&runtime.python, &self.provider.id)
-                    .context(messages::COMPONENT_REPAIR_STATE)?;
-                let status = run_pip(
-                    pip,
-                    state::python_root(&runtime.python),
+                let child = start_package_change(runtime, &self.provider, pip)?;
+                finish_package_change(
+                    runtime,
+                    &self.provider,
+                    child,
                     |message| {
                         let _ = self.progress.try_send(message.to_owned());
                         Ok(())
                     },
-                    Some(PACKAGE_TIMEOUT),
+                    std::future::pending(),
                 )
-                .await?;
-                ensure!(status.success(), messages::COMPONENT_PIP_FAILED);
-                clear_reinstall(&runtime.python, &self.provider.id)
-                    .context(messages::COMPONENT_REPAIR_STATE)?;
-                Ok(messages::COMPONENT_PACKAGES_CHANGED)
+                .await
             }
             Change::UseCli(choice) => {
                 let _lock = state::SAVE_LOCK.lock().await;
@@ -512,9 +544,15 @@ impl Job {
     }
 }
 
+async fn invalidate_availability() {
+    if let Some(cached) = AVAILABILITY.lock().await.as_mut() {
+        cached.stamp = None;
+    }
+}
+
 pub const PACKAGE_TIMEOUT: Duration = Duration::from_secs(900);
 
-pub fn install_command(runtime: &Runtime, provider: &Provider) -> Result<Command> {
+fn install_command(runtime: &Runtime, provider: &Provider) -> Result<Command> {
     ensure!(
         !provider.packages.is_empty(),
         messages::COMPONENT_PINS_MISSING
@@ -528,19 +566,60 @@ pub fn install_command(runtime: &Runtime, provider: &Provider) -> Result<Command
     Ok(pip)
 }
 
-pub async fn run_pip(
-    mut pip: Command,
-    runtime_root: Option<&Path>,
+fn start_package_change(runtime: &Runtime, provider: &Provider, pip: Command) -> Result<Pip> {
+    mark_for_reinstall(&runtime.python, &provider.id).context(messages::COMPONENT_REPAIR_STATE)?;
+    start_pip(pip)
+}
+
+async fn finish_package_change(
+    runtime: &Runtime,
+    provider: &Provider,
+    pip: Pip,
     output: impl Fn(&str) -> io::Result<()>,
-    deadline: Option<Duration>,
-) -> Result<ExitStatus> {
-    let mut child = pip
+    cancelled: impl Future<Output = ()>,
+) -> Result<&'static str> {
+    let status = run_pip(
+        pip,
+        state::python_root(&runtime.python),
+        output,
+        Some(PACKAGE_TIMEOUT),
+        cancelled,
+    )
+    .await?;
+    ensure!(status.success(), messages::COMPONENT_PIP_FAILED);
+    clear_reinstall(&runtime.python, &provider.id).context(messages::COMPONENT_REPAIR_STATE)?;
+    Ok(messages::COMPONENT_PACKAGES_CHANGED)
+}
+
+pub struct Pip {
+    child: Child,
+    #[cfg(target_os = "linux")]
+    _tracked: crate::process::ManagedChild,
+}
+
+pub fn start_pip(mut pip: Command) -> Result<Pip> {
+    let child = pip
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .context(messages::PYTHON_START)?;
+    Ok(Pip {
+        #[cfg(target_os = "linux")]
+        _tracked: crate::process::ManagedChild::track(child.id().expect("spawned pip PID")),
+        child,
+    })
+}
+
+pub async fn run_pip(
+    mut pip: Pip,
+    runtime_root: Option<&Path>,
+    output: impl Fn(&str) -> io::Result<()>,
+    deadline: Option<Duration>,
+    cancelled: impl Future<Output = ()>,
+) -> Result<ExitStatus> {
+    let child = &mut pip.child;
     let stdout = child.stdout.take().expect("pip stdout");
     let stderr = child.stderr.take().expect("pip stderr");
     let wait = async {
@@ -553,17 +632,25 @@ pub async fn run_pip(
         err?;
         exit.context(messages::COMPONENT_PIP_FAILED)
     };
-    let result = match deadline {
-        Some(deadline) => timeout(deadline, wait).await,
-        None => Ok(wait.await),
+    let result = tokio::select! {
+        biased;
+        _ = cancelled => Err(messages::COMPONENT_CANCELLED),
+        result = async {
+            match deadline {
+                Some(deadline) => timeout(deadline, wait).await.map_err(|_| messages::COMPONENT_TIMEOUT),
+                None => Ok(wait.await),
+            }
+        } => result,
     };
-    let Ok(exit) = result else {
-        // Keep the component lock until pip has stopped changing files.
-        let _ = child.kill().await;
-        let _ = timeout(Duration::from_secs(15), child.wait()).await;
-        anyhow::bail!(messages::COMPONENT_TIMEOUT);
-    };
-    exit
+    match result {
+        Ok(exit) => exit,
+        Err(message) => {
+            // Keep the component lock until pip has stopped changing files.
+            let _ = child.kill().await;
+            let _ = timeout(Duration::from_secs(15), child.wait()).await;
+            anyhow::bail!(message);
+        }
+    }
 }
 
 async fn progress(
