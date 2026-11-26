@@ -48,16 +48,27 @@ async def running_agent_execution_harness(tmp_path, monkeypatch):
             await asyncio.gather(*list(hub.service._tasks.values()), return_exceptions=True)
 
 
-async def wait_snapshot(hub, key, predicate, timeout=5):
+async def wait_snapshot(hub, key, predicate, timeout=15):
+    # Returns as soon as the predicate holds. The bound is generous because GitHub-hosted runners
+    # (2 cores, with Postgres in a service container) took more than 5 s to reach waiting_provider.
+    last = {}
+
     async def poll():
         while True:
             response = await hub.client.get('/v1/executions/by-key/' + key)
             assert response.status_code == 200, response.text
             value = response.json()
+            last['value'] = value
             if predicate(value):
                 return value
             await asyncio.sleep(.02)
-    return await asyncio.wait_for(poll(), timeout)
+    try:
+        return await asyncio.wait_for(poll(), timeout)
+    except TimeoutError:
+        value = last.get('value') or {}
+        raise AssertionError(
+            f"snapshot did not match within {timeout}s; last state={value.get('state')!r}, "
+            f"sequence={value.get('sequence')!r}") from None
 
 
 def set_ttl(raw, seconds):
