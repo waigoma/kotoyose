@@ -1,5 +1,14 @@
 # Kotoyose の変更履歴
 
+## 1.4.4 (2026-11-28)
+
+`kotoyose.provider-data/1` 経由の Cursor (`cursor-cli`) が ACP セッション開始時に `401 authentication_failed` になる不具合を修正しました。
+
+### Cursor ACP 認証ハンドシェイク修正
+
+- **`acp.home_auth_methods` サポート**: `kotoyose.provider-data/1` の `acp` オブジェクトに `home_auth_methods`（`["cursor_login"]`）を追加し、ACP セッション初期化時に `authenticate(methodId="cursor_login")` を実行すると同時に `NO_OPEN_BROWSER=1` を適用するようにしました。
+- **同梱プリセット更新**: `cursor-cli.json` に `"home_auth_methods": ["cursor_login"]` を追加しました。
+
 ## 1.4.3 (2026-11-28)
 
 Windows x64 子機で **Antigravity (`v1.5.18`)** と **Cursor (`v2026.11.22-e9042b2`)** を Grok Build と同様に導入・承認・実行できるようにしました。

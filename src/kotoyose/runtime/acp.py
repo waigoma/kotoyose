@@ -198,6 +198,7 @@ class AcpRuntimeSession:
                 spec = declaration.acp_write
             require_acp_landlock(spec)
             env = acp_data_env(declaration, child_home, self._leases)
+            env.update(spec.env)
             command = managed_command(declaration, child_home)
             self.binary = Path(command[0])
         else:

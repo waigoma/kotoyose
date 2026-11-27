@@ -2321,3 +2321,23 @@ def test_zip_supports_archive_layouts(tmp_path, monkeypatch, layout):
         script.chmod(0o600)
         script.write_bytes(b"changed")
         assert installed_path(row, home) is None
+
+
+def test_cursor_declaration_configures_acp_home_auth_methods():
+    from kotoyose.provider_data_host import bundled_declaration_bytes
+
+    row = parse_declaration(bundled_declaration_bytes("cursor-cli"))
+    for spec in (row.acp, row.acp_unrestricted):
+        assert spec is not None
+        assert spec.home_auth_methods == ("cursor_login",)
+        assert spec.env == (("NO_OPEN_BROWSER", "1"),)
+
+
+@pytest.mark.parametrize("methods", [[], "cursor_login", ["unknown"], ["cursor_login", "cursor_login"], [123]])
+def test_acp_rejects_invalid_home_auth_methods(methods):
+    from kotoyose.provider_data_host import bundled_declaration_bytes
+
+    doc = json.loads(bundled_declaration_bytes("cursor-cli"))
+    doc["acp"]["home_auth_methods"] = methods
+    with pytest.raises(ValueError, match="home_auth_methods|text"):
+        parse_declaration(json.dumps(doc).encode())

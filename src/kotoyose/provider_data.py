@@ -47,6 +47,7 @@ _SHELL = re.compile(
 _CREDENTIAL = re.compile(r"(?i)(api[_-]?key|token|secret|password|credential)")
 _ACP_ARGV = {("acp",), ("acp", "--model", "{model}"), GROK_ACP_READ_ARGV}
 _ACP_WRITE_ARGV = {GROK_ACP_WRITE_ARGV}
+_ACP_HOME_AUTH_METHODS = {"cursor_login"}
 _LOGIN_ARGV = {("-p", "/usage", "--output-format", "json"), ("login",), ("login", "--device-auth")}
 _STATUS_ARGV = {("status", "--format", "json"), ("-p", "/usage", "--output-format", "json"), ("status",), ("login", "status"), ("models",)}
 _PRINT_ARGV = {("--", "{prompt}"), ("--prompt={prompt}",)}
@@ -240,11 +241,22 @@ def _argv(value, allowed, placeholders):
 
 
 def _acp_commands(value) -> tuple[AcpSpec | None, AcpSpec | None, AcpSpec | None, str | None]:
-    obj = _object(value, ("placeholders",), ("argv", "write_argv", "unrestricted_argv", "mcp_guard"))
-    read = AcpSpec(_argv(obj["argv"], _ACP_ARGV, {"{model}"})) if "argv" in obj else None
-    write = AcpSpec(_argv(obj["write_argv"], _ACP_WRITE_ARGV, {"{model}"})) if "write_argv" in obj else None
-    unrestricted = (AcpSpec(_argv(obj["unrestricted_argv"], {GROK_ACP_UNRESTRICTED_ARGV, ("acp",), ("acp", "--model", "{model}")}, {"{model}"}))
-                    if "unrestricted_argv" in obj else None)
+    obj = _object(value, ("placeholders",), ("argv", "write_argv", "unrestricted_argv", "mcp_guard", "home_auth_methods"))
+    home_auth_methods: tuple[str, ...] = ()
+    if "home_auth_methods" in obj:
+        raw_auth = obj["home_auth_methods"]
+        if not isinstance(raw_auth, list) or not raw_auth or len(raw_auth) > 4:
+            raise ValueError("unsupported ACP home_auth_methods")
+        home_auth_methods = tuple(_text(item) for item in raw_auth)
+        if any(item not in _ACP_HOME_AUTH_METHODS for item in home_auth_methods) or len(set(home_auth_methods)) != len(home_auth_methods):
+            raise ValueError("unsupported ACP home_auth_methods")
+    env = (("NO_OPEN_BROWSER", "1"),) if "cursor_login" in home_auth_methods else ()
+    read = AcpSpec(_argv(obj["argv"], _ACP_ARGV, {"{model}"}), home_auth_methods=home_auth_methods, env=env) if "argv" in obj else None
+    write = AcpSpec(_argv(obj["write_argv"], _ACP_WRITE_ARGV, {"{model}"}), home_auth_methods=home_auth_methods, env=env) if "write_argv" in obj else None
+    unrestricted = (AcpSpec(
+        _argv(obj["unrestricted_argv"], {GROK_ACP_UNRESTRICTED_ARGV, ("acp",), ("acp", "--model", "{model}")}, {"{model}"}),
+        home_auth_methods=home_auth_methods, env=env,
+    ) if "unrestricted_argv" in obj else None)
     model = any(spec is not None and "{model}" in spec.argv for spec in (read, write, unrestricted))
     if not ((model and obj["placeholders"] == ["model"]) or (
         any(spec is not None for spec in (read, unrestricted))
