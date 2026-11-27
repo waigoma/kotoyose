@@ -288,14 +288,17 @@ def _login_operations(operations, hosts):
     signed_out = status.get("signed_out_pattern")
     if signed_out is not None and (status_argv != ("models",) or signed_out != GROK_SIGNED_OUT_PATTERN):
         raise ValueError("unsupported declaration signed-out pattern")
+    cursor_json_status = status_argv == ("status", "--format", "json")
     login_limit = 300 if flow == "device_code" or (
-        flow == "browser_wait" and login_argv == ("login",) and status_argv == ("status", "--format", "json")
+        flow == "browser_wait" and login_argv == ("login",) and cursor_json_status
     ) else 120
     return PrintCliLoginSpec(
         command=login_argv, status_command=status_argv, url_pattern=DEVICE_LOGIN_URL_PATTERN, url_hosts=hosts,
         user_code_pattern=GROK_DEVICE_CODE_PATTERN if flow == "device_code" else None,
         code_prompt_pattern=r"(?i)paste the authorization code" if paste else None,
-        success_json_field="status" if paste else None, signed_out_pattern=signed_out,
+        success_json_field="status" if paste else ("isAuthenticated" if cursor_json_status else None),
+        success_json_value="SUCCESS" if paste else (True if cursor_json_status else "SUCCESS"),
+        signed_out_pattern=signed_out,
         cli_timeout_seconds=_timeout("login", login["timeout_seconds"], login_limit),
     ), flow, _timeout("status", status["timeout_seconds"], 120)
 

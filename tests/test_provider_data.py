@@ -2324,6 +2324,7 @@ def test_zip_supports_archive_layouts(tmp_path, monkeypatch, layout):
 
 
 def test_cursor_declaration_configures_acp_home_auth_methods():
+    from kotoyose.child_ops import _login_state
     from kotoyose.provider_data_host import bundled_declaration_bytes
 
     row = parse_declaration(bundled_declaration_bytes("cursor-cli"))
@@ -2331,6 +2332,14 @@ def test_cursor_declaration_configures_acp_home_auth_methods():
         assert spec is not None
         assert spec.home_auth_methods == ("cursor_login",)
         assert spec.env == (("NO_OPEN_BROWSER", "1"),)
+    assert row.login.success_json_field == "isAuthenticated"
+    assert row.login.success_json_value is True
+    assert _login_state(
+        "cursor-cli", row.login, b'{"status": "unauthenticated", "isAuthenticated": false}\n', b"", 0,
+    ) == "logged_out"
+    assert _login_state(
+        "cursor-cli", row.login, b'{"status": "authenticated", "isAuthenticated": true}\n', b"", 0,
+    ) == "logged_in"
 
 
 @pytest.mark.parametrize("methods", [[], "cursor_login", ["unknown"], ["cursor_login", "cursor_login"], [123]])

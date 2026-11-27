@@ -191,9 +191,14 @@ def acp_data_env(row: Declaration, child_home: Path | None, leases: ExitStack) -
     windows = _windows()
     platform = row.platform(platform_key())
     if windows and isolation is None and platform is not None and platform.supports(UNRESTRICTED):
+        from .provider_data_windows import account_folders
+
         allowed = _ENV_KEYS | _WINDOWS_ENV_KEYS | _WINDOWS_COMMAND_ENV_KEYS
-        return {key.upper(): value for key, value in os.environ.items()
-                if value and key.upper() in allowed and not _SECRET_ENV.search(key)}
+        env = {key.upper(): value for key, value in os.environ.items()
+               if value and key.upper() in allowed and not _SECRET_ENV.search(key)}
+        profile, local = account_folders()
+        env.update(HOME=str(profile), USERPROFILE=str(profile), LOCALAPPDATA=str(local))
+        return env
     if windows and (isolation is None or child_home is None):
         raise DeclarationRejected("Windows Grok ACP requires child-managed isolation")
     env = data_env()

@@ -1134,12 +1134,13 @@ def test_windows_bundled_non_grok_unrestricted_preview(windows_child, monkeypatc
     offer = provider_data_child.preview(home)["offers"][0]
     assert offer["can_install"] is True
     assert offer["rights"].startswith(f"{row.name} runs with your rights")
-    monkeypatch.setenv("HOME", str(profile))
+    monkeypatch.delenv("HOME", raising=False)
     monkeypatch.setenv("PATH", "normal-path")
     monkeypatch.setenv("API_TOKEN", "secret")
     with ExitStack() as leases:
         env = provider_data_runtime.acp_data_env(row, home, leases)
     assert env["HOME"] == env["USERPROFILE"] == str(profile)
+    assert env["LOCALAPPDATA"] == str(home.parent)
     assert env["PATH"] == "normal-path" and "API_TOKEN" not in env
     if provider == "cursor-cli":
         assert offer["commands"][0]["argv"] == ["node.exe", "index.js", "--version"]

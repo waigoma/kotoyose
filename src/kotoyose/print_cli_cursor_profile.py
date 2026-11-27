@@ -74,6 +74,7 @@ def cursor_profile() -> PrintCliProfile:
             cli_timeout_seconds=300,
             status_command=("status", "--format", "json"),
             success_json_field=None,
+            signed_out_pattern=r'"isAuthenticated"\s*:\s*false|"status"\s*:\s*"unauthenticated"',
         ),
         # Re-measure this allowlist on a real isolated run.
         # Measured on a real jail run 2026-11-19: api2 (control) and agentn.global.api5 (agent turns).

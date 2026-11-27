@@ -311,6 +311,13 @@ class AcpRuntimeSession:
                 reason = exc.reason if isinstance(exc, AcpError) else (
                     "timeout" if isinstance(exc, TimeoutError) else "provider_error"
                 )
+                log.warning(
+                    "acp.turn_failed",
+                    profile=self.profile.id,
+                    reason=reason,
+                    code=exc.code if isinstance(exc, AcpError) else None,
+                    agent_message=(exc.agent_message[:200] if isinstance(exc, AcpError) and exc.agent_message else None),
+                )
                 raise RuntimeTurnError(
                     f"ACP turn failed ({reason})",
                     partial_result=self._result(turn), diagnostics={"terminal_reason": reason},

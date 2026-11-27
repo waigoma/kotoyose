@@ -1,5 +1,15 @@
 # Kotoyose の変更履歴
 
+## 1.4.5 (2026-11-28)
+
+Cursor CLI (`2026.11.22`) の未ログイン状態が誤って「ログイン済み」と判定される問題と、Windows 子機の汎用 ACP 環境変数を修正しました。
+
+### Cursor ログイン状態判定 & Windows ACP 環境変数の修正
+
+- **Cursor `status --format json` の厳密判定**: Cursor CLI は未ログインでも終了コード `0` で `{"status": "unauthenticated", "isAuthenticated": false}` を返すため、`kotoyose.provider-data/1` 宣言では `isAuthenticated === true` を要求するように修正しました（組み込み `cursor` プロファイルにも `signed_out_pattern` を追加）。これにより、子機 UI とホストプローブで未ログインを正しく `Not signed in` として検知し、サインインを促せるようになります。
+- **Windows 汎用 `unrestricted` ACP 環境変数の統一**: `acp_data_env` でも `data_env` と同様に `HOME` / `USERPROFILE` / `LOCALAPPDATA` を OS アカウントフォルダから明示設定するように修正しました。
+- **ACP 失敗時の診断ログ**: `acp.turn_failed` に JSON-RPC エラーコードと短縮メッセージを記録するようにしました。
+
 ## 1.4.4 (2026-11-28)
 
 `kotoyose.provider-data/1` 経由の Cursor (`cursor-cli`) が ACP セッション開始時に `401 authentication_failed` になる不具合を修正しました。
