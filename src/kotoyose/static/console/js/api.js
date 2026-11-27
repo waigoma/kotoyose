@@ -97,8 +97,8 @@ export const api = {
   interaction: (id) => request("GET", `/admin/interactions/${enc(id)}`),
   interactionEvents: (id, afterSeq = -1) =>
     request("GET", `/admin/interactions/${enc(id)}/events?after_seq=${Number(afterSeq)}`),
-  sessions: (limit = 100, offset = 0) =>
-    request("GET", `/admin/sessions?limit=${Number(limit)}&offset=${Number(offset)}`),
+  sessions: (limit = 100, offset = 0, { includeSubagents = false } = {}) =>
+    request("GET", `/admin/sessions?limit=${Number(limit)}&offset=${Number(offset)}${includeSubagents ? "&include_subagents=true" : ""}`),
   sessionDetail(conversationKey, { runtimeSessionId = null, provider = null } = {}) {
     const params = new URLSearchParams();
     if (runtimeSessionId) params.set("runtime_session_id", runtimeSessionId);
@@ -106,6 +106,14 @@ export const api = {
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return request("GET", `/admin/sessions/${enc(conversationKey)}${suffix}`);
   },
+  handoffPreview: (body) => request("POST", "/admin/sessions/handoff-preview", body),
+  continueSession: (body) => request("POST", "/admin/sessions/continue", body),
+  importChildren: () => request("GET", "/admin/imports/children"),
+  setChildOriginHint: (name, originHint) => request("PUT", `/admin/imports/children/${enc(name)}/origin-hint`, { origin_hint: originHint }),
+  collectChildSessions: (name, body) => request("POST", `/admin/imports/children/${enc(name)}/collect`, body),
+  importSources: () => request("GET", "/admin/imports/sources"),
+  runImport: (body) => request("POST", "/admin/imports/run", body),
+  importRuns: (limit = 20) => request("GET", `/admin/imports/runs?limit=${Number(limit)}`),
   stats: () => request("GET", "/admin/stats"),
   hourlyStats: (hours = 24) => request("GET", `/admin/stats/hourly?hours=${Number(hours)}`),
   providerModels(provider, params = {}) {

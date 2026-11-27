@@ -172,6 +172,18 @@ class ChildRegistry:
         with self._lock:
             return [dict(item) for item in self._data["children"]]
 
+    def set_origin_hint(self, name: str, origin_hint: str | None) -> dict:
+        """分類を保存してコピーを返す。不正値は ValueError、未登録名は KeyError。"""
+        if origin_hint not in (None, "personal", "work"):
+            raise ValueError("origin_hint must be personal or work")
+        with self._lock:
+            record = next((item for item in self._data["children"] if item.get("name") == name), None)
+            if record is None:
+                raise KeyError(name)
+            record["origin_hint"] = origin_hint
+            self._save_locked()
+            return dict(record)
+
     def revoke(self, name: str) -> dict:
         with self._lock:
             found = next((item for item in self._data["children"] if item.get("name") == name), None)

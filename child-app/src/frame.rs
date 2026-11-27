@@ -136,6 +136,7 @@ pub enum Operation {
     Login,
     Status,
     Quota,
+    SessionCollect,
 }
 
 impl Operation {
@@ -145,6 +146,7 @@ impl Operation {
             "login" => Some(Self::Login),
             "status" => Some(Self::Status),
             "quota" => Some(Self::Quota),
+            "session_collect" => Some(Self::SessionCollect),
             _ => None,
         }
     }
@@ -155,18 +157,22 @@ impl Operation {
             Self::Login => "login_cancel",
             Self::Status => "status_cancel",
             Self::Quota => "quota_cancel",
+            Self::SessionCollect => "session_collect_cancel",
         }
     }
 
     pub fn output(self, kind: &str) -> Option<bool> {
         match (self, kind) {
-            (Self::Turn, "delta" | "event" | "mcp_request") | (Self::Login, "login_output") => {
-                Some(false)
-            }
+            (Self::Turn, "delta" | "event" | "mcp_request")
+            | (Self::Login, "login_output")
+            | (Self::SessionCollect, "session_collect_batch") => Some(false),
             (Self::Turn, "result" | "error")
             | (Self::Login, "login_exit" | "login_error")
             | (Self::Status, "status_result" | "status_error")
-            | (Self::Quota, "quota_result" | "quota_error") => Some(true),
+            | (Self::Quota, "quota_result" | "quota_error")
+            | (Self::SessionCollect, "session_collect_done" | "session_collect_error") => {
+                Some(true)
+            }
             _ => None,
         }
     }
@@ -184,6 +190,9 @@ impl Operation {
             Self::Login => Frame::new(stream, "login_error", json!({"message":message})),
             Self::Status => Frame::new(stream, "status_error", json!({"message":message})),
             Self::Quota => Frame::new(stream, "quota_error", json!({"message":message})),
+            Self::SessionCollect => {
+                Frame::new(stream, "session_collect_error", json!({"error":message}))
+            }
         }
     }
 }

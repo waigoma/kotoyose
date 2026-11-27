@@ -27,6 +27,7 @@ from .child_pinned import (
 )
 from .child_process_tree import TURN_PIDS, kill_pids, kill_process_group, new_turn_pids
 from .child_protocol import (
+    SESSION_COLLECT_POLICY_REFUSAL,
     Frame, LOGIN_CAP_SECONDS, LOGIN_MESSAGE_LIMIT, QUOTA_POLICY_REFUSAL, QUOTA_WINDOW_LIMIT, decode_frame, encode_frame,
 )
 from .host_place import kill_session
@@ -171,7 +172,7 @@ class ChildOps:
             return
         stream = frame.stream
         task = self._tasks.get(stream)
-        if frame.kind in {"login_cancel", "status_cancel", "quota_cancel"}:
+        if frame.kind in {"login_cancel", "status_cancel", "quota_cancel", "session_collect_cancel"}:
             if task is not None and not task.cancelling():
                 task.cancel()
             return
@@ -217,6 +218,9 @@ class ChildOps:
 
         stream, payload = frame.stream, frame.payload
         kind = frame.kind
+        if kind == "session_collect":
+            await self._session_collect(stream, payload)
+            return
         try:
             with use_approved(self._home):
                 await self._dispatch_operation(stream, payload, kind)
@@ -228,6 +232,27 @@ class ChildOps:
             await self._send(stream, f"{kind}_error", {"message": "official CLI is unavailable"})
         except Exception:
             await self._send(stream, f"{kind}_error", {"message": f"{kind} failed"})
+
+    async def _session_collect(self, stream: int, payload: dict) -> None:
+        from .session_import.remote import collect_local_batches
+        from .session_import.importer import parse_since
+
+        try:
+            policy = load_policy(self._home / "policy.json")
+            if not policy.session_import_sources:
+                raise PermissionError(SESSION_COLLECT_POLICY_REFUSAL)
+            batches, stats = await asyncio.to_thread(
+                collect_local_batches, allowed_sources=policy.session_import_sources,
+                source_kind=payload.get("source_kind", "all"), since=parse_since(payload.get("since")),
+                max_files=payload.get("max_files", 200), max_turns=payload.get("max_turns", 2000),
+                known_files=payload.get("known_files"),
+            )
+            for batch in batches:
+                if not await self._send(stream, "session_collect_batch", batch):
+                    return
+            await self._send(stream, "session_collect_done", dict(stats, child_origin_hint=policy.session_import_origin_hint))
+        except Exception as exc:
+            await self._send(stream, "session_collect_error", {"error": str(exc)})
 
     async def _dispatch_operation(self, stream: int, payload: dict, kind: str) -> None:
         if kind == "login":

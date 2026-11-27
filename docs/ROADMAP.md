@@ -2,7 +2,9 @@
 
 ## いまの到達点
 
-2026 年 11 月時点の最新版は 1.3.3。
+2026 年 11 月時点の最新版は 1.4.0。
+
+- 1.4.0 で、Claude / Codex / Antigravity / Cursor / Grok のローカル会話履歴の冪等インポート (CLI・コンソール・増分台帳・ライブ重複回避・資格情報 Redaction)、別モデルへ会話を引き継ぐ Cross-Model Continue / Fork (`work` → `no_training` 強制ガード付き)、Child 端末からの送信前サニタイズ付きマルチマシン収集 (`session-collect/1`)、読み取り専用 Export API (`GET /v1/sessions/export`)、および委譲・サブエージェントログの既定非表示を入れた。
 
 - 1.0.0 で、Claude、Codex、Cursor、Antigravity、Grok Build の公式 CLI と SDK に対応した。alias、jail、学習の方針、コンソール、OpenAI 互換の chat API、実行 API を備える。公開は `release` ブランチからの CI で行う。
 - 1.1.0 で、agy、Cursor、Grok Build を共通の ACP driver (`cli.acp`) で動かすようにした。ホストのチャットと jail のコーディングの両方で、本物の CLI で確かめた。

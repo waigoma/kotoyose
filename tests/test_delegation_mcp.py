@@ -206,7 +206,9 @@ async def test_list_scope_and_child_continuation(harness, monkeypatch):
         child = harness.runtimes[-1]
         assert child.prompts == ["review the patch", "review the tests"]
         assert "kotoyose" not in child.servers
-        assert chat.record_received.await_args.kwargs["metadata"] == {"delegated_by": "a", "depth": 1}
+        assert chat.record_received.await_args.kwargs["metadata"] == {
+            "delegated_by": "a", "depth": 1, "is_subagent": True, "agent_origin": "delegation",
+        }
         key = chat.record_received.await_args.kwargs["conversation_key"]
         assert key == f"delegate:{delegation.authenticate(token).scope}:b:{first['conversation_id']}"
         bypass = await harness.http.post(
@@ -228,7 +230,9 @@ async def test_api_key_auth_and_recording(harness):
     assert (await client.ask(alias="e"))["isError"]
     assert (await client.ask(alias="a"))["structuredContent"]["text"] == "parent: task"
     assert not harness.runtimes[-1].servers
-    assert chat.record_received.await_args.kwargs["metadata"] == {"delegated_by": "client"}
+    assert chat.record_received.await_args.kwargs["metadata"] == {
+        "delegated_by": "client", "is_subagent": True, "agent_origin": "delegation",
+    }
     other = MCPClient(harness.http, "kys_delegation-other")
     other.headers["mcp-session-id"] = client.headers["mcp-session-id"]
     assert (await other.post("tools/list")).status_code == 404

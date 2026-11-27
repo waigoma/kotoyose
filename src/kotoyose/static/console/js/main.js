@@ -25,6 +25,7 @@ import { renderProviders } from "./pages/providers.js";
 import { renderRoutes } from "./pages/routes.js";
 import { renderSecrets } from "./pages/secrets.js";
 import { renderSkills } from "./pages/skills.js";
+import { renderImports } from "./pages/imports.js";
 import { renderUsage } from "./pages/usage.js";
 
 const PAGES = {
@@ -39,6 +40,7 @@ const PAGES = {
   skills: renderSkills,
   mcps: renderMcps,
   usage: renderUsage,
+  imports: renderImports,
   executions: renderExecutions,
   machine: renderMachine,
   secrets: renderSecrets,

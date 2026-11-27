@@ -40,6 +40,7 @@ def _client_payload(name: str, client: Client, keys: list[dict]) -> dict:
     return {
         "name": name,
         **data,
+        "scopes": list(client.scopes),
         "workspace_roots": [str(path) for path in client.workspace_roots],
         "active_keys": active_keys,
         "keys": bound,

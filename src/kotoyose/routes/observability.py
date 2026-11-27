@@ -47,11 +47,13 @@ async def get_interactions(
     conversation_key: str | None = None,
     since: str | None = None,
     until: str | None = None,
+    include_subagents: bool = Query(False),
 ) -> dict:
     return await list_interactions(
         limit=limit, offset=offset,
         model=model, source=source, status=status,
         conversation_key=conversation_key, since=since, until=until,
+        **({"include_subagents": True} if include_subagents else {}),
     )
 
 
@@ -106,9 +108,13 @@ async def stream_interaction_events(
 )
 async def get_sessions(
     limit: int = Query(50, ge=1, le=500),
+    include_subagents: bool = Query(False),
     offset: int = Query(0, ge=0),
 ) -> dict:
-    return await list_sessions(limit=limit, offset=offset)
+    return await list_sessions(
+        limit=limit, offset=offset,
+        **({"include_subagents": True} if include_subagents else {}),
+    )
 
 
 @router.get(
@@ -145,7 +151,9 @@ async def get_session_detail(
     summary="統計サマリ",
     description="past 24h / 7d の集計。",
 )
-async def get_stats() -> dict:
+async def get_stats(include_imported: bool = Query(False)) -> dict:
+    if include_imported:
+        return await compute_stats(include_imported=True)
     return await compute_stats()
 
 
@@ -154,5 +162,9 @@ async def get_stats() -> dict:
     summary="時間別統計",
     description="過去 N 時間 (既定 24h) の 1 時間ごとの集計。",
 )
-async def get_hourly_stats(hours: int = Query(24, ge=1, le=168)) -> dict:
+async def get_hourly_stats(
+    hours: int = Query(24, ge=1, le=168), include_imported: bool = Query(False),
+) -> dict:
+    if include_imported:
+        return await compute_hourly_stats(hours=hours, include_imported=True)
     return await compute_hourly_stats(hours=hours)

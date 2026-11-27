@@ -34,6 +34,7 @@ from .child_identity import (
 from .child_ops import ChildOps
 from .child_mcp import FEATURE as HOST_MCP_FEATURE, approved_versions
 from .child_protocol import (
+    SESSION_COLLECT_FEATURE,
     CODEX_TURNS_FEATURE,
     LOGIN_STATUS_FEATURE,
     PROVIDER_DATA_FEATURE,
@@ -66,7 +67,7 @@ def _hello_features(platform: str, app_update: bool = False) -> list[str]:
 
     features = [
         CODEX_TURNS_FEATURE, LOGIN_STATUS_FEATURE, PROVIDER_DATA_FEATURE, WORKSPACE_POLICY_FEATURE,
-        PROMPT_PREFIX_SKILLS_FEATURE,
+        PROMPT_PREFIX_SKILLS_FEATURE, SESSION_COLLECT_FEATURE,
     ]
     if app_update:
         features.append(APP_UPDATE_FEATURE)
@@ -310,6 +311,9 @@ class ChildSession:
                 "protocol": PROTOCOL_VERSION,
                 "version": version,
             }
+            if SESSION_COLLECT_FEATURE in advertised_features:
+                hello["session_import_sources"] = list(policy.session_import_sources)
+                hello["session_import_origin_hint"] = policy.session_import_origin_hint
             self._host_mcp = HOST_MCP_FEATURE in advertised_features
             if LOCAL_LLM_FEATURE in advertised_features:
                 hello["local_llm"] = {name: entry.models for name, entry in policy.local_llm.items()}
@@ -399,7 +403,7 @@ class ChildSession:
                     continue
                 if self.ops is not None and frame.stream and accepted and frame.kind in {
                     "login", "login_input", "login_cancel", "quota", "quota_cancel",
-                    "status", "status_cancel",
+                    "status", "status_cancel", "session_collect",
                 }:
                     await self.ops.handle(frame)
                     continue

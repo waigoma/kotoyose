@@ -23,6 +23,7 @@ export const NAV_GROUPS = [
   ] },
   { label: "Monitor", items: [
     { key: "usage", label: "Usage" },
+    { key: "imports", label: "Imports" },
     { key: "executions", label: "Executions" },
   ] },
   { label: "Settings", items: [

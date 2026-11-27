@@ -35,8 +35,9 @@ from .logging_setup import configure_logging
 from .middleware import RequestIDMiddleware
 from .models import ErrorDetail, ErrorResponse
 from .routes import (
-    admin, admin_children, admin_clients, admin_provider_data, admin_secrets, admin_settings, admin_ui, api_keys, chat,
-    conversations, executions, health, models_api, observability, playground,
+    admin, admin_children, admin_clients, admin_imports, admin_provider_data, admin_secrets, admin_settings, admin_ui,
+    api_keys, chat, conversations, executions, health, models_api, observability, playground, session_continue,
+    session_export,
 )
 from .secret_store import SecretKeyError, SecretStore, set_secret_store
 from .session import evict_expired_sessions, session_cache_identities, sessions, session_last_used
@@ -229,9 +230,17 @@ app.include_router(admin_secrets.router)
 app.include_router(admin_settings.router)
 app.include_router(admin_provider_data.router)
 app.include_router(admin_children.router)
+app.include_router(admin_imports.router)
 app.include_router(api_keys.router)
+# session_export は /v1/sessions/export を持つ。api_keys.client_router の
+# /v1/sessions/{conversation_key:path} に先に拾われないよう、必ずそれより前に登録する。
+app.include_router(session_export.router)
+app.include_router(session_continue.client_router)
 app.include_router(api_keys.client_router)
 app.include_router(admin_ui.router)
+# /admin/sessions/continue と handoff-preview は、observability の
+# /admin/sessions/{conversation_key:path} より前に登録する。
+app.include_router(session_continue.admin_router)
 app.include_router(observability.router)
 app.include_router(playground.router)
 app.include_router(playground.ui_router)

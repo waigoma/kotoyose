@@ -287,7 +287,50 @@ async def delegated_chat_turn(
     return await _chat_completions(req, request, Response(), conversation_key, delegation_metadata=metadata)
 
 
-async def _chat_completions(req, request, response, x_conversation_key, *, delegation_metadata=None):
+async def execute_continued_turn(
+    req: ChatCompletionRequest, request: Request, conversation_key: str, *,
+    extra_metadata: dict, source_override: str = "continue",
+) -> ChatCompletionResponse | JSONResponse:
+    """引き継ぎ (fork) の 1 turn を、通常の chat と同じ経路で非 streaming 実行する。
+
+    API key の要求と admin の要求の両方から呼ぶ。model scope の確認は呼び出し側が行う。
+
+    Raises:
+        ExecutionError: Native 実行の alias、または admin の資格情報を転送することになる alias の場合。
+    """
+    resolved = None
+    if req.model in get_config().pools:
+        req, resolved = await _resolve_pool_model(request, req)
+    cfg = get_config()
+    # Native 経路は fork の metadata (親と origin_hint) を記録しないので受け付けない。
+    if (
+        getattr(request.app.state, "execution_service", None) is not None
+        and cfg.compatibility_config.has_model(req.model)
+    ):
+        raise ExecutionError("unsupported_capability", "Session continue requires a direct chat runtime", 501)
+    if getattr(request.state, "api_key_name", None) is None:
+        preset = cfg.models.get(req.model)
+        forwarded = {name.lower() for name in getattr(preset, "required_request_headers", ())}
+        if forwarded & {"authorization", "cookie"}:
+            raise ExecutionError(
+                "unsupported_capability", "Admin session continue cannot forward admin credentials to this alias", 501,
+            )
+    if not hasattr(request.state, "execution_principal"):
+        # admin の要求に Client principal は無い。client approval は非 streaming では拒否のままになる。
+        request.state.execution_principal = None
+    result = await _chat_completions(
+        req, request, Response(), conversation_key,
+        extra_metadata=extra_metadata, source_override=source_override,
+    )
+    if resolved is not None and isinstance(result, ChatCompletionResponse):
+        result.resolved_model = resolved
+    return result
+
+
+async def _chat_completions(
+    req, request, response, x_conversation_key, *,
+    delegation_metadata=None, extra_metadata: dict | None = None, source_override: str | None = None,
+):
     request_id = getattr(request.state, "request_id", "unknown")
 
     if (refused := _sanction_gate(request, req.model, request_id)) is not None:
@@ -505,16 +548,21 @@ async def _chat_completions(req, request, response, x_conversation_key, *, deleg
         first_msg_preview=delegation.redact_token(req.messages[0].text_content())[:80] if req.messages else "",
     )
     # interactions 記録: 受付時 INSERT
+    interaction_metadata = dict(extra_metadata) if extra_metadata else None
+    if delegation_metadata is not None:
+        interaction_metadata = {
+            **(extra_metadata or {}), **delegation_metadata, "is_subagent": True, "agent_origin": "delegation",
+        }
     interaction_id = await record_received(
         request_id=request_id,
         conversation_key=prepared.effective_conversation_key,
         provider=provider,
         model=req.model,
-        source=request.headers.get("x-memory-source"),
+        source=source_override if source_override is not None else request.headers.get("x-memory-source"),
         prompt=delegation.redact_token(prepared.audit_text),
         streamed=req.stream,
         api_key_name=getattr(request.state, "api_key_name", None),
-        **({"metadata": delegation_metadata} if delegation_metadata is not None else {}),
+        **({"metadata": interaction_metadata} if interaction_metadata is not None else {}),
     )
 
     # ── セッション取得 ──────────────────────────────────────────

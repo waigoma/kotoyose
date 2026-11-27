@@ -1,5 +1,41 @@
 # Kotoyose の変更履歴
 
+## 1.4.0 (2026-11-27)
+
+**どのモデルでも、どの環境でも会話を途切れさせない**ための基盤として、ローカル CLI の会話履歴取り込み、別モデルへの会話引き継ぎ (Fork)、子機からのマルチマシン収集、および読み取り専用 Export API を追加しました。
+
+### ローカル会話履歴の取り込み (5 プロバイダ対応)
+
+Kotoyose を経由せずにローカル CLI で行った過去の会話を、`kotoyose.interactions` へ統一形式で冪等に取り込めます。`kotoyose import-sessions` CLI (`--dry-run` 対応) と管理コンソールの **Imports** 画面のどちらからでも実行できます。
+
+| ソース | 既定の探索先 | 主な正規化・保護 |
+|---|---|---|
+| `claude` | `~/.claude/projects/**/*.jsonl` | `thinking`・ツール生ダンプ・`isMeta`・ハーネス注入行を除外 |
+| `codex` | `~/.codex/sessions/**/*.jsonl` | `reasoning`・ツール生ログ・前置きを除外、子スレッドに `is_subagent` を付与 |
+| `antigravity` | `~/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript.jsonl` | `thinking` を除外しユーザー発言とモデル応答を抽出 |
+| `cursor` | `~/.cursor/chats/*/*/store.db` | SQLite を読み取り専用で走査、`reasoning`・ツール生ログを除外 |
+| `grok` | `~/.grok/sessions/*/*/chat_history.jsonl` | `reasoning`・ツール出力を除外し、`summary.json` / `usage.json` から時刻とトークンを補完 |
+
+取り込み時には認証情報（API キー、Bearer トークン、PEM 秘密鍵ブロック等）を `[REDACTED]` へ置換し、64 KiB 超の本文を UTF-8 境界で安全に切り詰めます。すでに Kotoyose 経由でライブ記録されているセッションは自動で重複回避し、増分台帳 (`kotoyose.session_import_files`) により変更のないファイルは次回からスキップします。
+
+### 別モデルへの会話引き継ぎ (Cross-Model Continue / Fork)
+
+取り込み履歴や過去のライブ会話を、プロバイダやモデルを切り替えて新しい `fork:` セッションとして継続できます。元のセッションは変更せず、親子関係をメタデータ (`parent_conversation_key`) で保持します。
+
+管理コンソールの **Executions** 詳細画面から送信先モデルを選んでそのまま継続できるほか、Client API (`POST /v1/sessions/continue`、`sessions:continue` スコープ) と管理 API (`POST /admin/sessions/continue`、`POST /admin/sessions/handoff-preview`) を用意しました。業務由来 (`origin_hint=work`) の会話は、`data_policy=no_training` 以外のモデルへ引き継げない fail-closed 保護が働きます。
+
+### Child 端末からのマルチマシン収集
+
+mTLS WebSocket 上の `session-collect/1` により、接続中の Windows / Linux 子機から過去の会話履歴をホストへ収集できます。子機の `policy.json` で `session_import_sources` を明示許可した場合のみ動作し（既定は無効）、資格情報の除去と `thinking` 除外は**子機側で送信前に完了**します。
+
+管理コンソールの **Imports** 画面（**Remote Machines (Children)**）から端末ごとに `origin_hint` (`personal` / `work`) を固定でき、子機側とホスト側のどちらかが `work` なら常に `work` を優先します。
+
+### 読み取り専用 Export API と観測面の整理
+
+下流の記憶基盤などから未処理ターンを安全に Pull できるよう、専用スコープ `sessions:export` 付きの `GET /v1/sessions/export` を追加しました。`(completed_at, id)` の決定論的カーソル、ソフト削除行の本文マスク (`deleted: true`)、1 レスポンスあたり `limit <= 100`・2 MiB 上限で有界化しています。
+
+あわせて、`/admin/stats` のトークン・リクエスト統計は既定でインポート行を除外（`include_imported=true` で包含可）し、委譲・サブエージェントの内部ログ (`delegate:` / `is_subagent`) も一覧・Export・**Executions** 画面の既定表示から隠せるようにしました（画面トグルおよび `include_subagents=true` で閲覧可）。
+
 ## 1.3.3 (2026-11-26)
 
 - 設定画面からの更新で、受け取った割合・検証・作業の終わり待ち・インストールを順に表示する。アプリがインストールのために終了するときは、古いタブに、設定画面が別のウィンドウで開き直すことを表示する。

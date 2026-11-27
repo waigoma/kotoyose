@@ -482,6 +482,9 @@ fn hello_features(platform: &str, has_runner: bool, app_update: bool) -> Vec<&'s
         "workspace-policy/1",
         "prompt-prefix-skills/1",
     ];
+    if has_runner {
+        features.push("session-collect/1");
+    }
     if app_update {
         features.push(crate::update::FEATURE);
     }
@@ -532,6 +535,10 @@ pub async fn hello_frame(
     }
     if features.contains(&"local-llm/1") {
         body["local_llm"] = json!(catalog.local_llm);
+    }
+    if features.contains(&"session-collect/1") {
+        body["session_import_sources"] = json!(catalog.session_import_sources);
+        body["session_import_origin_hint"] = json!(catalog.session_import_origin_hint);
     }
     Frame::try_new(0, "hello", body)
 }

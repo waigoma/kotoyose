@@ -15,10 +15,16 @@ from typing import BinaryIO
 from .child_protocol import MAX_RECORD as MAX_RECORD, MAX_SKILL_TURN_RECORD
 
 IPC_VERSION = 1
-STARTS = {"turn", "login", "quota", "status"}
+STARTS = {"turn", "login", "quota", "status", "session_collect"}
 TURN_KINDS = {"turn", "cancel", "release", "mcp_response"}
-OPS_KINDS = {"login", "login_input", "login_cancel", "quota", "quota_cancel", "status", "status_cancel"}
-TERMINALS = {"result", "error", "login_exit", "login_error", "quota_result", "quota_error", "status_result", "status_error"}
+OPS_KINDS = {
+    "login", "login_input", "login_cancel", "quota", "quota_cancel",
+    "status", "status_cancel", "session_collect", "session_collect_cancel",
+}
+TERMINALS = {
+    "result", "error", "login_exit", "login_error", "quota_result", "quota_error",
+    "status_result", "status_error", "session_collect_done", "session_collect_error",
+}
 
 
 def _read_exact(handle: BinaryIO, size: int, *, allow_eof: bool = False) -> bytes | None:
@@ -130,6 +136,8 @@ class Runner:
 
     @staticmethod
     def error(kind: str, message: str) -> tuple[str, dict]:
+        if kind == "session_collect":
+            return "session_collect_error", {"error": message}
         if kind != "turn":
             return f"{kind}_error", {"message": message}
         from .child_turn import _result_payload
@@ -183,7 +191,9 @@ class Runner:
             self.watchers.add(watcher)
             watcher.add_done_callback(self.watchers.discard)
         else:
-            if work is not None and kind in {"cancel", "release", "login_cancel", "quota_cancel", "status_cancel"}:
+            if work is not None and kind in {
+                "cancel", "release", "login_cancel", "quota_cancel", "status_cancel", "session_collect_cancel",
+            }:
                 work.cancelled = True
             if kind in TURN_KINDS:
                 release = self.turns.handle(frame)

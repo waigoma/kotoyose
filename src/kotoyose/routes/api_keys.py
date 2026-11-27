@@ -33,6 +33,7 @@ def _client_policies(clients: dict[str, Client]) -> list[dict]:
         policies.append({
             "name": name,
             "models": list(getattr(policy, "models", ()) or ()),
+            "scopes": list(getattr(policy, "scopes", ()) or ()),
             "places": list(getattr(policy, "places", ()) or ()),
             "max_surface": getattr(policy, "max_surface", None),
             "workspace_roots": [str(root) for root in (getattr(policy, "workspace_roots", ()) or ())],

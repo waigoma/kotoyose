@@ -24,6 +24,11 @@ from . import db
 
 log = structlog.get_logger()
 
+_NOT_SUBAGENT_FILTER = (
+    "(conversation_key IS NULL OR (conversation_key NOT LIKE 'delegate:%' AND conversation_key NOT LIKE 'delegation:%'))"
+    " AND COALESCE((metadata->>'is_subagent')::boolean, FALSE) = FALSE"
+)
+
 
 def _event_json_default(value: Any) -> Any:
     """SDK 固有型を Timeline 保存用の JSON 値へ変換する。"""
@@ -325,6 +330,7 @@ async def list_interactions(
     since: str | None = None,
     until: str | None = None,
     include_deleted: bool = False,
+    include_subagents: bool = False,
 ) -> dict:
     """フィルタ付き一覧。{items, total, limit, offset}。
     include_deleted=False で soft-delete された行を除外する。
@@ -337,6 +343,11 @@ async def list_interactions(
     params: list = []
     if not include_deleted:
         where_parts.append("deleted_at IS NULL")
+    if not include_subagents:
+        where_parts.append(
+            _NOT_SUBAGENT_FILTER.replace("conversation_key", "i.conversation_key")
+            .replace("metadata", "i.metadata")
+        )
     if model:
         params.append(model); where_parts.append(f"model = ${len(params)}")
     if source:
@@ -370,7 +381,7 @@ async def list_interactions(
         ORDER BY received_at DESC
         LIMIT {int(limit)} OFFSET {int(offset)}
     """
-    count_sql = f"SELECT COUNT(*) FROM kotoyose.interactions {where_sql}"
+    count_sql = f"SELECT COUNT(*) FROM kotoyose.interactions i {where_sql}"
 
     rows = await pool.fetch(list_sql, *params)
     total = await pool.fetchval(count_sql, *params)
@@ -404,6 +415,7 @@ async def list_sessions(
     limit: int = 50,
     offset: int = 0,
     include_deleted: bool = False,
+    include_subagents: bool = False,
 ) -> dict:
     """(conversation_key, provider, runtime_session_id) グルーピングで集計。
     clear 後の新セッションは別行として表示されるよう、セッション ID も GROUP BY に含める。
@@ -416,6 +428,7 @@ async def list_sessions(
         return {"items": [], "total": 0, "limit": limit, "offset": offset}
 
     deleted_filter = "" if include_deleted else " AND deleted_at IS NULL"
+    subagent_filter = "" if include_subagents else f" AND {_NOT_SUBAGENT_FILTER}"
 
     rows = await pool.fetch(
         f"""
@@ -451,7 +464,7 @@ async def list_sessions(
                       )
             ) AS is_active
         FROM kotoyose.interactions
-        WHERE conversation_key IS NOT NULL{deleted_filter}
+        WHERE conversation_key IS NOT NULL{deleted_filter}{subagent_filter}
         GROUP BY conversation_key, provider, runtime_session_id, claude_session_id
         ORDER BY last_seen_at DESC
         LIMIT {int(limit)} OFFSET {int(offset)}
@@ -463,7 +476,7 @@ async def list_sessions(
         FROM (
             SELECT conversation_key, provider, runtime_session_id, claude_session_id
             FROM kotoyose.interactions
-            WHERE conversation_key IS NOT NULL{deleted_filter}
+            WHERE conversation_key IS NOT NULL{deleted_filter}{subagent_filter}
             GROUP BY conversation_key, provider, runtime_session_id, claude_session_id
         ) sub
         """
@@ -571,11 +584,13 @@ async def soft_delete_session(
     return int(parts[1]) if len(parts) >= 2 else 0
 
 
-async def compute_stats() -> dict:
-    """past 24h / 7d の集計。"""
+async def compute_stats(*, include_imported: bool = False) -> dict:
+    """past 24h / 7d の集計。include_imported=False ではインポート行を除外する。"""
     pool = _get_pool()
     if pool is None:
         return {"past_24h": _empty_stats(), "past_7d": _empty_stats()}
+
+    source_filter = "" if include_imported else "AND (source IS NULL OR source NOT LIKE 'import:%')"
 
     async def _bucket(hours: int) -> dict:
         agg = await pool.fetchrow(
@@ -589,12 +604,14 @@ async def compute_stats() -> dict:
                 AVG(duration_ms) AS avg_duration_ms
             FROM kotoyose.interactions
             WHERE received_at >= NOW() - INTERVAL '{hours} hours'
+            {source_filter}
             """,
         )
         by_model = await pool.fetch(
             f"""
             SELECT model, COUNT(*) AS n FROM kotoyose.interactions
             WHERE received_at >= NOW() - INTERVAL '{hours} hours'
+            {source_filter}
             GROUP BY model
             """
         )
@@ -603,6 +620,7 @@ async def compute_stats() -> dict:
             SELECT COALESCE(source, '(none)') AS source, COUNT(*) AS n
             FROM kotoyose.interactions
             WHERE received_at >= NOW() - INTERVAL '{hours} hours'
+            {source_filter}
             GROUP BY source
             """
         )
@@ -652,8 +670,8 @@ def _normalize_utc_hour(value: Any) -> datetime | None:
     return dt.replace(minute=0, second=0, microsecond=0)
 
 
-async def compute_hourly_stats(hours: int = 24) -> dict:
-    """直近 `hours` 時間 (UTC 時間境界) の 1 時間ごとのリクエスト・トークン集計。"""
+async def compute_hourly_stats(hours: int = 24, *, include_imported: bool = False) -> dict:
+    """直近 `hours` 時間の UTC 時間別集計。既定ではインポート行を除外する。"""
     current_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     slots = [current_hour - timedelta(hours=offset) for offset in range(hours - 1, -1, -1)]
     buckets: dict[datetime, dict] = {
@@ -672,8 +690,9 @@ async def compute_hourly_stats(hours: int = 24) -> dict:
     if pool is None:
         return {"hours": hours, "items": list(buckets.values())}
 
+    source_filter = "" if include_imported else "AND (source IS NULL OR source NOT LIKE 'import:%')"
     rows = await pool.fetch(
-        """
+        f"""
         SELECT
             date_trunc('hour', received_at AT TIME ZONE 'UTC') AS hour,
             COUNT(*) AS requests,
@@ -684,6 +703,7 @@ async def compute_hourly_stats(hours: int = 24) -> dict:
         FROM kotoyose.interactions
         WHERE received_at >= $1
           AND deleted_at IS NULL
+          {source_filter}
         GROUP BY 1
         ORDER BY 1 ASC
         """,
@@ -704,3 +724,37 @@ async def compute_hourly_stats(hours: int = 24) -> dict:
         )
 
     return {"hours": hours, "items": list(buckets.values())}
+
+
+async def export_interactions(
+    *, after_completed_at: datetime | None = None, after_id: int = 0, limit: int = 100,
+    include_subagents: bool = False,
+) -> list[dict]:
+    """完了行をカーソルの組より後の昇順で返す。DB 未設定時は空リスト。
+
+    ソフト削除行も下流への通知用に含める。
+    """
+    pool = _get_pool()
+    if pool is None:
+        return []
+    subagent_filter = "" if include_subagents else f" AND {_NOT_SUBAGENT_FILTER}"
+    args: list[Any] = []
+    cursor_filter = ""
+    if after_completed_at is not None:
+        args.extend([after_completed_at, after_id])
+        cursor_filter = "AND (completed_at, id) > ($1, $2)"
+    args.append(limit)
+    rows = await pool.fetch(
+        f"""
+        SELECT id, request_id, conversation_key, provider, runtime_session_id,
+               model, source, received_at, completed_at, prompt, response,
+               deleted_at, metadata
+        FROM kotoyose.interactions
+        WHERE completed_at IS NOT NULL{subagent_filter}
+          {cursor_filter}
+        ORDER BY completed_at ASC, id ASC
+        LIMIT ${len(args)}
+        """,
+        *args,
+    )
+    return [dict(row) for row in rows]

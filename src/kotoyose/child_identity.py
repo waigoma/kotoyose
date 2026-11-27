@@ -28,7 +28,7 @@ from .remote_worker_identity import certificate_file_fingerprint, certificate_fi
 
 CHILD_HOME_ENV = "KOTOYOSE_CHILD_HOME"
 HOST_HOME_ENV = "KOTOYOSE_CHILD_HOST_HOME"
-_OPTIONAL_POLICY_KEYS = {"logins", "local_llm", CODEX_SANDBOX_CAP.policy_key}
+_OPTIONAL_POLICY_KEYS = {"session_import_sources", "session_import_origin_hint", "logins", "local_llm", CODEX_SANDBOX_CAP.policy_key}
 _POLICY_KEYS = {"workspace_roots", "adapters", "mcp"} | _OPTIONAL_POLICY_KEYS
 _DATA_MCP_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
 
@@ -210,6 +210,8 @@ class ChildPolicy:
     logins: tuple[str, ...]
     codex_sandbox_max: str = CODEX_SANDBOX_CAP.policy_default
     local_llm: dict[str, LocalLLM] = field(default_factory=dict)
+    session_import_sources: tuple[str, ...] = ()
+    session_import_origin_hint: str | None = None
 
 
 def default_policy_text() -> str:
@@ -337,7 +339,15 @@ def load_policy(path: Path) -> ChildPolicy:
         raise ValueError("policy.json logins must be unique")
     entries = data.get("local_llm", {})
     local_llm = parse_local_llm_policy(entries, reserved_ports=_local_llm_reserved_ports(path.parent) if entries else ())
-    return ChildPolicy(tuple(roots), tuple(adapters), dict(mcp), tuple(logins), codex_sandbox_max, local_llm)
+    sources = data.get("session_import_sources", [])
+    if not isinstance(sources, list) or not all(
+        isinstance(item, str) and item in ("all", "claude", "codex", "antigravity", "cursor", "grok") for item in sources
+    ):
+        raise ValueError("policy.json session_import_sources must be supported source names")
+    hint = data.get("session_import_origin_hint")
+    if hint not in (None, "personal", "work"):
+        raise ValueError("policy.json session_import_origin_hint must be personal or work")
+    return ChildPolicy(tuple(roots), tuple(adapters), dict(mcp), tuple(logins), codex_sandbox_max, local_llm, tuple(dict.fromkeys(sources)), hint)
 
 
 @dataclass(frozen=True, slots=True)

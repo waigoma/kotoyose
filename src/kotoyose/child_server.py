@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import ssl
 import time
+from typing import Any
 
 import structlog
 from websockets.asyncio.server import serve
@@ -33,6 +34,7 @@ from .child_mcp import FEATURE as HOST_MCP_FEATURE, versions as mcp_versions
 from .child_mcp_host import publication_catalog, reap_recorded_stdio_groups
 from .child_local_llm import parse_local_llm_catalog
 from .child_protocol import (
+    SESSION_COLLECT_FEATURE, SESSION_COLLECT_POLICY_REFUSAL,
     LOCAL_LLM_FEATURE,
     PROTOCOL_VERSION,
     PROVIDER_DATA_FEATURE,
@@ -58,7 +60,7 @@ _MISSED_HEARTBEATS = 3
 _VERSION_SKEW_ALLOW = frozenset({
     "provider_catalog", "heartbeat", "cancel", "app_update_chunk", "app_update_end", "app_update_error",
 })
-_VERSION_SKEW_ERROR = {"turn": "error", "login": "login_error", "status": "status_error", "quota": "quota_error"}
+_VERSION_SKEW_ERROR = {"turn": "error", "login": "login_error", "status": "status_error", "quota": "quota_error", "session_collect": "session_collect_error"}
 
 
 def child_listen_config(environ: Mapping[str, str] | None = None) -> tuple[str, int] | None:
@@ -115,6 +117,8 @@ class _Live:
     quota_providers: frozenset[str] | None = None
     providers: tuple[dict, ...] = ()
     local_llm: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    session_import_sources: tuple[str, ...] = ()
+    session_import_origin_hint: str | None = None
     platform: str | None = None
     mcp_approvals: dict[str, str] = field(default_factory=dict)
     mcp_active: int = 0
@@ -333,6 +337,69 @@ class ChildHub:
                 "workspace_policy": record.get("workspace_policy"),
             })
         return rows
+
+    def session_collect_children(self) -> list[dict[str, Any]]:
+        """失効していない登録済み child の収集可否と統合済み分類を返す。"""
+        from .session_import.remote import resolve_effective_origin_hint
+
+        rows = []
+        for record in self.registry.children():
+            if record.get("revoked"):
+                continue
+            live = self.live_for(record["name"])
+            child_hint = live.session_import_origin_hint if live else None
+            host_hint = record.get("origin_hint")
+            rows.append(dict(
+                name=record["name"], connected=live is not None, platform=live.platform if live else None,
+                supports_session_collect=bool(live and SESSION_COLLECT_FEATURE in live.features),
+                session_import_sources=list(live.session_import_sources) if live else [],
+                child_origin_hint=child_hint, host_origin_hint=host_hint,
+                effective_origin_hint=resolve_effective_origin_hint(child_hint, host_hint),
+            ))
+        return rows
+
+    async def collect_sessions(
+        self, name: str, *, source_kind: str = "all", since: str | None = None,
+        max_files: int = 200, max_turns: int = 2000,
+        known_files: Mapping[str, tuple[int, int]] | None = None, timeout: float = 120.0,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any], str | None]:
+        """接続中の child から収集する。拒否は PermissionError、切断・非対応は RuntimeError。"""
+        from .session_import.remote import resolve_effective_origin_hint
+
+        live = self.live_for(name)
+        if live is None:
+            raise RuntimeError(f"child {name} is not connected")
+        if SESSION_COLLECT_FEATURE not in live.features:
+            raise RuntimeError(f"child {name} does not support session collection")
+        stream = self.allocate_stream()
+        queue = live.mux.queue(stream)
+        batches = []
+        try:
+            async with asyncio.timeout(timeout):
+                if not await self.send_frame(name, stream, "session_collect", dict(
+                    source_kind=source_kind, since=since, max_files=max_files, max_turns=max_turns,
+                    known_files=dict(known_files) if known_files is not None else None,
+                ), link=live):
+                    raise RuntimeError("child disconnected during session collection")
+                while True:
+                    frame = await queue.get()
+                    if frame.kind == "session_collect_batch":
+                        batches.append(frame.payload)
+                    elif frame.kind == "session_collect_done":
+                        record = self.registry.get(name) or {}
+                        hint = resolve_effective_origin_hint(
+                            live.session_import_origin_hint, frame.payload.get("child_origin_hint"), record.get("origin_hint"),
+                        )
+                        return batches, frame.payload, hint
+                    else:
+                        message = str(frame.payload.get("error") or frame.payload.get("message") or "child disconnected")
+                        if message == SESSION_COLLECT_POLICY_REFUSAL:
+                            raise PermissionError(message)
+                        raise RuntimeError(message)
+        except TimeoutError as exc:
+            raise RuntimeError("session collection timed out") from exc
+        finally:
+            live.mux.discard(stream)
 
     async def revoke(self, name: str) -> dict:
         record = self.registry.revoke(name)
@@ -566,6 +633,15 @@ class ChildHub:
             ws=ws, lock=asyncio.Lock(), mux=mux, name=record["name"],
             features=features, package_match=package_match,
             platform=platform, build_id=build_id,
+            session_import_sources=tuple(
+                item for item in _clean_names(payload.get("session_import_sources"))
+                if item in ("all", "claude", "codex", "antigravity", "cursor", "grok")
+            ) if SESSION_COLLECT_FEATURE in features else (),
+            session_import_origin_hint=(
+                payload.get("session_import_origin_hint")
+                if SESSION_COLLECT_FEATURE in features and payload.get("session_import_origin_hint") in ("personal", "work")
+                else None
+            ),
             quota_providers=_quota_providers(payload.get("quota_providers")),
             providers=_data_providers(payload.get("providers")) if PROVIDER_DATA_FEATURE in features else (),
             local_llm=local_llm,

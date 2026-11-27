@@ -669,7 +669,7 @@ async def test_enroll_and_stream_through_on_demand_runner(binary, host, child_en
             "protocol": 2, "version": current_package_version(), "adapters": ["claude.agent-sdk"],
             "features": [
                 "codex-turns", "login-status", "provider-data/1", "workspace-policy/1",
-                "prompt-prefix-skills/1", "skill-folders/1", "repository-skills/1",
+                "prompt-prefix-skills/1", "session-collect/1", "skill-folders/1", "repository-skills/1",
                 "local-llm/1",
                 *(["provider-data-mcp/1"] if platform_key() in LANDLOCK_PLATFORMS else []),
                 *(["sdk-skills/1", "host-http-mcp/1"] if platform_key().startswith("linux-") else []),

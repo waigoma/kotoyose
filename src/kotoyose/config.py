@@ -1141,6 +1141,7 @@ class PoolAlias(BaseModel):
 CLIENT_NAME_PATTERN = r"^[a-z0-9][a-z0-9-]{0,63}$"
 _CLIENT_NAME_RE = re.compile(CLIENT_NAME_PATTERN)
 _CLIENT_REF_RE = re.compile(r"^[A-Za-z0-9._:/-]+$")
+ClientScope = Literal["sessions:export", "sessions:continue"]
 ClientProvenance = Literal["trusted", "verified_fact", "project", "agent_generated", "external_untrusted", "mixed"]
 _DEFAULT_CLIENT_PROVENANCE: tuple[ClientProvenance, ...] = (
     "project", "agent_generated", "external_untrusted", "mixed",
@@ -1156,6 +1157,7 @@ class Client(BaseModel):
     places: list[ClientPlace] = Field(default_factory=lambda: ["isolated"])
     max_surface: SurfaceName | None = Field(default=None, exclude_if=lambda value: value is None)
     allow_full: bool = Field(default=False, exclude_if=lambda value: not value)
+    scopes: list[ClientScope] = Field(default_factory=list, exclude_if=lambda value: not value)
     workspace_roots: list[Path] = Field(default_factory=list)
 
     external_mcps: list[str] = Field(default_factory=list, max_length=32, exclude_if=lambda value: not value)
@@ -1189,6 +1191,11 @@ class Client(BaseModel):
     @field_validator("places")
     @classmethod
     def _validate_places(cls, value: list[ClientPlace]) -> list[ClientPlace]:
+        return list(dict.fromkeys(value))
+
+    @field_validator("scopes")
+    @classmethod
+    def _validate_scopes(cls, value: list[ClientScope]) -> list[ClientScope]:
         return list(dict.fromkeys(value))
 
     @field_validator("workspace_roots")
@@ -1253,6 +1260,16 @@ class HarnessConfig(BaseModel):
     """Model preset と再利用可能な個別リソースを保持する。"""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    session_import_allowed_roots: list[Path] = Field(default_factory=list, exclude_if=lambda value: not value)
+
+    @field_validator("session_import_allowed_roots")
+    @classmethod
+    def _validate_session_import_allowed_roots(cls, value: list[Path]) -> list[Path]:
+        for path in value:
+            if not path.is_absolute():
+                raise ValueError("session_import_allowed_roots entries must be absolute paths")
+        return value
 
     credential_leak_guard: bool = Field(default=True, exclude_if=lambda value: value)
     models: dict[str, ModelPreset] = {}

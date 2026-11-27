@@ -187,7 +187,12 @@ impl<'a> Mux<'a> {
             self.work.insert(id, Work::new(operation, relayed_mcp));
         } else if matches!(
             kind,
-            "cancel" | "release" | "login_cancel" | "quota_cancel" | "status_cancel"
+            "cancel"
+                | "release"
+                | "login_cancel"
+                | "quota_cancel"
+                | "status_cancel"
+                | "session_collect_cancel"
         ) {
             let release = kind == "release";
             if let Some(work) = self.work.get(&id) {

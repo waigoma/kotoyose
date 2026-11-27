@@ -387,6 +387,10 @@ pub struct Policy {
     pub codex_sandbox_max: CodexSandbox,
     #[serde(default)]
     pub local_llm: BTreeMap<String, crate::policy::LocalLlm>,
+    #[serde(default)]
+    pub session_import_sources: Vec<String>,
+    #[serde(default)]
+    pub session_import_origin_hint: Option<String>,
 }
 
 pub struct Catalog {
@@ -397,6 +401,8 @@ pub struct Catalog {
     pub workspace_roots: Vec<PathBuf>,
     pub codex_sandbox_max: CodexSandbox,
     pub local_llm: BTreeMap<String, Vec<String>>,
+    pub session_import_sources: Vec<String>,
+    pub session_import_origin_hint: Option<String>,
 }
 
 pub const SETTINGS_PORT_FILE: &str = "settings.port";
@@ -464,6 +470,8 @@ pub async fn catalog(home: &Path, python: Option<&Path>) -> Result<Catalog> {
             .into_iter()
             .map(|(name, entry)| (name, entry.models))
             .collect(),
+        session_import_sources: policy.session_import_sources,
+        session_import_origin_hint: policy.session_import_origin_hint,
     })
 }
 

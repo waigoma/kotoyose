@@ -96,6 +96,45 @@ async def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_interactions_source
                 ON kotoyose.interactions (source, received_at DESC);
 
+            CREATE INDEX IF NOT EXISTS idx_interactions_completed_id
+                ON kotoyose.interactions (completed_at ASC, id ASC)
+                WHERE completed_at IS NOT NULL;
+
+            CREATE TABLE IF NOT EXISTS kotoyose.session_import_files (
+                source_kind TEXT NOT NULL,
+                source_machine TEXT NOT NULL,
+                path_hash TEXT NOT NULL,
+                file_mtime_ns BIGINT NOT NULL,
+                file_size BIGINT NOT NULL,
+                last_turn_index INTEGER NOT NULL DEFAULT -1,
+                imported_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                last_imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (source_kind, source_machine, path_hash)
+            );
+            CREATE TABLE IF NOT EXISTS kotoyose.session_import_runs (
+                run_id TEXT PRIMARY KEY,
+                source_kind TEXT NOT NULL,
+                source_machine TEXT NOT NULL,
+                dry_run BOOLEAN NOT NULL DEFAULT FALSE,
+                origin_hint TEXT,
+                since TEXT,
+                files_scanned INTEGER NOT NULL DEFAULT 0,
+                files_skipped_unchanged INTEGER NOT NULL DEFAULT 0,
+                sessions_detected INTEGER NOT NULL DEFAULT 0,
+                turns_extracted INTEGER NOT NULL DEFAULT 0,
+                turns_imported INTEGER NOT NULL DEFAULT 0,
+                turns_skipped_duplicate INTEGER NOT NULL DEFAULT 0,
+                turns_skipped_since INTEGER NOT NULL DEFAULT 0,
+                redactions_count INTEGER NOT NULL DEFAULT 0,
+                truncations_count INTEGER NOT NULL DEFAULT 0,
+                errors JSONB NOT NULL DEFAULT '[]'::jsonb,
+                started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                completed_at TIMESTAMPTZ
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_import_runs_started_at
+                ON kotoyose.session_import_runs (started_at DESC);
+
             CREATE TABLE IF NOT EXISTS kotoyose.interaction_events (
                 id             BIGSERIAL PRIMARY KEY,
                 interaction_id BIGINT NOT NULL

@@ -422,3 +422,7 @@ def enrollment_parts(code: str) -> tuple[dict, bytes, bytes]:
 
 def pack_enrollment_code(body: bytes, signature: bytes) -> str:
     return "kyc1." + _b64encode(body) + "." + _b64encode(signature)
+
+SESSION_COLLECT_FEATURE = "session-collect/1"
+SESSION_COLLECT_POLICY_REFUSAL = "session collection refused by child policy"
+SESSION_COLLECT_BATCH_MAX_BYTES = 512 * 1024

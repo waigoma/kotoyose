@@ -19,6 +19,7 @@ const COLLAPSE_CHAR_LIMIT = 420;
 const COLLAPSE_LINE_LIMIT = 8;
 
 let searchQuery = "";
+let showSubagents = false;
 
 function enc(value) {
   return encodeURIComponent(value);
@@ -94,7 +95,7 @@ function sessionRow(session, selected) {
     `${count(session.turn_count)} ${session.turn_count === 1 ? "turn" : "turns"}`));
 }
 
-function sessionsCard(sessions, sessionsError, target) {
+function sessionsCard(sessions, sessionsError, target, isAlive) {
   const countNode = el("span", { class: "mono small muted" }, "");
   const rowsWrap = el("div", { class: "rows" });
   const emptyNode = el("p", { class: "card-body muted" }, "");
@@ -135,13 +136,32 @@ function sessionsCard(sessions, sessionsError, target) {
     searchQuery = searchInput.value;
     renderFiltered();
   });
+  const subagentToggle = el("input", { type: "checkbox", checked: showSubagents });
+  subagentToggle.addEventListener("change", async () => {
+    showSubagents = subagentToggle.checked;
+    subagentToggle.disabled = true;
+    try {
+      const res = await api.sessions(SESSION_LIMIT, 0, { includeSubagents: showSubagents });
+      sessions = (res && res.items) || [];
+      sessionsError = null;
+    } catch (err) {
+      sessionsError = err;
+    } finally {
+      if (isAlive()) {
+        subagentToggle.disabled = false;
+        renderFiltered();
+      }
+    }
+  });
   renderFiltered();
 
   return el("section", { class: "card", "aria-label": "Conversations" },
     el("div", { class: "card-head" },
       el("h2", { class: "card-title" }, "Conversations"),
       countNode),
-    sessions.length > 0 ? el("div", { class: "list-filter" }, searchInput) : null,
+    el("div", { class: "list-filter" },
+      searchInput,
+      el("label", { class: "small" }, subagentToggle, " Show subagent / delegated")),
     rowsWrap);
 }
 
@@ -359,7 +379,92 @@ function renderTurnCard(turn, index, resumeNote, isTarget, registerStream, isAli
   return card;
 }
 
-function openExecutionPeek({ title, subtitle, turns, targetId, errorMsg, registerStream, isAlive }) {
+function lineageNote(turns) {
+  for (const turn of turns) {
+    let metadata = turn.metadata;
+    if (typeof metadata === "string") {
+      try { metadata = JSON.parse(metadata); } catch { continue; }
+    }
+    const parent = metadata && (metadata.parent_conversation_key || metadata.forked_from);
+    if (typeof parent === "string" && parent) {
+      return el("span", { class: "small muted" }, "Forked from ",
+        el("a", { class: "mono", href: `#/executions/session/${enc(parent)}` }, parent));
+    }
+  }
+  return null;
+}
+
+function continuePanel(source, config, isAlive) {
+  const models = [...new Set([
+    ...Object.keys((config && config.models) || {}),
+    ...Object.keys((config && config.pools) || {}),
+  ])].sort();
+  if (!models.length) return null;
+  const model = el("select", { name: "model", class: "input" },
+    models.map((name) => el("option", { value: name }, name)));
+  model.value = models[0];
+  const message = el("textarea", {
+    name: "message", class: "input", required: true,
+    placeholder: "Continue this conversation on the selected model…",
+  });
+  const status = el("div", { class: "small muted", "aria-live": "polite" });
+  const result = el("div", { "aria-live": "polite" });
+  const submit = el("button", { type: "submit", class: "btn" }, "Continue (Fork)");
+  let running = false;
+  let previewing = false;
+  let blocked = false;
+  let revision = 0;
+  const sync = () => { submit.disabled = running || previewing || blocked; };
+  async function preview() {
+    const current = ++revision;
+    blocked = false;
+    status.replaceChildren();
+    previewing = typeof api.handoffPreview === "function";
+    sync();
+    if (!previewing) return;
+    status.textContent = "Checking handoff…";
+    try {
+      const data = await api.handoffPreview({ ...source, model: model.value });
+      if (current !== revision || !isAlive()) return;
+      blocked = data.policy_blocked_reason != null;
+      status.replaceChildren(blocked ? errorLine(data.policy_blocked_reason)
+        : el("span", {}, `${data.handoff_turns_included} / ${data.handoff_turns_total} turns · ${data.preview_bytes} bytes${data.handoff_truncated ? " · truncated" : ""}`));
+    } catch {
+      if (current === revision && isAlive()) status.replaceChildren();
+    } finally {
+      if (current === revision && isAlive()) { previewing = false; sync(); }
+    }
+  }
+  model.addEventListener("change", preview);
+  const form = el("form", { class: "stack" },
+    el("label", {}, "Model", model), el("label", {}, "Message", message), status, submit, result);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (running || previewing || blocked || !message.value.trim() || !isAlive()) return;
+    running = true;
+    model.disabled = true;
+    sync();
+    result.replaceChildren();
+    try {
+      const data = await api.continueSession({ ...source, model: model.value, message: message.value });
+      if (!isAlive()) return;
+      result.replaceChildren(el("pre", { class: "turn-text" }, data.response),
+        el("a", { href: `#/executions/session/${enc(data.conversation_key)}` },
+          `Open forked session (${data.conversation_key})`));
+    } catch (err) {
+      if (isAlive()) result.replaceChildren(errorLine(err.message));
+    } finally {
+      running = false;
+      if (isAlive()) { model.disabled = false; sync(); }
+    }
+  });
+  void preview();
+  return el("section", { class: "card", "aria-label": "Continue with another model" },
+    el("div", { class: "card-head" }, el("h2", { class: "card-title" }, "Continue with another model")),
+    el("div", { class: "card-body" }, form));
+}
+
+function openExecutionPeek({ title, subtitle, turns, targetId, errorMsg, registerStream, isAlive, source, config }) {
   const onClose = () => { location.hash = "#/executions"; };
   if (errorMsg) {
     return openPeek({
@@ -386,15 +491,16 @@ function openExecutionPeek({ title, subtitle, turns, targetId, errorMsg, registe
   return openPeek({
     title,
     titleMono: true,
-    subtitle,
+    subtitle: el("span", { class: "stack" }, subtitle, lineageNote(turns)),
     body: el("div", { class: "turns-list" },
+      source ? continuePanel(source, config, isAlive) : null,
       turns.map((turn, idx) =>
         renderTurnCard(turn, idx, resumeNotes[idx], turn.id === targetId, registerStream, isAlive))),
     onClose,
   });
 }
 
-export async function renderExecutions(main, { rest }) {
+export async function renderExecutions(main, { rest, config }) {
   main.classList.add("main--wide");
   const route = parseRoute(rest);
   const activeStreams = new Set();
@@ -421,7 +527,7 @@ export async function renderExecutions(main, { rest }) {
   let detailProps = { turns: null };
   let highlightTarget = null;
 
-  const sessionsPromise = api.sessions(SESSION_LIMIT)
+  const sessionsPromise = api.sessions(SESSION_LIMIT, 0, { includeSubagents: showSubagents })
     .then((res) => {
       sessions = (res && res.items) || [];
     })
@@ -507,11 +613,16 @@ export async function renderExecutions(main, { rest }) {
         el("h1", { class: "page-title" }, "Executions"),
         el("p", { class: "page-sub" }, "Browse conversations, inspect turns, and follow live activity.")),
       el("a", { class: "btn", href: "#/usage" }, "View usage")),
-    sessionsCard(sessions, sessionsError, highlightTarget),
+    sessionsCard(sessions, sessionsError, highlightTarget, isAlive),
   );
 
   const peekBody = route.mode !== "empty"
-    ? openExecutionPeek({ ...detailProps, registerStream, isAlive })
+    ? openExecutionPeek({ ...detailProps, registerStream, isAlive, config,
+      source: route.mode === "session" ? {
+        source_conversation_key: route.conversationKey,
+        ...(route.provider ? { source_provider: route.provider } : {}),
+        ...(route.runtimeSessionId ? { source_runtime_session_id: route.runtimeSessionId } : {}),
+      } : null })
     : null;
 
   if (peekBody && detailProps.targetId) {

@@ -1218,3 +1218,53 @@ kotoyose-acp --model dev --forward-cwd
 
 host の alias は `on: child:win` とし、`cwd_allowed_roots` には `C:\work` のように、child の `workspace_roots` の中に入る path を書きます。大文字と小文字の違いは無視されます。
 
+---
+
+## セッション履歴インポート・別モデル継続・Export API (1.4.0+)
+
+### 1. ローカル会話履歴の取り込み
+
+ローカル CLI（`claude` / `codex` / `antigravity` / `cursor` / `grok`）の過去セッションを `kotoyose.interactions` へ取り込みます。資格情報の除去（`[REDACTED]`）、`thinking` / ツール生ダンプ除外、64 KiB 境界切り詰め、ライブ実行済みセッションの重複回避が自動で行われます。
+
+```bash
+# まずは DB に一切書き込まずに件数を確認
+kotoyose import-sessions --source all --dry-run
+
+# 本取り込み（例: 業務端末の履歴に work の印を付けて取り込む）
+kotoyose import-sessions --source all --origin-hint work --since 2026-01-01
+```
+
+管理コンソールの **Monitor → Imports** 画面（`/admin/imports/sources`, `/admin/imports/run`, `/admin/imports/runs`）からも同じ操作を実行できます。`--path` や管理 API で既定ルート以外をスキャンする場合は、`config.yml` の `session_import_allowed_roots` または環境変数 `KOTOYOSE_IMPORT_ALLOWED_ROOTS` で許可ディレクトリを明示します。
+
+### 2. 別モデルへの会話引き継ぎ (Continue / Fork)
+
+過去のライブ会話やインポート済み会話を、別のモデル・プロバイダへ引き継いで新しい `fork:` セッションとして継続できます。
+
+- **管理コンソール**: **Monitor → Executions** でセッションを開き、**Continue with another model** から送信先モデルを選んでメッセージを送信します。
+- **Client API**: `clients.<name>.scopes` に `sessions:continue` を付与したキーで `POST /v1/sessions/continue` を呼び出します（自身の API キーで記録した会話の継続は追加スコープ不要）。
+- **業務データの保護**: 元会話に `origin_hint: work` が含まれる場合、送信先接続の `data_policy` が `no_training` でなければ 403 で拒否されます。
+
+### 3. Child 端末からのマルチマシン収集
+
+子機側の `policy.json` に許可ソースを明示すると、ホストから mTLS 接続経由で履歴を収集できます（既定は空＝無効）。資格情報除去と `thinking` 除外は送信前に子機側で完了します。
+
+```json
+{
+  "adapters": ["claude.agent-sdk"],
+  "mcp": {},
+  "workspace_roots": ["C:\\work"],
+  "session_import_sources": ["claude", "codex", "cursor"],
+  "session_import_origin_hint": "work"
+}
+```
+
+ホストの管理コンソール **Imports → Remote Machines (Children)**（`/admin/imports/children`）から、端末ごとの `origin_hint` 固定や Dry Run / Collect を実行できます。
+
+### 4. Read-Only Export API と観測面のフィルタ
+
+下流の記憶基盤などから `(completed_at, id)` カーソルで未処理ターンを Pull するには、`clients.<name>.scopes` に `sessions:export` を付与した読み取り専用クライアント（`models: []`）のキーで `GET /v1/sessions/export` を呼び出します。
+
+- `/admin/stats`・`/admin/stats/hourly` は既定でインポート行 (`source LIKE 'import:%'`) を除外します（`?include_imported=true` で包含）。
+- `/admin/interactions`・`/admin/sessions`・`/v1/sessions/export` は既定で委譲・サブエージェント行 (`delegate:` / `is_subagent`) を除外します（`?include_subagents=true` で包含）。
+
+
