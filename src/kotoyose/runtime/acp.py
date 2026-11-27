@@ -158,7 +158,7 @@ class AcpRuntimeSession:
             from ..provider_data import GROK_MCP_GUARD, reject_option_value
             from ..provider_data_child import approved_for, execution_home, watch_approval
             from ..provider_data_runtime import (
-                acp_data_env, checked_write_cwd, managed_binary, register_declared_process, require_acp_landlock,
+                acp_data_env, checked_write_cwd, managed_command, register_declared_process, require_acp_landlock,
             )
 
             if self.policy.unrestricted_child:
@@ -174,8 +174,10 @@ class AcpRuntimeSession:
                 spec = declaration.acp_unrestricted
             elif self.policy.mcp_names:
                 capability = "mcp"
-            require_empty_grok_mcp = capability in ("mcp", UNRESTRICTED)
-            if require_empty_grok_mcp and declaration.mcp_guard != GROK_MCP_GUARD:
+            require_empty_grok_mcp = capability == "mcp" or (
+                capability == UNRESTRICTED and declaration.mcp_guard == GROK_MCP_GUARD
+            )
+            if self.policy.mcp_names and declaration.mcp_guard != GROK_MCP_GUARD:
                 raise AcpError("unsupported_mcp_guard")
             if not self.policy.mcp_names:
                 mcp_servers = []
@@ -189,20 +191,22 @@ class AcpRuntimeSession:
             if capability in ("write", "mcp", UNRESTRICTED):
                 if child_home is None or self._fixed_cwd is None:
                     raise AcpError("unsupported_acp_write")
-                self.cwd = checked_write_cwd(self._fixed_cwd, child_home)
+                self.cwd = checked_write_cwd(self._fixed_cwd, child_home, declaration=declaration)
             if capability in ("write", "mcp"):
                 if declaration.acp_write is None:
                     raise AcpError("unsupported_acp_write")
                 spec = declaration.acp_write
             require_acp_landlock(spec)
             env = acp_data_env(declaration, child_home, self._leases)
-            self.binary = managed_binary(declaration, child_home)
+            command = managed_command(declaration, child_home)
+            self.binary = Path(command[0])
         else:
+            command = (str(self.binary),)
             env = build_print_cli_env(self.profile, self.home, minimal=True)
             env.update(spec.env)
         self._place_instructions(env)
         self._process = await AcpClient.spawn(
-            [str(self.binary), *spec.arguments(self.model, mcp_servers=mcp_servers)],
+            [*command, *spec.arguments(self.model, mcp_servers=mcp_servers)],
             cwd=self.cwd, env=env,
         )
         if declaration is not None and (pid := self._process.process.pid):

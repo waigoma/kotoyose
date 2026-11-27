@@ -11,6 +11,9 @@
     "argv": [
       "acp"
     ],
+    "unrestricted_argv": [
+      "acp"
+    ],
     "placeholders": []
   },
   "identity": {
@@ -23,15 +26,32 @@
     "linux-x64": {
       "max_capability": "read",
       "install": {
-        "version": "2026.11.19-f005e9d",
+        "version": "2026.11.22-e9042b2",
         "urls": [
-          "https://downloads.cursor.com/lab/2026.11.19-f005e9d/linux/x64/agent-cli-package.tar.gz"
+          "https://downloads.cursor.com/lab/2026.11.22-e9042b2/linux/x64/agent-cli-package.tar.gz"
         ],
-        "sha256": "a25986eaf0c9330aeeec599a139711cb9f267c64562d073a72b751edf5161695",
+        "sha256": "7663b1c5d1b56e095ef8e23bef38d66df6cfd665c4873470214e0e411f0f97b3",
         "format": "tar.gz",
         "binary": "agent",
         "directory": "dist-package",
         "entrypoint": "cursor-agent"
+      }
+    },
+    "windows-x64": {
+      "max_capability": "unrestricted",
+      "install": {
+        "version": "2026.11.22-e9042b2",
+        "urls": [
+          "https://downloads.cursor.com/lab/2026.11.22-e9042b2/windows/x64/agent-cli-package.zip"
+        ],
+        "sha256": "4bf0afdadaa41c2cb58508cb50984656a35b9d494fc92944ed1132a8a067086f",
+        "format": "zip",
+        "binary": "agent.exe",
+        "directory": "dist-package",
+        "entrypoint": "node.exe",
+        "entrypoint_args": [
+          "index.js"
+        ]
       }
     }
   },

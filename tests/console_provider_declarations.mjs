@@ -275,6 +275,43 @@ const currentEditor = () => main.querySelectorAll("textarea").find((n) => n.getA
 assert.deepEqual(JSON.parse(currentEditor().value).acp, { argv: ["acp", "--model", "{model}"], placeholders: ["model"] });
 assert.equal("member" in JSON.parse(currentEditor().value).platforms["linux-x64"].install, false);
 
+// ZIP directory bundles preserve entrypoint arguments and Windows approval argv.
+selector.value = cursor.id;
+await button("Load template").fire("click");
+assert.deepEqual(input("format").children.map((n) => n.value), ["raw", "tar.gz", "zip"]);
+input("platform").value = "windows-x64";
+input("format").value = "zip";
+await input("format").fire("change");
+assert.equal(input("entrypoint_args").parentNode.hidden, false);
+input("entrypoint").value = "node.exe";
+input("entrypoint_args").value = "index.js, --flag value\nlast";
+await button("Preview JSON").fire("click");
+const zip = JSON.parse(currentEditor().value);
+assert.deepEqual(zip.platforms["windows-x64"].install, {
+  ...JSON.parse(cursor.document).platforms["linux-x64"].install,
+  format: "zip", entrypoint: "node.exe", entrypoint_args: ["index.js", "--flag", "value", "last"],
+});
+assert.deepEqual(zip.acp.unrestricted_argv, ["acp"]);
+await button("Form builder").fire("click");
+assert.equal(input("entrypoint_args").value, "index.js, --flag, value, last");
+await button("Preview JSON").fire("click");
+assert.deepEqual(JSON.parse(currentEditor().value), zip);
+zip.acp.unrestricted_argv = ["acp", "--custom"];
+currentEditor().value = JSON.stringify(zip);
+await button("Form builder").fire("click");
+input("entrypoint_args").value = "  ";
+input("acp_argv").value = "acp --model {model}";
+await button("Preview JSON").fire("click");
+assert.equal("entrypoint_args" in JSON.parse(currentEditor().value).platforms["windows-x64"].install, false);
+assert.deepEqual(JSON.parse(currentEditor().value).acp.unrestricted_argv, ["acp", "--custom"]);
+await button("Form builder").fire("click");
+input("entrypoint_args").value = "index.js";
+input("archive_layout").value = "member";
+await input("archive_layout").fire("change");
+assert.equal(input("entrypoint_args").parentNode.hidden, true);
+await button("Preview JSON").fire("click");
+assert.equal("entrypoint_args" in JSON.parse(currentEditor().value).platforms["windows-x64"].install, false);
+
 // Bump preview/update, pending state, and recoverable inline failure.
 const bumped = JSON.parse(cursor.document);
 bumped.platforms["linux-x64"].install.version = "2.0.0";

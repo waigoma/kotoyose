@@ -711,7 +711,7 @@ def _prepare(home: Path, payload: dict, *, relay_mcps: dict[str, dict] | None = 
         try:
             if capability in ("write", "mcp", UNRESTRICTED):
                 assert resolved is not None
-                resolved = checked_write_cwd(resolved, home)
+                resolved = checked_write_cwd(resolved, home, declaration=declared)
             acp_spec = declared.acp
             if capability == UNRESTRICTED:
                 acp_spec = declared.acp_unrestricted

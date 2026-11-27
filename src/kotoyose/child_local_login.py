@@ -238,7 +238,8 @@ async def run(home, provider, mode, platform, parent):
 
 
 async def _run(home, provider, mode, platform, parent):
-    from .child_ops import _login_state, child_cli_env, resolve_child_binary
+    from .child_ops import _login_state, child_cli_env
+    from .provider_data_runtime import managed_command
     from .cli_login import _check_login_success
     from .print_cli_profiles import get_print_cli_profile_for_provider
 
@@ -265,7 +266,7 @@ async def _run(home, provider, mode, platform, parent):
         _emit("unsupported")
         return
     try:
-        prefix = (str(resolve_child_binary(provider, profile_id, home)),) if declared else _cli_prefix(home, row)
+        prefix = managed_command(declared, home) if declared else _cli_prefix(home, row)
     except (OSError, ValueError):
         _emit("unavailable")
         return
@@ -292,7 +293,7 @@ async def _run(home, provider, mode, platform, parent):
                 logged_in = _check_login_success(spec, *result)
             else:
                 if declared is not None and mode == "start":
-                    prefix = (str(resolve_child_binary(provider, profile_id, home)),)
+                    prefix = managed_command(declared, home)
                 code, output = await _login_status(
                     prefix, status, platform, cwd, env, parent, declared.status_timeout if declared else _STATUS_TIMEOUT,
                     declared=declared is not None,

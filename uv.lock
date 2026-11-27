@@ -743,7 +743,7 @@ wheels = [
 
 [[package]]
 name = "kotoyose"
-version = "1.4.2"
+version = "1.4.3"
 source = { editable = "." }
 dependencies = [
     { name = "asyncpg" },

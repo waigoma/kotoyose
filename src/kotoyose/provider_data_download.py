@@ -123,7 +123,7 @@ def install_download(row: Declaration, *, child_home: Path) -> None:
     ensure_executable(row, child_home)
     target = row.platform(platform_key())
     assert target is not None
-    if target.artifact.format not in ("raw", "tar.gz"):
+    if target.artifact.format not in ("raw", "tar.gz", "zip"):
         raise ValueError("unsupported download artifact format")
     if installed_path(row, child_home) is not None:
         return

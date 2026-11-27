@@ -243,12 +243,13 @@ def _acp_commands(value) -> tuple[AcpSpec | None, AcpSpec | None, AcpSpec | None
     obj = _object(value, ("placeholders",), ("argv", "write_argv", "unrestricted_argv", "mcp_guard"))
     read = AcpSpec(_argv(obj["argv"], _ACP_ARGV, {"{model}"})) if "argv" in obj else None
     write = AcpSpec(_argv(obj["write_argv"], _ACP_WRITE_ARGV, {"{model}"})) if "write_argv" in obj else None
-    unrestricted = (AcpSpec(_argv(obj["unrestricted_argv"], {GROK_ACP_UNRESTRICTED_ARGV}, {"{model}"}))
+    unrestricted = (AcpSpec(_argv(obj["unrestricted_argv"], {GROK_ACP_UNRESTRICTED_ARGV, ("acp",), ("acp", "--model", "{model}")}, {"{model}"}))
                     if "unrestricted_argv" in obj else None)
     model = any(spec is not None and "{model}" in spec.argv for spec in (read, write, unrestricted))
     if not ((model and obj["placeholders"] == ["model"]) or (
-        read is not None and read.argv == ("acp",) and obj["placeholders"] == []
-        and "write_argv" not in obj and "unrestricted_argv" not in obj
+        any(spec is not None for spec in (read, unrestricted))
+        and all(spec is None or spec.argv == ("acp",) for spec in (read, unrestricted))
+        and obj["placeholders"] == [] and "write_argv" not in obj
     )):
         raise ValueError("acp placeholders do not match the driver contract")
     guard = obj.get("mcp_guard")
@@ -368,25 +369,26 @@ class Declaration:
         if row is None:
             return []
         binary = row.binary
+        prefix = [row.artifact.entrypoint or binary, *row.artifact.entrypoint_args] if row.artifact.entrypoint_args else [binary]
         rows = [
-            {"operation": "version", "argv": [binary, "--version"], "placeholders": {}},
-            {"operation": "login", "argv": [binary, *self.login.command], "placeholders": {}},
-            {"operation": "status", "argv": [binary, *self.login.status_command], "placeholders": {}},
+            {"operation": "version", "argv": [*prefix, "--version"], "placeholders": {}},
+            {"operation": "login", "argv": [*prefix, *self.login.command], "placeholders": {}},
+            {"operation": "status", "argv": [*prefix, *self.login.status_command], "placeholders": {}},
         ]
         acp = self.acp_unrestricted if row.supports(UNRESTRICTED) else self.acp
         if acp is not None:
             rows.append({
-                "operation": "acp", "argv": [binary, *acp.argv],
+                "operation": "acp", "argv": [*prefix, *acp.argv],
                 "placeholders": {"model": "child-validated model id"} if "{model}" in acp.argv else {},
             })
         if self.acp_write is not None and row.supports("write"):
             rows.append({
-                "operation": "acp (write)", "argv": [binary, *self.acp_write.argv],
+                "operation": "acp (write)", "argv": [*prefix, *self.acp_write.argv],
                 "placeholders": {"model": "child-validated model id"},
             })
         if self.driver == "cli.print":
             rows.append({
-                "operation": "print", "argv": [binary, *self.print_argv],
+                "operation": "print", "argv": [*prefix, *self.print_argv],
                 "placeholders": {"prompt": "stdin" if self.prompt_via == "stdin" else "turn text"},
             })
         return rows
@@ -485,25 +487,29 @@ def parse_declaration(raw: bytes) -> Declaration:
                 raise ValueError("Windows x64 requires unrestricted capability")
         elif key.startswith("windows-") or capability not in SANDBOX_CAPABILITIES:
             raise ValueError("unsupported capability for this platform")
-        pin = _object(row["install"], ("version", "urls", "sha256", "format", "binary"), ("member", "directory", "entrypoint"))
+        pin = _object(row["install"], ("version", "urls", "sha256", "format", "binary"), ("member", "directory", "entrypoint", "entrypoint_args"))
         kind = pin["format"]
-        layout = set(pin) & {"member", "directory", "entrypoint"}
+        layout = set(pin) & {"member", "directory", "entrypoint", "entrypoint_args"}
         if not ((kind == "raw" and not layout) or (
-            kind == "tar.gz" and layout in ({"member"}, {"directory", "entrypoint"})
+            kind in ("tar.gz", "zip")
+            and layout in ({"member"}, {"directory", "entrypoint"}, {"directory", "entrypoint", "entrypoint_args"})
         )):
             raise ValueError("unsupported artifact layout")
         os_name, arch = key.split("-", 1)
         binary = identifier(pin["binary"]) if os_name != "windows" else _text(pin["binary"], 52)
         if os_name == "windows":
-            if kind != "raw" or not re.fullmatch(r"[a-z][a-z0-9-]{0,47}\.exe", binary) or re.fullmatch(
-                r"(?:aux|con|nul|prn|com[0-9]|lpt[0-9])\.exe", binary,
-            ):
-                raise ValueError("Windows artifacts require a raw EXE with an ordinary filename")
+            executable = pin.get("entrypoint", "") if kind == "zip" else binary
+            if (kind not in ("raw", "zip") or (kind == "zip" and "directory" not in pin)
+                    or not re.fullmatch(r"[a-z][a-z0-9-]{0,47}\.exe", executable) or re.fullmatch(
+                r"(?:aux|con|nul|prn|com[0-9]|lpt[0-9])\.exe", executable,
+            )):
+                raise ValueError("Windows artifacts require a raw or zip EXE with an ordinary filename")
         artifact = CliArtifact(
             key, os_name, arch, _array(pin["urls"], lambda url: check_url(url, download), 4, 1),
             f"sha256:{digest(pin['sha256'])}", kind, _path(pin["member"]) if "member" in pin else None,
             _path(pin["directory"]) if "directory" in pin else None,
             _path(pin["entrypoint"]) if "entrypoint" in pin else None,
+            _array(pin["entrypoint_args"], _path, 4) if "entrypoint_args" in pin else (),
         )
         platforms.append(Platform(artifact, binary, capability))
         versions.add(_text(pin["version"], 64))
@@ -545,10 +551,14 @@ def parse_declaration(raw: bytes) -> Declaration:
     if any(row.supports("mcp") for row in platforms) and mcp_guard is None:
         raise ValueError("MCP capability requires a validated ACP mcp_guard")
     if any(row.supports(UNRESTRICTED) for row in platforms):
-        if acp_unrestricted is None or isolation is None or mcp_guard is None:
+        if acp_unrestricted is None:
+            raise ValueError("unrestricted requires validated ACP argv")
+        if acp_unrestricted.argv == GROK_ACP_UNRESTRICTED_ARGV and (isolation is None or mcp_guard is None):
             raise ValueError("unrestricted requires validated ACP argv, Grok isolation, and mcp_guard")
-        if (login.command != ("login", "--device-auth") or login_flow != "device_code"
-                or login.signed_out_pattern != GROK_SIGNED_OUT_PATTERN):
+        if acp_unrestricted.argv == GROK_ACP_UNRESTRICTED_ARGV and (
+            login.command != ("login", "--device-auth") or login_flow != "device_code"
+            or login.signed_out_pattern != GROK_SIGNED_OUT_PATTERN
+        ):
             raise ValueError("unrestricted requires Grok device login and models status")
     elif acp_unrestricted is not None:
         raise ValueError("ACP unrestricted_argv requires a Windows x64 artifact")

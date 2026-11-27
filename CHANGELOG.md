@@ -1,5 +1,18 @@
 # Kotoyose の変更履歴
 
+## 1.4.3 (2026-11-28)
+
+Windows x64 子機で **Antigravity (`v1.5.18`)** と **Cursor (`v2026.11.22-e9042b2`)** を Grok Build と同様に導入・承認・実行できるようにしました。
+
+### Windows x64 での Antigravity & Cursor 対応
+
+- **`zip` バンドル展開 & `entrypoint_args` 対応**: `kotoyose.provider-data/1` に `format: "zip"` と `entrypoint_args` を追加し、展開前 SHA-256 検証・パス脱出／symlink 拒否・展開後の実行ファイルおよび引数ファイル（例: Cursor の `node.exe` + `index.js`）のハッシュ検証を実装しました。
+- **Windows `unrestricted` 承認の一般化**: Grok Build 専用だった Windows `unrestricted` 制約を汎用 `cli.acp` 宣言へ広げ、同じ 60 秒確認・明示チェック・ホスト側 `allow.full: true` ガードで他製品も安全に承認できるようにしました。子機 UI の確認文言も製品名を表示するように改善しています。
+- **同梱プリセット更新**:
+  - **Antigravity (`agy-cli.json`)**: `v1.5.18` へ更新し、`linux-x64` (`tar.gz`) に加えて `windows-x64` (`raw` `agy.exe`) を追加。
+  - **Cursor (`cursor-cli.json`)**: `v2026.11.22-e9042b2` へ更新し、`linux-x64` (`tar.gz`) に加えて `windows-x64` (`zip` `dist-package` / `node.exe` + `index.js`) を追加。
+- **Host フォームビルダー拡張**: `zip` 形式と `entrypoint_args`、`windows-x64` 用 `unrestricted_argv` の往復編集に対応しました。
+
 ## 1.4.2 (2026-11-28)
 
 子機向けのオプション CLI プロバイダー管理をワンクリック配信・Web UI フォームビルダー・全製品共通のバージョン更新（SHA-256 自動計算）へ刷新し、Grok Build に加えて Antigravity / Cursor の同梱プリセットと `tar.gz` 展開に対応しました。あわせて子機の不要なブラウザー自動起動の抑止と承認画面の UI を改善しています。

@@ -138,20 +138,21 @@ export function mountDeclarationCatalog(parent, catalog) {
       ["read", "write", "mcp", "unrestricted"]);
     for (const [name, label] of [["version", "Version"], ["binary", "Binary name"], ["sha256", "SHA-256"]])
       controls[name] = field(grid, name, label, pin[name] || "");
-    controls.format = field(grid, "format", "Format", pin.format || "raw", ["raw", "tar.gz"]);
+    controls.format = field(grid, "format", "Format", pin.format || "raw", ["raw", "tar.gz", "zip"]);
     controls.urls = field(grid, "urls", "Download URLs (one per line)", (pin.urls || []).join("\n"), null, true);
-    controls.member = field(grid, "member", "Archive member (tar.gz)", pin.member || "");
+    controls.member = field(grid, "member", "Archive member (tar.gz / zip)", pin.member || "");
     controls.original = data;
     controls.layout = field(grid, "archive_layout", "Archive layout", pin.directory ? "directory" : "member", ["member", "directory"]);
     controls.layout.children[0].textContent = "Single binary (member)";
     controls.layout.children[1].textContent = "Directory bundle (directory + entrypoint)";
     controls.directory = field(grid, "directory", "Archive directory", pin.directory || "");
     controls.entrypoint = field(grid, "entrypoint", "Archive entrypoint", pin.entrypoint || "");
+    controls.entrypoint_args = field(grid, "entrypoint_args", "Entrypoint args (optional)", (pin.entrypoint_args || []).join(", "), null, true);
     const updateMember = () => {
-      const archive = controls.format.value === "tar.gz";
+      const archive = ["tar.gz", "zip"].includes(controls.format.value);
       controls.layout.parentNode.hidden = !archive;
       controls.member.parentNode.hidden = !archive || controls.layout.value !== "member";
-      controls.directory.parentNode.hidden = controls.entrypoint.parentNode.hidden = !archive || controls.layout.value !== "directory";
+      controls.entrypoint_args.parentNode.hidden = controls.directory.parentNode.hidden = controls.entrypoint.parentNode.hidden = !archive || controls.layout.value !== "directory";
     };
     controls.layout.addEventListener("change", updateMember);
     controls.format.addEventListener("change", updateMember);
@@ -230,10 +231,12 @@ export function mountDeclarationCatalog(parent, catalog) {
       if (doc.platforms[key]) throw new Error("Each platform may appear only once.");
       const install = { version: p.version.value.trim(), binary: p.binary.value.trim(),
         sha256: p.sha256.value.trim(), format: p.format.value, urls: split(p.urls.value) };
-      if (install.format === "tar.gz") {
+      if (["tar.gz", "zip"].includes(install.format)) {
         if (p.layout.value === "directory") {
           install.directory = p.directory.value.trim();
           install.entrypoint = p.entrypoint.value.trim();
+          const args = p.entrypoint_args.value.split(/[,\s]+/).filter(Boolean);
+          if (args.length) install.entrypoint_args = args;
         } else install.member = p.member.value.trim();
       }
       doc.platforms[key] = { ...p.original, max_capability: p.capability.value, install };
@@ -253,7 +256,10 @@ export function mountDeclarationCatalog(parent, catalog) {
     if (doc.driver.id === "cli.acp") {
       delete doc.print;
       if (!doc.acp || fields.acp.value !== doc.acp.argv?.join(" ")) {
-        doc.acp = { argv: fields.acp.value.split(" "), placeholders: fields.acp.value === "acp" ? [] : ["model"] };
+        doc.acp = { ...doc.acp, argv: fields.acp.value.split(" "), placeholders: fields.acp.value === "acp" ? [] : ["model"] };
+      }
+      if (doc.platforms["windows-x64"] && doc.acp.argv.length === 1 && doc.acp.argv[0] === "acp") {
+        doc.acp.unrestricted_argv ??= ["acp"];
       }
     } else {
       delete doc.acp;

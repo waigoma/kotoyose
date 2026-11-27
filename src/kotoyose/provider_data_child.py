@@ -318,7 +318,7 @@ def preview(home: Path) -> dict:
             "contract_version": row.contract_version, "status": state,
             "capability": target.capability if target is not None else None,
             "approved_capability": current_approval.capability if state == "approved" else None,
-            "can_install": state == "approved" and target is not None and target.artifact.format in ("raw", "tar.gz"),
+            "can_install": state == "approved" and target is not None and target.artifact.format in ("raw", "tar.gz", "zip"),
             "installed": state == "approved" and installed_path(row, home) is not None,
             "local_login": target is not None and (platform.startswith("linux-") or target.supports(UNRESTRICTED)),
             "platform": platform, "host_fingerprint": fingerprint,
@@ -338,7 +338,8 @@ def preview(home: Path) -> dict:
                 "runtime_hosts": list(row.runtime_hosts),
             },
             "output_guard_env": list(row.output_guard_env),
-            "rights": (UNRESTRICTED_RIGHTS if target is not None and target.supports(UNRESTRICTED)
+            "rights": ((UNRESTRICTED_RIGHTS if row.id == "grok-build" else
+                        f"{row.name} runs with your rights on this PC. Tool limits and the work folder are not enforced.") if target is not None and target.supports(UNRESTRICTED)
                        else GROK_RIGHTS if row.isolation is not None else RIGHTS),
         })
     return {"host_fingerprint": fingerprint, "current_fingerprint": current, "offers": offers}

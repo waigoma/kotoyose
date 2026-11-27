@@ -149,7 +149,7 @@ const text = {
   reviewApproval: "Review approval",
   reviewUnrestrictedApproval: "Review unrestricted approval",
   approveUnrestricted: "Approve unrestricted",
-  unrestrictedConfirm: "I understand Grok will run with my rights on this PC.",
+  unrestrictedConfirm: (name) => `I understand ${name || 'this provider'} will run with my rights on this PC.`,
   confirmWithin: "Confirm within 60 seconds",
   declarationStep: (step) => ({
     review: "Step 1 of 4: Approve this provider declaration.",

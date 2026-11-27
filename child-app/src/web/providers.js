@@ -257,7 +257,7 @@ function renderDeclarationPrimary(entry, offer) {
     const reviewPanel = element('div', 'unrestricted-review');
     const warning = textLine('p', 'unrestricted-warning', '');
     warning.hidden = true;
-    const confirm = checkBox(text.unrestrictedConfirm, (checked) => {
+    const confirm = checkBox(text.unrestrictedConfirm(offer.display_name || offer.id), (checked) => {
       approval.disabled = !nonce || !checked;
     });
     const reset = () => {

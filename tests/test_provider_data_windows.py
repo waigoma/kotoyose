@@ -1115,3 +1115,157 @@ def test_files_directly_in_the_child_home_are_repaired(windows_child, monkeypatc
     _use_security(monkeypatch, fake)
     provider_data_windows.storage_file(pin)
     assert pin in {path for path, _flags in fake.sets}
+
+
+@pytest.mark.parametrize("provider", ["agy-cli", "cursor-cli"])
+def test_windows_bundled_non_grok_unrestricted_preview(windows_child, monkeypatch, provider):
+    from kotoyose.provider_data import validate_catalog
+    from kotoyose.provider_data_host import bundled_declaration_bytes
+
+    home, profile, _ = windows_child
+    rows = [parse_declaration(bundled_declaration_bytes(name)) for name in ("agy-cli", "cursor-cli", "grok-build")]
+    assert len(validate_catalog(rows)) == 3
+    row = next(row for row in rows if row.id == provider)
+    assert {target.artifact.platform for target in row.platforms} == {"linux-x64", "windows-x64"}
+    assert row.acp_unrestricted.argv == ("acp",)
+    assert row.isolation is None and row.mcp_guard is None
+    _offer(home, row)
+    _approve(home, row)
+    offer = provider_data_child.preview(home)["offers"][0]
+    assert offer["can_install"] is True
+    assert offer["rights"].startswith(f"{row.name} runs with your rights")
+    monkeypatch.setenv("HOME", str(profile))
+    monkeypatch.setenv("PATH", "normal-path")
+    monkeypatch.setenv("API_TOKEN", "secret")
+    with ExitStack() as leases:
+        env = provider_data_runtime.acp_data_env(row, home, leases)
+    assert env["HOME"] == env["USERPROFILE"] == str(profile)
+    assert env["PATH"] == "normal-path" and "API_TOKEN" not in env
+    if provider == "cursor-cli":
+        assert offer["commands"][0]["argv"] == ["node.exe", "index.js", "--version"]
+
+
+def _cursor_zip(bad=None):
+    from io import BytesIO
+    import zipfile
+
+    from kotoyose.provider_data_host import bundled_declaration_bytes
+
+    stream = BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("dist-package/node.exe", b"node executable")
+        if bad != "missing":
+            archive.writestr("dist-package/index.js", b"entrypoint script")
+        if bad in ("../escaped", "/absolute", "dist-package\\escaped"):
+            archive.writestr(bad, b"unsafe")
+        if bad == "symlink":
+            entry = zipfile.ZipInfo("dist-package/link")
+            entry.create_system = 3
+            entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+            archive.writestr(entry, "index.js")
+    payload = stream.getvalue()
+    body = json.loads(bundled_declaration_bytes("cursor-cli"))
+    body["platforms"]["windows-x64"]["install"]["sha256"] = hashlib.sha256(payload).hexdigest()
+    return _parse(body), payload
+
+
+def test_cursor_zip_install_and_entrypoint_integrity(windows_child, monkeypatch):
+    from io import BytesIO
+
+    home, _, _ = windows_child
+    row, payload = _cursor_zip()
+    _offer(home, row)
+    _approve(home, row)
+    calls = []
+
+    def run(binary, argv, **kwargs):
+        calls.append((binary, argv))
+        return subprocess.CompletedProcess([], 0, row.install.version.encode(), b"")
+
+    monkeypatch.setattr(provider_data_runtime, "_run", run)
+    binary = provider_data_runtime.install_stream(row, BytesIO(payload), child_home=home, source="test")
+    script = binary.parent / "index.js"
+    assert binary.name == "node.exe" and script.read_bytes() == b"entrypoint script"
+    assert len(calls) == 1
+    assert calls[0][1] == (str(calls[0][0].parent / "index.js"), "--version")
+    assert calls[0][0].name == "node.exe"
+    assert not (binary.parent / "artifact.part").exists()
+    assert provider_data_runtime.managed_command(row, home) == (str(binary), str(script))
+    manifest = json.loads((binary.parent / "manifest.json").read_bytes())
+    assert manifest["entrypoint_arg_digests"] == {"index.js": hashlib.sha256(script.read_bytes()).hexdigest()}
+    script.chmod(0o600)
+    script.write_bytes(b"tampered script")
+    assert provider_data_runtime.installed_path(row, home) is None
+
+
+@pytest.mark.parametrize("bad", ["../escaped", "/absolute", "dist-package\\escaped", "symlink", "missing"])
+def test_cursor_zip_rejects_unsafe_or_missing_files(windows_child, monkeypatch, bad):
+    from io import BytesIO
+
+    home, _, _ = windows_child
+    row, payload = _cursor_zip(bad)
+    _offer(home, row)
+    _approve(home, row)
+    monkeypatch.setattr(provider_data_runtime, "_run", lambda *args, **kwargs: pytest.fail("must reject before execution"))
+    with pytest.raises(ValueError, match="Unsafe|missing"):
+        provider_data_runtime.install_stream(row, BytesIO(payload), child_home=home, source="test")
+    assert provider_data_runtime.installed_path(row, home) is None
+
+
+def test_cursor_zip_verifies_sha_before_opening(windows_child, monkeypatch):
+    from io import BytesIO
+
+    home, _, _ = windows_child
+    row, payload = _cursor_zip()
+    _offer(home, row)
+    _approve(home, row)
+    monkeypatch.setattr(provider_data_runtime.zipfile, "ZipFile", lambda *args: pytest.fail("must verify SHA first"))
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        provider_data_runtime.install_stream(row, BytesIO(payload + b"changed"), child_home=home, source="test")
+
+
+def test_non_grok_workspace_check_does_not_require_grok_credentials(windows_child, tmp_path):
+    from kotoyose.provider_data_host import bundled_declaration_bytes
+
+    home, profile, _ = windows_child
+    (profile / ".grok").rmdir()
+    row = parse_declaration(bundled_declaration_bytes("cursor-cli"))
+    cwd = tmp_path / "workspace"
+    cwd.mkdir()
+    assert provider_data_runtime.checked_write_cwd(cwd, home, declaration=row) == cwd
+    with pytest.raises(ValueError, match="OS account home"):
+        provider_data_runtime.checked_write_cwd(profile, home, declaration=row)
+
+
+@pytest.mark.parametrize("limit", ["members", "file", "total"])
+def test_zip_rejects_expansion_limits(tmp_path, monkeypatch, limit):
+    import zipfile
+
+    row, payload = _cursor_zip()
+    target = row.platform("windows-x64")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    download = stage / "artifact.part"
+    download.write_bytes(payload)
+    entry = zipfile.ZipInfo("dist-package/node.exe")
+    entry.file_size = 512 * 1024 * 1024 + (limit == "file")
+    members = [entry] * (20_001 if limit == "members" else 2 if limit == "total" else 1)
+
+    class Archive:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def infolist(self):
+            return members
+
+        def open(self, *args):
+            from io import BytesIO
+
+            return BytesIO(b"small")
+
+    monkeypatch.setattr(provider_data_runtime.zipfile, "ZipFile", lambda *args: Archive())
+    with pytest.raises(ValueError, match="limit"):
+        provider_data_runtime._extract_zip(download, stage, target)

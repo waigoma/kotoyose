@@ -13,15 +13,17 @@ import hashlib
 from io import BytesIO
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import select
+import shutil
 import stat
 import subprocess
 import tarfile
 import tempfile
 import threading
 import time
+import zipfile
 from typing import BinaryIO
 
 from .acp_spec import AcpSpec
@@ -137,8 +139,17 @@ def _real_grok_home() -> Path:
     return grok_home
 
 
-def checked_write_cwd(cwd: Path, child_home: Path) -> Path:
-    grok_home = _real_grok_home()
+def checked_write_cwd(cwd: Path, child_home: Path, *, declaration: Declaration | None = None) -> Path:
+    """作業場所と認証・child 保存領域の重複を拒否する。宣言省略時は既存の Grok 検証を行う。"""
+    if _windows() and declaration is not None and declaration.isolation is None:
+        from .provider_data_windows import account_folders
+
+        account_home, _ = account_folders()
+        credential_paths = ()
+    else:
+        grok_home = _real_grok_home()
+        account_home = grok_home.parent
+        credential_paths = ((grok_home, "GROK_HOME"),)
     try:
         resolved = cwd.resolve(strict=True)
         child_home = child_home.resolve(strict=True)
@@ -146,9 +157,9 @@ def checked_write_cwd(cwd: Path, child_home: Path) -> Path:
         raise DeclarationRejected("data provider write requires resolvable workspace and child home directories") from exc
     if not resolved.is_dir():
         raise DeclarationRejected("data provider write requires a workspace directory")
-    if grok_home.parent.is_relative_to(resolved):
+    if account_home.is_relative_to(resolved):
         raise DeclarationRejected("data provider write cwd contains or equals the OS account home (HOME)")
-    for protected, label in ((child_home, "the child home"), (grok_home, "GROK_HOME")):
+    for protected, label in ((child_home, "the child home"), *credential_paths):
         if protected.is_relative_to(resolved) or resolved.is_relative_to(protected):
             raise DeclarationRejected(f"data provider write cwd overlaps {label}")
     return resolved
@@ -178,6 +189,11 @@ def require_acp_landlock(spec: AcpSpec | None) -> None:
 def acp_data_env(row: Declaration, child_home: Path | None, leases: ExitStack) -> dict[str, str]:
     isolation = row.isolation
     windows = _windows()
+    platform = row.platform(platform_key())
+    if windows and isolation is None and platform is not None and platform.supports(UNRESTRICTED):
+        allowed = _ENV_KEYS | _WINDOWS_ENV_KEYS | _WINDOWS_COMMAND_ENV_KEYS
+        return {key.upper(): value for key, value in os.environ.items()
+                if value and key.upper() in allowed and not _SECRET_ENV.search(key)}
     if windows and (isolation is None or child_home is None):
         raise DeclarationRejected("Windows Grok ACP requires child-managed isolation")
     env = data_env()
@@ -356,6 +372,60 @@ def _extract_archive(download: Path, stage: Path, platform) -> Path:
     return binary
 
 
+def _extract_zip(download: Path, stage: Path, platform) -> Path:
+    if "sha256:" + _digest(download) != platform.artifact.digest:
+        raise ValueError("artifact SHA-256 mismatch")
+    binary = _executable_path(stage, platform)
+    directory = PurePosixPath(platform.artifact.directory) if platform.artifact.directory else None
+    total = 0
+    try:
+        with zipfile.ZipFile(download) as archive:
+            members = archive.infolist()
+            if len(members) > 20_000:
+                raise ValueError("archive member limit exceeded")
+            for member in members:
+                name = PurePosixPath(member.filename)
+                mode = (member.external_attr >> 16) & 0o170000
+                if (name.is_absolute() or ".." in name.parts or "\\" in member.filename
+                        or not name.parts or ":" in member.filename or stat.S_ISLNK(mode)
+                        or mode not in (0, stat.S_IFREG, stat.S_IFDIR)):
+                    raise ValueError("Unsafe CLI distribution member")
+                total += member.file_size
+                if not 0 <= member.file_size <= 512 * 1024 * 1024 or total > 768 * 1024 * 1024:
+                    raise ValueError("archive expanded size limit exceeded")
+                if directory is None:
+                    if name != PurePosixPath(platform.artifact.member):
+                        continue
+                    if member.is_dir() or not member.file_size:
+                        raise ValueError("Invalid CLI binary member")
+                    destination = binary
+                else:
+                    if not name.is_relative_to(directory):
+                        continue
+                    relative = name.relative_to(directory)
+                    if (not relative.parts and not member.is_dir()
+                            or relative.parts[:1] in (("manifest.json",), (download.name,))):
+                        raise ValueError("Invalid CLI package layout")
+                    destination = stage / relative
+                if member.is_dir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                else:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    with archive.open(member) as source, destination.open("xb") as output:
+                        shutil.copyfileobj(source, output)
+                    destination.chmod(0o500 if member.external_attr >> 16 & 0o111 else 0o400)
+    except (OSError, EOFError, zipfile.BadZipFile) as exc:
+        raise ValueError("invalid artifact archive") from exc
+    for path in (binary, *(binary.parent / arg for arg in platform.artifact.entrypoint_args)):
+        if not path.is_file() or path.is_symlink():
+            raise ValueError("CLI entrypoint file is missing")
+    if not binary.stat().st_size:
+        raise ValueError("CLI binary member is empty")
+    binary.chmod(0o500)
+    download.unlink()
+    return binary
+
+
 def installed_path(row: Declaration, child_home: Path | None) -> Path | None:
     try:
         platform = row.platform(platform_key())
@@ -381,7 +451,7 @@ def installed_path(row: Declaration, child_home: Path | None) -> Path | None:
             or record.get("version") != row.install.version
             or (platform.artifact.format == "raw"
                 and record.get("executable") != platform.artifact.digest.removeprefix("sha256:"))
-            or (platform.artifact.format == "tar.gz"
+            or (platform.artifact.format in ("tar.gz", "zip")
                 and (not isinstance(record.get("executable"), str) or len(record["executable"]) != 64))
         ):
             return None
@@ -389,6 +459,17 @@ def installed_path(row: Declaration, child_home: Path | None) -> Path | None:
             digest = _digest(path)
         else:
             digest = _cached_digest(path, info)
+        arg_digests = record.get("entrypoint_arg_digests", {})
+        if platform.artifact.entrypoint_args and not isinstance(arg_digests, dict):
+            return None
+        for arg in platform.artifact.entrypoint_args:
+            argument = path.parent / arg
+            if _windows():
+                storage_file(argument)
+            elif not stat.S_ISREG(argument.lstat().st_mode):
+                return None
+            if arg_digests.get(arg) != _digest(argument):
+                return None
         return path if record["executable"] == digest else None
     except (KeyError, OSError, TypeError, ValueError):
         return None
@@ -417,6 +498,13 @@ def managed_binary(row: Declaration, child_home: Path | None) -> Path:
     return path
 
 
+def managed_command(row: Declaration, child_home: Path | None) -> tuple[str, ...]:
+    """承認と整合性を確認し、実行ファイルと固定ファイル引数の絶対パスを返す。"""
+    binary = managed_binary(row, child_home)
+    platform = row.platform(platform_key())
+    assert platform is not None
+    return (str(binary), *(str(binary.parent / arg) for arg in platform.artifact.entrypoint_args))
+
 def install_bytes(row: Declaration, payload: bytes, *, child_home: Path | None, source: str) -> Path:
     return install_stream(row, BytesIO(payload), child_home=child_home, source=source)
 
@@ -426,14 +514,14 @@ def install_stream(row: Declaration, payload: BinaryIO, *, child_home: Path | No
     ensure_executable(row, child_home)
     platform = row.platform(platform_key())
     assert platform is not None
-    if platform.artifact.format not in ("raw", "tar.gz"):
+    if platform.artifact.format not in ("raw", "tar.gz", "zip"):
         raise ValueError("archive install is not enabled for this local artifact")
     release = _release(row, child_home)
     with locked(release.parent):
         with tempfile.TemporaryDirectory(dir=release.parent, prefix=".install-") as temporary:
             stage = Path(temporary)
             binary = stage / platform.binary
-            download = stage / "artifact.part" if _windows() or platform.artifact.format == "tar.gz" else binary
+            download = stage / "artifact.part" if _windows() or platform.artifact.format in ("tar.gz", "zip") else binary
             with download.open("xb") as destination:
                 size = 0
                 while chunk := payload.read(1024 * 1024):
@@ -451,8 +539,9 @@ def install_stream(row: Declaration, payload: BinaryIO, *, child_home: Path | No
                 return existing
             if release.exists() or release.is_symlink():
                 raise ValueError("managed release already exists with invalid contents")
-            if platform.artifact.format == "tar.gz":
-                binary = _extract_archive(download, stage, platform)
+            if platform.artifact.format in ("tar.gz", "zip"):
+                extract = _extract_zip if platform.artifact.format == "zip" else _extract_archive
+                binary = extract(download, stage, platform)
             elif _windows():
                 from .provider_data_windows import storage_file
 
@@ -463,15 +552,20 @@ def install_stream(row: Declaration, payload: BinaryIO, *, child_home: Path | No
             executable_digest = _digest(binary)
             if platform.artifact.format == "raw" and executable_digest != actual:
                 raise ValueError("staged artifact changed before the version check")
-            output = _run(binary, ("--version",), timeout=15, child_home=child_home, row=row, check=True)
+            arg_digests = {arg: _digest(binary.parent / arg) for arg in platform.artifact.entrypoint_args}
+            version_args = (*(str(binary.parent / arg) for arg in platform.artifact.entrypoint_args), "--version")
+            output = _run(binary, version_args, timeout=15, child_home=child_home, row=row, check=True)
             text = output.stdout[:1024].decode("utf-8", errors="replace")
             if not re.search(rf"(?<![\w.-])v?{re.escape(row.install.version)}(?![\w.-])", text):
                 raise ValueError("artifact reported an unexpected version")
+            if any(_digest(binary.parent / arg) != digest for arg, digest in arg_digests.items()):
+                raise ValueError("staged entrypoint argument changed during the version check")
             if _digest(binary) != executable_digest:
                 raise ValueError("staged artifact changed during the version check")
             ensure_executable(row, child_home)
             atomic_write(stage / "manifest.json", json.dumps({
                 "url": source, "version": row.install.version, "artifact": platform.artifact.digest,
+                "entrypoint_arg_digests": arg_digests,
                 "executable": executable_digest, "platform": platform.artifact.platform,
                 "verified_at": datetime.now(timezone.utc).isoformat(),
             }).encode(), child=child_home is not None)
@@ -616,6 +710,6 @@ def operation(row: Declaration, action: str, *, child_home: Path | None = None) 
         "login": (row.login.command, row.login.cli_timeout_seconds),
         "status": (row.login.status_command, row.status_timeout),
     }[action]
-    binary = managed_binary(row, child_home)
-    result = _run(binary, argv, timeout=timeout, child_home=child_home, row=row, check=False)
+    prefix = managed_command(row, child_home)
+    result = _run(Path(prefix[0]), (*prefix[1:], *argv), timeout=timeout, child_home=child_home, row=row, check=False)
     return result.returncode == 0

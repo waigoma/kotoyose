@@ -1326,9 +1326,10 @@ for (const maximum of ['write', 'mcp']) test(`a ${maximum} declaration offers ex
   assert.equal(findButton(card(), 'Approve MCP'), undefined);
 });
 
-test('Windows unrestricted approval needs a server warning and a fresh one-time nonce', async () => {
+for (const [id, name] of [['grok-build', 'Grok Build'], ['agy-cli', 'Antigravity'], ['cursor-cli', 'Cursor']])
+test(`Windows unrestricted approval for ${name} needs a server warning and a fresh one-time nonce`, async () => {
   const sha256 = 'ab'.repeat(32);
-  const warning = 'Grok runs with your rights on this PC. Tool limits and the work folder are not enforced.';
+  const warning = `${name} runs with your rights on this PC. Tool limits and the work folder are not enforced.`;
   const reviews = [];
   const approvals = [];
   const ui = browser(({ path, method, body }) => {
@@ -1338,23 +1339,24 @@ test('Windows unrestricted approval needs a server warning and a fresh one-time 
     if (path === '/api/policy') return [200, policyRead()];
     if (path === '/api/provider-declarations') {
       return [200, { offers: [{
-        id: 'grok-build', sha256, capability: 'unrestricted', platform: 'windows-x64',
+        id, display_name: name, sha256, capability: 'unrestricted', platform: 'windows-x64',
         status: approvals.length === 2 ? 'approved' : 'pending', can_install: approvals.length === 2,
         rights: warning,
       }] }];
     }
     assert.equal(method, 'POST');
-    if (path === '/api/provider-declarations/grok-build/confirmation') {
+    if (path === `/api/provider-declarations/${id}/confirmation`) {
       reviews.push(body);
       return [200, { nonce: `nonce-${reviews.length}`, warning: `${warning} Review ${reviews.length}.` }];
     }
-    assert.equal(path, '/api/provider-declarations/grok-build');
+    assert.equal(path, `/api/provider-declarations/${id}`);
     approvals.push(body);
     if (approvals.length === 1) return [409, { error: 'Review the warning again.' }];
     return [200, {}];
   });
   await flush();
   const card = () => ui.elements.get('component-rows').querySelectorAll('article')[0];
+  assert.ok(card().querySelectorAll('label').some((node) => node.children.includes(`I understand ${name} will run with my rights on this PC.`)));
   const confirm = card().querySelectorAll('input')[0];
   const approve = findButton(card(), 'Approve unrestricted');
   const review = findButton(card(), 'Review unrestricted approval');

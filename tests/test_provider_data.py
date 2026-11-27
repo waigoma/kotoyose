@@ -2279,3 +2279,45 @@ def test_archive_manifest_integrity(tmp_path, field, value):
     record[field] = value
     atomic_write(manifest, json.dumps(record).encode(), child=True)
     assert installed_path(row, home) is None
+
+
+@pytest.mark.parametrize("args", [[""], ["../index.js"], ["/index.js"], ["-script.js"], ["a\\b.js"], ["a.js"] * 5, "index.js"])
+def test_archive_schema_rejects_unsafe_entrypoint_args(args):
+    doc = json.loads(_declaration())
+    doc["platforms"]["linux-x64"]["install"].update(
+        format="zip", directory="dist", entrypoint="node", entrypoint_args=args,
+    )
+    with pytest.raises(ValueError):
+        parse_declaration(json.dumps(doc).encode())
+
+
+@pytest.mark.parametrize("layout", ["member", "directory"])
+def test_zip_supports_archive_layouts(tmp_path, monkeypatch, layout):
+    import zipfile
+
+    raw, _, executable = _archive_declaration(layout)
+    doc = json.loads(raw)
+    stream = BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("vendor/fake" if layout == "member" else "dist/bin/fake", executable)
+        if layout == "directory":
+            archive.writestr("dist/bin/index.js", b"script")
+    payload = stream.getvalue()
+    pin = doc["platforms"][platform_key()]["install"]
+    pin.update(format="zip", sha256=hashlib.sha256(payload).hexdigest())
+    if layout == "directory":
+        pin["entrypoint_args"] = ["index.js"]
+    row = parse_declaration(json.dumps(doc).encode())
+    upload_declaration(row.document.encode())
+    home = _child_home(tmp_path / "child")
+    store_offers(home, _FINGERPRINT, [row.offer()])
+    approve(home, row.id, sha256=row.sha256)
+    monkeypatch.setattr(provider_data_runtime, "_run", lambda *args, **kwargs: subprocess.CompletedProcess([], 0, b"1.0.0", b""))
+    binary = provider_data_runtime.install_stream(row, BytesIO(payload), child_home=home, source="test")
+    assert binary.read_bytes() == executable
+    assert installed_path(row, home) == binary
+    if layout == "directory":
+        script = binary.parent / "index.js"
+        script.chmod(0o600)
+        script.write_bytes(b"changed")
+        assert installed_path(row, home) is None

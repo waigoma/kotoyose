@@ -20,10 +20,12 @@ class CliArtifact:
     arch: str
     url_templates: tuple[str, ...]
     digest: str = "unset"
-    format: Literal["raw", "tar.gz"] = "raw"
+    format: Literal["raw", "tar.gz", "zip"] = "raw"
     member: str | None = None
     directory: str | None = None
     entrypoint: str | None = None
+
+    entrypoint_args: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.digest != "unset" and not re.fullmatch(
@@ -33,10 +35,18 @@ class CliArtifact:
         layout = (self.member is not None, self.directory is not None, self.entrypoint is not None)
         if (self.format, layout) not in (
             ("raw", (False, False, False)),
+            ("zip", (True, False, False)),
+            ("zip", (False, True, True)),
             ("tar.gz", (True, False, False)),
             ("tar.gz", (False, True, True)),
         ):
             raise ValueError("Invalid CLI artifact layout")
+        if self.entrypoint_args and self.entrypoint is None:
+            raise ValueError("CLI entrypoint arguments require an entrypoint")
+        for name in self.entrypoint_args:
+            path = PurePosixPath(name)
+            if not path.parts or path.is_absolute() or ".." in path.parts or name.startswith("-") or "\\" in name:
+                raise ValueError("Invalid CLI entrypoint argument")
         for name in (self.member, self.directory, self.entrypoint):
             if name is not None:
                 path = PurePosixPath(name)

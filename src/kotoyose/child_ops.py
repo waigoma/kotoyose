@@ -303,10 +303,20 @@ class ChildOps:
         )
 
         binary = resolve_child_binary(provider, profile_id, self._home)
+        prefix_args = ()
+        if sdk_provider(provider) is None:
+            declared = pinned_profile(provider, profile_id).data_declaration
+            if declared is not None:
+                from .provider_data_runtime import managed_command
+
+                prefix = managed_command(declared, self._home)
+                binary, prefix_args = Path(prefix[0]), prefix[1:]
+                if sys.platform == "win32" and (not binary.is_absolute() or binary.suffix.lower() != ".exe"):
+                    raise PinnedCommandRejected("declared command requires an absolute EXE")
         env = child_cli_env(provider, profile_id, login=True)
         with tempfile.TemporaryDirectory(prefix="kotoyose-child-login-") as cwd:
             session = PtyLoginSession("", "", "", datetime.now(timezone.utc), binary, temp_cwd=Path(cwd))
-            async with self._pty(session, spec.command, env):
+            async with self._pty(session, (*prefix_args, *spec.command), env):
                 try:
                     url = await wait_for_pty_url(
                         session, spec.url_pattern, timeout_seconds=min(20, LOGIN_CAP_SECONDS), login_spec=spec,
@@ -332,7 +342,7 @@ class ChildOps:
             if spec.status_command and (flow != "paste_code" or returncode == 0):
                 session.wipe_buffers()
                 status_env = child_cli_env(provider, profile_id)
-                async with self._pty(session, spec.status_command, status_env):
+                async with self._pty(session, (*prefix_args, *spec.status_command), status_env):
                     status = await _wait_for_login_command(session)
                     success = _check_login_success(spec, status, session._output_buf)
             await self._send(stream, "login_exit", {"returncode": returncode, "success": success})
@@ -467,8 +477,17 @@ class ChildOps:
 
             argv = (*sdk_cli_prefix(self._home, sdk.child_turn.launch), *spec.status_command)
         else:
-            binary = resolve_child_binary(provider, profile_id, self._home)
-            argv = _probe_argv(binary, spec.status_command)
+            profile = pinned_profile(provider, profile_id) if not sdk else None
+            if profile is not None and profile.data_declaration is not None:
+                from .provider_data_runtime import managed_command
+
+                prefix = managed_command(profile.data_declaration, self._home)
+                if sys.platform == "win32" and (not Path(prefix[0]).is_absolute() or Path(prefix[0]).suffix.lower() != ".exe"):
+                    raise PinnedCommandRejected("declared command requires an absolute EXE")
+                argv = (*prefix, *spec.status_command)
+            else:
+                binary = resolve_child_binary(provider, profile_id, self._home)
+                argv = _probe_argv(binary, spec.status_command)
         stdout, stderr, code = await self._exec(argv, child_cli_env(provider, profile_id))
         return _login_state(provider, spec, stdout, stderr, code)
 
