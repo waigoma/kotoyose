@@ -44,6 +44,29 @@ Var PreviousBuildDirectory
 Var PreviousDisplayVersion
 Var PreviousRun
 
+!macro SetupLogReset
+    CreateDirectory "$LOCALAPPDATA\kotoyose-child"
+    CreateDirectory "$LOCALAPPDATA\kotoyose-child\logs"
+    ClearErrors
+    FileOpen $R7 "$LOCALAPPDATA\kotoyose-child\logs\setup.log" w
+    ${IfNot} ${Errors}
+        FileWrite $R7 "setup ${PRODUCT_VERSION} (${BUILD_ID})$\r$\n"
+        FileClose $R7
+    ${EndIf}
+    ClearErrors
+!macroend
+
+!macro SetupLog LINE
+    ClearErrors
+    FileOpen $R7 "$LOCALAPPDATA\kotoyose-child\logs\setup.log" a
+    ${IfNot} ${Errors}
+        FileSeek $R7 0 END
+        FileWrite $R7 "${LINE}$\r$\n"
+        FileClose $R7
+    ${EndIf}
+    ClearErrors
+!macroend
+
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
 !define MUI_COMPONENTSPAGE_SMALLDESC
@@ -184,6 +207,8 @@ Function .onInit
         StrCpy $VersionDir "${PRODUCT_VERSION}-${BUILD_ID}"
         StrCpy $INSTDIR $ShutdownRoot
     ${EndIf}
+    !insertmacro SetupLogReset
+    !insertmacro SetupLog "init: app_update=$AppUpdate version_dir=$VersionDir"
     Call StopChild
 FunctionEnd
 
@@ -192,11 +217,13 @@ Function LaunchChild
     ClearErrors
     Exec '"${BACKGROUND}" --open-settings'
     ${If} ${Errors}
+        !insertmacro SetupLog "launch: failed"
         ${If} $AppUpdate == "1"
             Call AbortInstall
         ${EndIf}
         SetErrorLevel 2
     ${ElseIf} $AppUpdate == "1"
+        !insertmacro SetupLog "launch: ok"
         StrCpy $UpdateStaged "0"
         SetErrorLevel 0
     ${EndIf}
@@ -235,6 +262,54 @@ FunctionEnd
 Function ProviderRepairPending
     StrCpy $0 0
     !include "${PAYLOAD}\provider-repairs.nsh"
+FunctionEnd
+
+; Run a child app command passed in $R0. Return the exit code or error token in $0.
+; Prefer nsExec::ExecToLog to keep the console hidden and copy output into Setup.
+; If nsExec cannot load or cannot start the process (for example when %TEMP%
+; plugin execution is blocked by endpoint policy), fall back to built-in ExecWait.
+Function RunChildApp
+    Push "__nsexec_missing__"
+    ClearErrors
+    nsExec::ExecToLog '$R0'
+    ${If} ${Errors}
+        StrCpy $0 "__nsexec_missing__"
+        StrCpy $R8 0
+        ${DoWhile} $R8 < 4
+            Pop $R9
+            ${If} $R9 == "__nsexec_missing__"
+                ${ExitDo}
+            ${EndIf}
+            IntOp $R8 $R8 + 1
+        ${Loop}
+    ${Else}
+        Pop $0
+        ${If} $0 != "__nsexec_missing__"
+            StrCpy $R8 0
+            ${DoWhile} $R8 < 4
+                Pop $R9
+                ${If} $R9 == "__nsexec_missing__"
+                    ${ExitDo}
+                ${EndIf}
+                IntOp $R8 $R8 + 1
+            ${Loop}
+        ${EndIf}
+    ${EndIf}
+    ${If} $0 == "__nsexec_missing__"
+    ${OrIf} $0 == "error"
+    ${OrIf} $0 == $R0
+    ${OrIf} $0 < 0
+        !insertmacro SetupLog "run_child_app: nsexec=$0 fallback=ExecWait"
+        DetailPrint "nsExec could not start the command ($0); falling back to ExecWait."
+        ClearErrors
+        ExecWait '$R0' $0
+        ${If} ${Errors}
+            StrCpy $0 "exec-error"
+        ${EndIf}
+        !insertmacro SetupLog "run_child_app: execwait=$0"
+    ${Else}
+        !insertmacro SetupLog "run_child_app: nsexec=$0"
+    ${EndIf}
 FunctionEnd
 
 Function RollbackUpdate
@@ -282,6 +357,7 @@ Function RollbackUpdate
 FunctionEnd
 
 Function AbortInstall
+    !insertmacro SetupLog "abort_install: staged=$UpdateStaged selected=$UpdateSelected shortcut=$UpdateShortcut"
     Call RollbackUpdate
     SetErrorLevel 2
     Quit
@@ -378,13 +454,16 @@ Function ShowFinish
 FunctionEnd
 
 Section -Install
+    !insertmacro SetupLog "section_install: start"
     Call CheckDirectory
     Call StopChild
     ${If} $AppUpdate == "1"
         ReadRegStr $PreviousBuildDirectory HKCU "${ARP}" "InstalledBuildDirectory"
         ReadRegStr $PreviousDisplayVersion HKCU "${ARP}" "DisplayVersion"
         ReadRegStr $PreviousRun HKCU "${RUN}" "KotoyoseChild"
+        !insertmacro SetupLog "update_meta: prev=$PreviousVersion prev_dir=$PreviousBuildDirectory"
         ${If} $VersionDir == $PreviousVersion
+            !insertmacro SetupLog "update_abort: same_version_dir"
             SetErrorLevel 2
             Quit
         ${EndIf}
@@ -392,6 +471,7 @@ Section -Install
         ${If} $0 != -1
             IntOp $0 $0 & 0x400 ; FILE_ATTRIBUTE_REPARSE_POINT
             ${If} $0 != 0
+                !insertmacro SetupLog "update_abort: reparse_point"
                 SetErrorLevel 2
                 Quit
             ${EndIf}
@@ -435,23 +515,26 @@ Section -Install
     File /r "${PAYLOAD}/licenses/*"
 
     ${If} ${Errors}
+        !insertmacro SetupLog "extract: failed"
         Call AbortInstall
     ${EndIf}
+    !insertmacro SetupLog "extract: ok prev=$PreviousVersion"
     SetOutPath "$INSTDIR"
     DetailPrint "Installing the bundled base runtime packages."
     ${If} $PreviousVersion == ""
-        nsExec::ExecToLog '"${APP}" repair'
+        StrCpy $R0 '"${APP}" repair'
     ${Else}
-        nsExec::ExecToLog '"${APP}" repair --previous "$PreviousVersion"'
+        StrCpy $R0 '"${APP}" repair --previous "$PreviousVersion"'
     ${EndIf}
-    Pop $0
+    Call RunChildApp
+    !insertmacro SetupLog "repair: status=$0"
     ${If} $0 != 0
         StrCpy $RuntimeFailed "1"
         DetailPrint "Could not install the base runtime packages ($0)."
         ${If} $AppUpdate == "1"
             Call AbortInstall
         ${EndIf}
-        MessageBox MB_ICONEXCLAMATION|MB_OK "The app was installed, but the runtime packages could not be installed. See repair.log in the child log folder (default: $LOCALAPPDATA\kotoyose-child\logs\repair.log). Run Setup again or run kotoyose-child-app.exe repair from the installed bin folder." /SD IDOK
+        MessageBox MB_ICONEXCLAMATION|MB_OK "The app was installed, but the runtime packages could not be installed (status: $0). See repair.log in the child log folder (default: $LOCALAPPDATA\kotoyose-child\logs\repair.log). Run Setup again or run kotoyose-child-app.exe repair from the installed bin folder." /SD IDOK
         SetErrorLevel 2
     ${EndIf}
     Call ProviderRepairPending
@@ -495,13 +578,43 @@ Section -Install
     ${ElseIf} ${SectionIsSelected} ${SEC_AUTOSTART}
         StrCpy $1 "on"
     ${EndIf}
-    nsExec::ExecToLog '"${APP}" autostart $1'
-    Pop $0
+    StrCpy $R0 '"${APP}" autostart $1'
+    Call RunChildApp
+    ${If} $0 == "exec-error"
+    ${OrIf} $0 < 0
+        ${If} $1 == "on"
+            ${If} ${FileExists} "${BACKGROUND}"
+                ClearErrors
+                WriteRegStr HKCU "${RUN}" "KotoyoseChild" '"${BACKGROUND}"'
+                ${IfNot} ${Errors}
+                    DetailPrint "Registered start at sign-in directly."
+                    StrCpy $0 0
+                ${EndIf}
+            ${EndIf}
+        ${Else}
+            ClearErrors
+            ReadRegStr $2 HKCU "${RUN}" "KotoyoseChild"
+            ${If} ${Errors}
+                StrCpy $0 0
+            ${Else}
+                ClearErrors
+                DeleteRegValue HKCU "${RUN}" "KotoyoseChild"
+                ${IfNot} ${Errors}
+                    DetailPrint "Removed start at sign-in directly."
+                    StrCpy $0 0
+                ${EndIf}
+            ${EndIf}
+        ${EndIf}
+    ${EndIf}
     ${If} $0 != 0
-        MessageBox MB_ICONEXCLAMATION|MB_OK "Could not change start at sign-in. Open Settings from the system tray to check." /SD IDOK
+        !insertmacro SetupLog "autostart: status=$0"
+        DetailPrint "Could not change start at sign-in ($0)."
+        MessageBox MB_ICONEXCLAMATION|MB_OK "Could not change start at sign-in (status: $0). Open Settings from the system tray to check." /SD IDOK
         ${If} $AppUpdate != "1"
             SetErrorLevel 2
         ${EndIf}
+    ${Else}
+        !insertmacro SetupLog "autostart: ok ($1)"
     ${EndIf}
     SetOutPath "$INSTDIR\$VersionDir\bin"
     ClearErrors
@@ -511,19 +624,24 @@ Section -Install
         ${EndIf}
         CreateShortCut "$SMPROGRAMS\${PRODUCT}.pending.lnk" "${BACKGROUND}"
         ${If} ${Errors}
+            !insertmacro SetupLog "shortcut: create_failed"
             Call AbortInstall
         ${EndIf}
         System::Call 'kernel32::MoveFileExW(w "$SMPROGRAMS\${PRODUCT}.pending.lnk", w "$SMPROGRAMS\${PRODUCT}.lnk", i 1) i .r0'
         ${If} $0 == 0
+            !insertmacro SetupLog "shortcut: move_failed"
             Call AbortInstall
         ${EndIf}
         StrCpy $UpdateShortcut "1"
         Delete "$INSTDIR\$VersionDir\kotoyose-child.pending"
         ${If} ${Errors}
+            !insertmacro SetupLog "pending: delete_failed"
             Call AbortInstall
         ${EndIf}
+        !insertmacro SetupLog "install_section: done"
     ${Else}
         CreateShortCut "$SMPROGRAMS\${PRODUCT}.lnk" "${BACKGROUND}"
+        !insertmacro SetupLog "install_section: done"
     ${EndIf}
 SectionEnd
 

@@ -184,7 +184,10 @@ class ChildOps:
         if task is not None:
             return
         if len(self._tasks) >= _REQUEST_LIMIT:
-            await self._send(stream, f"{frame.kind}_error", {"message": "child busy"})
+            if frame.kind == "session_collect":
+                await self._send(stream, "session_collect_error", {"error": "child busy"})
+            else:
+                await self._send(stream, f"{frame.kind}_error", {"message": "child busy"})
             return
         task = asyncio.create_task(self._run(frame))
         self._tasks[stream] = task
@@ -195,8 +198,11 @@ class ChildOps:
         try:
             decode_frame(encode_frame(stream, kind, payload))
         except ValueError:
-            operation = kind.split("_", 1)[0]
-            await self._send_frame(stream, f"{operation}_error", {"message": f"{operation} failed"})
+            if kind.startswith("session_collect_"):
+                await self._send_frame(stream, "session_collect_error", {"error": "session_collect failed"})
+            else:
+                operation = kind.split("_", 1)[0]
+                await self._send_frame(stream, f"{operation}_error", {"message": f"{operation} failed"})
             return False
         await self._send_frame(stream, kind, payload)
         return True

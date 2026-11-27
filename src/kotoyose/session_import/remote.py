@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from ..child_protocol import SESSION_COLLECT_BATCH_MAX_BYTES, SESSION_COLLECT_POLICY_REFUSAL
 from .importer import SessionImportStore, _resolve_store, build_interaction_row, parse_since
-from .models import VALID_ORIGIN_HINTS, FileLedgerEntry, ImportedTurn, ImportSummary, format_utc_iso
+from .models import VALID_ORIGIN_HINTS, FileLedgerEntry, ImportedTurn, ImportSummary, format_utc_iso, normalize_session_title
 from .parsers import get_parser, list_parser_kinds
 from .paths import default_source_roots, hash_source_path, iter_safe_source_files, safe_project_name
 from .redaction import sanitize_text
@@ -87,6 +87,9 @@ def collect_local_batches(
                     for key, value in raw.items():
                         if isinstance(value, str):
                             raw[key], r, t = sanitize_text(value)
+                            if key == "session_title":
+                                t |= len(" ".join(raw[key].split())) > 160
+                                raw[key] = normalize_session_title(raw[key])
                             redacted |= r
                             truncated |= t
                     raw.update(redacted=redacted, truncated=truncated)

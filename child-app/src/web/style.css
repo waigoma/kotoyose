@@ -149,6 +149,7 @@ summary.card-head:focus-visible { outline-offset: -3px; }
 .unavailable-providers { margin-top: 8px; }
 .unavailable-providers > summary { cursor: pointer; color: var(--text-2); }
 .sandbox-card select { width: fit-content; max-width: 100%; }
+.session-import-sources { display: flex; flex-wrap: wrap; gap: 8px 20px; }
 #connection-enrollment { max-width: 560px; }
 #enrollment-reason { color: var(--negative); font-weight: 600; }
 #enrollment-reason { margin-bottom: 12px; }

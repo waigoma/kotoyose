@@ -531,6 +531,20 @@ impl Policy {
                 entry.validate(name, &reserved_ports)?;
             }
         }
+        ensure!(
+            self.session_import_sources.iter().all(|source| matches!(
+                source.as_str(),
+                "all" | "claude" | "codex" | "antigravity" | "cursor" | "grok"
+            )),
+            "policy session_import_sources must be supported source names"
+        );
+        ensure!(
+            matches!(
+                self.session_import_origin_hint.as_deref(),
+                None | Some("personal") | Some("work")
+            ),
+            "policy session_import_origin_hint must be personal or work"
+        );
         Ok(())
     }
 }

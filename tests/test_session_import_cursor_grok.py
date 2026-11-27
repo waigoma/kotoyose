@@ -659,3 +659,36 @@ def test_codex_leaves_top_level_threads_untagged(tmp_path, meta):
     turns = CodexSessionParser().parse_file(_rollout(tmp_path, meta))
 
     assert [(turn.session_id, turn.is_subagent, turn.agent_origin) for turn in turns] == [("own", False, None)] * 2
+
+
+@pytest.mark.parametrize("name,expected", [
+    (" native\n title ", "native title"), ("New Agent", None), ("NEW CHAT", None),
+    ("Untitled", None), ("", None), (None, None), (123, None),
+])
+def test_cursor_native_title(tmp_path, name, expected):
+    blobs = _Blobs()
+    path = _store(tmp_path, blobs, blobs.node(*_simple_chat(blobs)), meta={"name": name})
+    turns = CursorSessionParser().parse_file(path)
+    assert len(turns) == 2
+    assert all(turn.session_title == expected for turn in turns)
+
+
+@pytest.mark.parametrize("summary,expected", [
+    ({"generated_title": " native\n title "}, "native title"),
+    ({"generated_title": "  "}, None), ({"generated_title": 123}, None),
+    ("{broken", None), ([], None),
+])
+def test_grok_native_title(tmp_path, summary, expected):
+    path = _session(tmp_path, [_grok_user("q"), _grok_answer("a"), _grok_user("q2"), _grok_answer("a2")],
+                    summary=summary, directory="project")
+    turns = GrokSessionParser().parse_file(path)
+    assert len(turns) == 2
+    assert all(turn.session_title == expected for turn in turns)
+
+
+def test_grok_native_title_ignores_symlink(tmp_path):
+    path = _session(tmp_path, [_grok_user("q"), _grok_answer("a")], directory="project")
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"generated_title": "private title"}))
+    (path.parent / "summary.json").symlink_to(outside)
+    assert GrokSessionParser().parse_file(path)[0].session_title is None

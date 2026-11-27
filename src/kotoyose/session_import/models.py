@@ -16,6 +16,13 @@ EXPORT_MAX_BODY_BYTES = 2 * 1024 * 1024
 DEFAULT_FALLBACK_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
+def normalize_session_title(value: Any, max_len: int = 160) -> str | None:
+    """文字列の空白をまとめて最大文字数に収める。空・非文字列は None。"""
+    if not isinstance(value, str):
+        return None
+    return " ".join(value.split())[:max_len].strip() or None
+
+
 def ensure_utc(dt: datetime) -> datetime:
     """Return a timezone-aware UTC datetime."""
     if dt.tzinfo is None:
@@ -49,6 +56,7 @@ class ImportedTurn:
     timestamp_fallback: bool = False
     is_subagent: bool = False
     agent_origin: str | None = None
+    session_title: str | None = None
 
     def __post_init__(self) -> None:
         self.received_at = ensure_utc(self.received_at)

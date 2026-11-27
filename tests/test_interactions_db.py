@@ -33,6 +33,7 @@ async def test_init_db_creates_interactions_table():
     assert fake_conn.execute.await_count >= 1
     sql_executed = " ".join(call.args[0] for call in fake_conn.execute.await_args_list)
     assert "kotoyose.interactions" in sql_executed
+    assert "CREATE TABLE IF NOT EXISTS kotoyose.session_titles" in sql_executed
     assert "request_id" in sql_executed
     assert "prompt" in sql_executed
     assert "response" in sql_executed
@@ -325,7 +326,7 @@ async def test_list_sessions_groups_by_conversation_key():
     with patch("kotoyose.interactions._get_pool", return_value=fake_pool):
         await interactions.list_sessions(limit=20, offset=0)
     sql, *args = fake_pool.fetch.await_args.args
-    assert "GROUP BY conversation_key" in sql
+    assert "GROUP BY kotoyose.interactions.conversation_key" in sql
     assert "MAX(received_at)" in sql
 
 
@@ -513,6 +514,28 @@ async def test_list_sessions_include_deleted_disables_filter():
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_searches_server_side_and_escapes_like():
+    """list_sessions(q=...) は source_machine / origin_hint を含めて SQL ILIKE で検索し、ワイルドカードをエスケープする。"""
+    fake_pool = MagicMock()
+    fake_pool.fetch = AsyncMock(return_value=[])
+    fake_pool.fetchval = AsyncMock(return_value=0)
+
+    from kotoyose import interactions
+
+    with patch("kotoyose.interactions._get_pool", return_value=fake_pool):
+        await interactions.list_sessions(limit=100, offset=0, q="win_lut%1")
+
+    sql, *args = fake_pool.fetch.await_args.args
+    assert "metadata->>'source_machine'" in sql
+    assert "metadata->>'origin_hint'" in sql
+    assert "ILIKE $1 ESCAPE" in sql
+    assert args == ["%win\\_lut\\%1%"]
+    count_sql, *count_args = fake_pool.fetchval.await_args.args
+    assert "ILIKE $1 ESCAPE" in count_sql
+    assert count_args == ["%win\\_lut\\%1%"]
+
+
+@pytest.mark.asyncio
 async def test_get_session_turns_filters_deleted_by_default():
     """get_session_turns は deleted_at IS NULL でフィルタする (既定)。"""
     fake_pool = MagicMock()
@@ -544,3 +567,50 @@ async def test_compute_stats_returns_24h_and_7d():
     assert "past_24h" in stats
     assert "past_7d" in stats
     assert stats["past_24h"]["total_requests"] == 0
+
+
+@pytest.mark.parametrize(('prompt', 'expected'), [
+    (None, None), (' \n\t', None), ('\n  Fix  the\tbug\nignored', 'Fix the bug'),
+    ('a' * 81, 'a' * 79 + '…'), ('a' * 80, 'a' * 80),
+])
+def test_prompt_title(prompt, expected):
+    from kotoyose.interactions import _summarize_prompt_title
+    assert _summarize_prompt_title(prompt) == expected
+
+
+@pytest.mark.asyncio
+async def test_session_title_storage():
+    from kotoyose.interactions import get_session_title, set_session_title
+    pool = AsyncMock()
+    pool.fetchval.return_value = 'Saved'
+    with patch('kotoyose.interactions._get_pool', return_value=pool):
+        assert await set_session_title('conversation', ' Saved\n title ') == 'Saved title'
+        assert pool.execute.call_args.args[1:] == ('conversation', 'Saved title')
+        assert 'ON CONFLICT' in pool.execute.call_args.args[0]
+        assert await get_session_title('conversation') == 'Saved'
+        assert await set_session_title('conversation', ' \n ') is None
+        assert 'DELETE FROM' in pool.execute.call_args.args[0]
+    with patch('kotoyose.interactions._get_pool', return_value=None):
+        assert await get_session_title('conversation') is None
+        assert await set_session_title('conversation', 'Title') is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('custom', 'native', 'expected'), [
+    ('Custom', 'Native', 'Custom'), (None, 'Native', 'Native'), (None, None, 'First prompt'),
+])
+async def test_session_titles_priority_and_search(custom, native, expected):
+    from kotoyose.interactions import list_sessions
+    pool = AsyncMock()
+    pool.fetch.return_value = [dict(custom_title=custom, native_title=native, first_prompt='First  prompt\nnext')]
+    pool.fetchval.return_value = 1
+    with patch('kotoyose.interactions._get_pool', return_value=pool):
+        result = await list_sessions(q='Title_%')
+    assert result['items'] == [dict(title=expected, custom_title=custom)]
+    for call in [pool.fetch.call_args, pool.fetchval.call_args]:
+        sql = call.args[0]
+        assert 'LEFT JOIN kotoyose.session_titles st' in sql
+        assert "COALESCE(st.title, '') ILIKE" in sql
+        assert "COALESCE(metadata->>'session_title', '') ILIKE" in sql
+        assert "LEFT(COALESCE(prompt, ''), 300) ILIKE" in sql
+        assert call.args[1:] == ('%Title\\_\\%%',)

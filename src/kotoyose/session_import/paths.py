@@ -89,6 +89,8 @@ def _matches_source(source_kind: str, path: Path) -> bool:
         return path.name == "store.db"
     if source_kind == "grok":
         return path.name == "chat_history.jsonl"
+    if source_kind == "codex":
+        return path.name.endswith(".jsonl") or path.name.endswith(".jsonl.zst")
     return path.name.endswith(".jsonl")
 
 

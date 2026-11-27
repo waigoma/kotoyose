@@ -410,12 +410,65 @@ async def get_interaction(interaction_id: int) -> dict | None:
     return _with_output_throughput(row) if row else None
 
 
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _summarize_prompt_title(prompt: str | None, max_len: int = 80) -> str | None:
+    for line in (prompt or "").splitlines():
+        title = " ".join(line.split())
+        if title:
+            return title if len(title) <= max_len else title[:max_len - 1].rstrip() + "…"
+    return None
+
+
+def normalize_custom_title(title: str | None, max_len: int = 160) -> str | None:
+    """空白を正規化し、空なら None、上限超過なら ValueError を送出する。"""
+    title = " ".join((title or "").split())
+    if len(title) > max_len:
+        raise ValueError(f"title must be at most {max_len} characters")
+    return title or None
+
+
+async def get_session_title(conversation_key: str) -> str | None:
+    """カスタムタイトルを取得する。DB 未接続・未設定なら None。"""
+    pool = _get_pool()
+    if pool is None:
+        return None
+    return await pool.fetchval(
+        "SELECT title FROM kotoyose.session_titles WHERE conversation_key = $1", conversation_key,
+    )
+
+
+async def set_session_title(conversation_key: str, title: str | None) -> str | None:
+    """タイトルを保存し、空なら削除する。DB 未接続なら None。上限超過は ValueError。"""
+    pool = _get_pool()
+    if pool is None:
+        return None
+    title = normalize_custom_title(title)
+    if title is None:
+        await pool.execute(
+            "DELETE FROM kotoyose.session_titles WHERE conversation_key = $1", conversation_key,
+        )
+        return None
+    await pool.execute(
+        """
+        INSERT INTO kotoyose.session_titles (conversation_key, title, updated_at)
+        VALUES ($1, $2, NOW())
+        ON CONFLICT (conversation_key) DO UPDATE
+        SET title = EXCLUDED.title, updated_at = NOW()
+        """, conversation_key, title,
+    )
+    return title
+
+
 async def list_sessions(
     *,
     limit: int = 50,
     offset: int = 0,
     include_deleted: bool = False,
     include_subagents: bool = False,
+    q: str | None = None,
 ) -> dict:
     """(conversation_key, provider, runtime_session_id) グルーピングで集計。
     clear 後の新セッションは別行として表示されるよう、セッション ID も GROUP BY に含める。
@@ -428,16 +481,50 @@ async def list_sessions(
         return {"items": [], "total": 0, "limit": limit, "offset": offset}
 
     deleted_filter = "" if include_deleted else " AND deleted_at IS NULL"
-    subagent_filter = "" if include_subagents else f" AND {_NOT_SUBAGENT_FILTER}"
+    subagent_filter = "" if include_subagents else (
+        " AND kotoyose.interactions.id IN ("
+        f"SELECT id FROM kotoyose.interactions WHERE {_NOT_SUBAGENT_FILTER})"
+    )
+    params: list[Any] = []
+    search_filter = ""
+    needle = (q or "").strip()
+    if needle:
+        params.append(f"%{_escape_like(needle)}%")
+        p = f"${len(params)}"
+        search_filter = (
+            f" AND ("
+            f"kotoyose.interactions.conversation_key ILIKE {p} ESCAPE '\\' "
+            f"OR COALESCE(st.title, '') ILIKE {p} ESCAPE '\\' "
+            f"OR COALESCE(metadata->>'session_title', '') ILIKE {p} ESCAPE '\\' "
+            f"OR LEFT(COALESCE(prompt, ''), 300) ILIKE {p} ESCAPE '\\' "
+            f"OR COALESCE(model, '') ILIKE {p} ESCAPE '\\' "
+            f"OR COALESCE(provider, '') ILIKE {p} ESCAPE '\\' "
+            f"OR COALESCE(runtime_session_id, '') ILIKE {p} ESCAPE '\\' "
+            f"OR COALESCE(claude_session_id, '') ILIKE {p} ESCAPE '\\' "
+            f"OR COALESCE(source, '') ILIKE {p} ESCAPE '\\' "
+            f"OR COALESCE(metadata->>'source_machine', '') ILIKE {p} ESCAPE '\\' "
+            f"OR COALESCE(metadata->>'origin_hint', '') ILIKE {p} ESCAPE '\\'"
+            f")"
+        )
 
     rows = await pool.fetch(
         f"""
         SELECT
-            conversation_key,
+            kotoyose.interactions.conversation_key,
+            MAX(st.title) AS custom_title,
+            (ARRAY_AGG(metadata->>'session_title' ORDER BY received_at DESC)
+                FILTER (WHERE metadata->>'session_title' IS NOT NULL
+                    AND metadata->>'session_title' <> ''))[1] AS native_title,
+            (ARRAY_AGG(LEFT(prompt, 300) ORDER BY received_at ASC)
+                FILTER (WHERE prompt IS NOT NULL AND btrim(prompt) <> ''))[1] AS first_prompt,
             provider,
             COALESCE(runtime_session_id, claude_session_id) AS runtime_session_id,
             claude_session_id,
             (ARRAY_AGG(model ORDER BY received_at DESC))[1] AS model,
+            (ARRAY_AGG(metadata->>'source_machine' ORDER BY received_at DESC)
+                FILTER (WHERE metadata->>'source_machine' IS NOT NULL))[1] AS source_machine,
+            (ARRAY_AGG(metadata->>'origin_hint' ORDER BY received_at DESC)
+                FILTER (WHERE metadata->>'origin_hint' IS NOT NULL))[1] AS origin_hint,
             MIN(received_at) AS first_seen_at,
             MAX(received_at) AS last_seen_at,
             COUNT(*) AS turn_count,
@@ -464,25 +551,39 @@ async def list_sessions(
                       )
             ) AS is_active
         FROM kotoyose.interactions
-        WHERE conversation_key IS NOT NULL{deleted_filter}{subagent_filter}
-        GROUP BY conversation_key, provider, runtime_session_id, claude_session_id
+        LEFT JOIN kotoyose.session_titles st
+            ON st.conversation_key = kotoyose.interactions.conversation_key
+        WHERE kotoyose.interactions.conversation_key IS NOT NULL{deleted_filter}{subagent_filter}{search_filter}
+        GROUP BY kotoyose.interactions.conversation_key, provider, runtime_session_id, claude_session_id
         ORDER BY last_seen_at DESC
         LIMIT {int(limit)} OFFSET {int(offset)}
         """,
+        *params,
     )
     total = await pool.fetchval(
         f"""
         SELECT COUNT(*)
         FROM (
-            SELECT conversation_key, provider, runtime_session_id, claude_session_id
+            SELECT kotoyose.interactions.conversation_key, provider, runtime_session_id, claude_session_id
             FROM kotoyose.interactions
-            WHERE conversation_key IS NOT NULL{deleted_filter}{subagent_filter}
-            GROUP BY conversation_key, provider, runtime_session_id, claude_session_id
+        LEFT JOIN kotoyose.session_titles st
+            ON st.conversation_key = kotoyose.interactions.conversation_key
+            WHERE kotoyose.interactions.conversation_key IS NOT NULL{deleted_filter}{subagent_filter}{search_filter}
+            GROUP BY kotoyose.interactions.conversation_key, provider, runtime_session_id, claude_session_id
         ) sub
-        """
+        """,
+        *params,
     )
+    items = []
+    for record in rows:
+        row = dict(record)
+        row["title"] = row.get("custom_title") or row.get("native_title") or _summarize_prompt_title(row.get("first_prompt"))
+        row["custom_title"] = row.get("custom_title")
+        row.pop("first_prompt", None)
+        row.pop("native_title", None)
+        items.append(row)
     return {
-        "items": [dict(r) for r in rows],
+        "items": items,
         "total": total or 0,
         "limit": limit,
         "offset": offset,

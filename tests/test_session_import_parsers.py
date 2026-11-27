@@ -580,3 +580,97 @@ def test_registry_accepts_custom_parser(monkeypatch):
 
     assert get_parser("custom-cli") is custom
     assert "custom-cli" in list_parser_kinds()
+
+
+def test_codex_parser_and_discovery_support_zstd_rollouts(tmp_path):
+    import zstandard
+
+    from kotoyose.session_import.paths import iter_safe_source_files
+
+    plain = _write(tmp_path / "2026/11/24/rollout-plain.jsonl", _pair("codex", "hello plain", 1, 2))
+    raw_zst = "\n".join(json.dumps(line) for line in _pair("codex", "hello zstd", 3, 4)).encode("utf-8") + b"\n"
+    compressed = tmp_path / "2026/09/11/rollout-zst.jsonl.zst"
+    compressed.parent.mkdir(parents=True, exist_ok=True)
+    compressed.write_bytes(zstandard.ZstdCompressor().compress(raw_zst))
+
+    corrupt = tmp_path / "2026/09/11/rollout-corrupt.jsonl.zst"
+    corrupt.write_bytes(b"not valid zstd bytes")
+
+    found = iter_safe_source_files("codex", tmp_path)
+    assert found == sorted([plain, compressed, corrupt])
+
+    turns = CodexSessionParser().parse_file(compressed)
+    assert [(turn.prompt, turn.response, turn.session_id) for turn in turns] == [
+        ("hello zstd", "a", "rollout-zst"),
+    ]
+    assert CodexSessionParser().parse_file(corrupt) == []
+
+
+@pytest.mark.parametrize("value,expected", [(None, None), (42, None), (" \n\t", None), (" a\n b\t c ", "a b c"), ("x" * 161, "x" * 160)])
+def test_normalize_session_title(value, expected):
+    from kotoyose.session_import.models import normalize_session_title
+
+    assert normalize_session_title(value) == expected
+
+
+@pytest.mark.parametrize("records,expected", [
+    ([{"type": "summary", "summary": "first"}, {"type": "summary", "title": "last"}], "last"),
+    ([{"type": "ai-title", "aiTitle": "AI"}, {"type": "summary", "summary": "summary"}], "AI"),
+    ([{"type": "custom-title", "customTitle": "custom"}, {"type": "ai-title", "aiTitle": "AI"},
+      {"type": "summary", "summary": "summary"}, {"type": "custom-title", "title": " final\n name "}], "final name"),
+    ([{"type": "ai-title", "title": "first"}, {"type": "ai-title", "aiTitle": "last"}], "last"),
+    ([{"type": "summary", "summary": "fallback"}, {"type": "custom-title", "customTitle": 123}], "fallback"),
+])
+def test_claude_native_titles_apply_to_all_turns_at_eof(tmp_path, records, expected):
+    path = _write(tmp_path / "session.jsonl", [
+        _claude_user("q1"), _claude_assistant("a1"),
+        _claude_user("q2"), _claude_assistant("a2"), *records,
+    ])
+    turns = ClaudeSessionParser().parse_file(path)
+    assert len(turns) == 2
+    assert [turn.session_title for turn in turns] == [expected, expected]
+
+
+def test_codex_native_title_index_cache_and_refresh(tmp_path, monkeypatch):
+    from kotoyose.session_import.parsers import codex
+
+    path = _write(tmp_path / "sessions/2026/01/02/rollout.jsonl", [
+        _codex("session_meta", {"id": "thread-1"}), _codex_user("q"), _codex_assistant("a"),
+    ])
+    index = _write(tmp_path / "session_index.jsonl", ["{broken", {"id": "other", "thread_name": "other"},
+                                                         {"id": "thread-1", "thread_name": " native\n title "}])
+    original = codex.iter_jsonl
+    reads = []
+
+    def tracked(source):
+        if Path(source) == index:
+            reads.append(source)
+        yield from original(source)
+
+    monkeypatch.setattr(codex, "iter_jsonl", tracked)
+    for _ in range(3):
+        assert CodexSessionParser().parse_file(path)[0].session_title == "native title"
+    assert len(reads) == 1
+    _write(index, [{"id": "thread-1", "thread_name": "updated title"}])
+    assert CodexSessionParser().parse_file(path)[0].session_title == "updated title"
+    assert len(reads) == 2
+    index.unlink()
+    outside = _write(tmp_path / "outside.jsonl", [{"id": "thread-1", "thread_name": "private"}])
+    index.symlink_to(outside)
+    assert CodexSessionParser().parse_file(path)[0].session_title is None
+
+
+@pytest.mark.parametrize("title,expected,redacted,truncated", [
+    (" title\n ghp_" + "a" * 36, "title [REDACTED]", True, False),
+    ("x" * 161, "x" * 160, False, True),
+    ("\n ", None, False, False),
+])
+def test_imported_title_storage_sanitizes_and_combines_flags(title, expected, redacted, truncated):
+    from kotoyose.session_import.importer import build_interaction_row
+
+    turn = ImportedTurn("claude", "session", 0, _utc(0), _utc(1), "q", "a", session_title=title)
+    row, r, t = build_interaction_row(turn, source_machine="test", source_path_hash="hash")
+    assert row["metadata"].get("session_title") == expected
+    assert r is redacted and t is truncated
+    assert row["metadata"]["redacted"] is redacted
+    assert row["metadata"]["truncated"] is truncated

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from kotoyose.session_import.models import ImportedTurn
+from kotoyose.session_import.models import ImportedTurn, normalize_session_title
 from kotoyose.session_import.parsers.base import (
     TurnDraft,
     add_tokens,
@@ -20,6 +20,7 @@ from kotoyose.session_import.parsers.base import (
     token_count,
 )
 
+_TITLE_FIELDS = {"custom-title": (3, "customTitle"), "ai-title": (2, "aiTitle"), "summary": (1, "summary")}
 _TOOL_CALL_BLOCKS = ("tool_use", "server_tool_use")
 # Claude Code writes this placeholder on locally generated messages; it is not a model name.
 _SYNTHETIC_MODEL = "<synthetic>"
@@ -81,9 +82,16 @@ class ClaudeSessionParser:
         draft: _ClaudeDraft | None = None
         usage_owners: dict[str, _ClaudeDraft] = {}
         cwd: str | None = None
+        title: str | None = None
+        title_priority = 0
 
         for line in iter_jsonl(path):
             kind = line.get("type")
+            if isinstance(kind, str) and kind in _TITLE_FIELDS:
+                priority, key = _TITLE_FIELDS[kind]
+                candidate = normalize_session_title(line.get(key)) or normalize_session_title(line.get("title"))
+                if candidate and priority >= title_priority:
+                    title, title_priority = candidate, priority
             # Subagent (sidechain) transcripts reuse the parent's sessionId and would collide with its turns.
             if kind not in ("user", "assistant") or line.get("isMeta") is True or line.get("isSidechain") is True:
                 continue
@@ -125,4 +133,6 @@ class ClaudeSessionParser:
                 owner.usage[message_id or object()] = _message_usage(usage)
 
         append_turn(turns, self.source_kind, draft)
+        for turn in turns:
+            turn.session_title = title
         return turns

@@ -97,6 +97,27 @@ def test_installer_repair_failure_dialog_names_the_log():
     installer = (ROOT / "child-app/installer/setup.nsi").read_text(encoding="utf-8")
     dialog = next(line for line in installer.splitlines() if "MessageBox" in line and "runtime packages could not be installed" in line)
     assert r"$LOCALAPPDATA\kotoyose-child\logs\repair.log" in dialog
+    assert "(status: $0)" in dialog
+
+
+def test_installer_falls_back_to_execwait_when_nsexec_cannot_start():
+    installer = (ROOT / "child-app/installer/setup.nsi").read_text(encoding="utf-8")
+    helper = installer.split("Function RunChildApp\n", 1)[1].split("FunctionEnd", 1)[0]
+    assert 'Push "__nsexec_missing__"' in helper
+    assert "nsExec::ExecToLog '$R0'" in helper
+    assert '${If} $0 == "__nsexec_missing__"' in helper
+    assert '${OrIf} $0 == "error"' in helper
+    assert '${OrIf} $0 < 0' in helper
+    assert "ExecWait '$R0' $0" in helper
+    assert 'StrCpy $0 "exec-error"' in helper
+
+    install = installer.split("Section -Install\n", 1)[1].split("SectionEnd", 1)[0]
+    assert 'StrCpy $R0 \'"${APP}" repair\'' in install
+    assert 'StrCpy $R0 \'"${APP}" repair --previous "$PreviousVersion"\'' in install
+    assert 'StrCpy $R0 \'"${APP}" autostart $1\'' in install
+    assert install.count("Call RunChildApp") == 2
+    assert 'WriteRegStr HKCU "${RUN}" "KotoyoseChild" \'"${BACKGROUND}"\'' in install
+    assert 'DeleteRegValue HKCU "${RUN}" "KotoyoseChild"' in install
 
 
 def test_installer_and_uninstaller_confirm_before_closing_the_child():

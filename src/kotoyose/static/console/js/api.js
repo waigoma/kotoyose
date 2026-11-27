@@ -97,8 +97,13 @@ export const api = {
   interaction: (id) => request("GET", `/admin/interactions/${enc(id)}`),
   interactionEvents: (id, afterSeq = -1) =>
     request("GET", `/admin/interactions/${enc(id)}/events?after_seq=${Number(afterSeq)}`),
-  sessions: (limit = 100, offset = 0, { includeSubagents = false } = {}) =>
-    request("GET", `/admin/sessions?limit=${Number(limit)}&offset=${Number(offset)}${includeSubagents ? "&include_subagents=true" : ""}`),
+  sessions: (limit = 100, offset = 0, { includeSubagents = false, q = "" } = {}) => {
+    const params = new URLSearchParams({ limit: String(Number(limit)), offset: String(Number(offset)) });
+    if (includeSubagents) params.set("include_subagents", "true");
+    if (q && q.trim()) params.set("q", q.trim());
+    return request("GET", `/admin/sessions?${params.toString()}`);
+  },
+  setSessionTitle: (conversationKey, title) => request("PUT", "/admin/sessions/title", { conversation_key: conversationKey, title }),
   sessionDetail(conversationKey, { runtimeSessionId = null, provider = null } = {}) {
     const params = new URLSearchParams();
     if (runtimeSessionId) params.set("runtime_session_id", runtimeSessionId);

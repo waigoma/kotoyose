@@ -29,6 +29,12 @@ const text = {
   localLlmModel: "Allowed model ID",
   addLocalLlmModel: "Add model",
   duplicateLocalLlm: "Local LLM connection IDs must be unique.",
+  sessionImport: "Session history collection",
+  sessionImportHint: "Allow the host to collect sanitized local AI session history from the selected sources. Credentials are redacted on this machine before sending.",
+  sessionImportOriginHint: "Origin label",
+  originHintUnset: "Unspecified (use host setting)",
+  originHintPersonal: "Personal",
+  originHintWork: "Work (no training)",
   mcp: "MCP",
   hostMcpTitle: "Host MCP publications",
   hostMcpScope: "Tools execute on the host. Tool arguments go to the host and its configured MCP server, and results return to this child.",
@@ -601,6 +607,33 @@ function addLocalLlm(name = '', entry = { url: '', models: [''] }) {
   return id.input;
 }
 
+const sessionImportSourceList = [
+  ['claude', 'Claude Code'],
+  ['codex', 'Codex'],
+  ['antigravity', 'Antigravity'],
+  ['cursor', 'Cursor'],
+  ['grok', 'Grok'],
+];
+
+function renderSessionImportSources(selected) {
+  const container = byId('session-import-sources');
+  container.replaceChildren();
+  const allowed = new Set(selected ?? []);
+  const allowAll = allowed.has('all');
+  for (const [id, labelText] of sessionImportSourceList) {
+    const label = document.createElement('label');
+    label.className = 'check';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.value = id;
+    box.checked = allowAll || allowed.has(id);
+    const span = document.createElement('span');
+    span.textContent = labelText;
+    label.append(box, span);
+    container.append(label);
+  }
+}
+
 async function loadPolicy() {
   await editPolicy(async () => {
     const result = await api('policy');
@@ -613,6 +646,8 @@ async function loadPolicy() {
     for (const [name, entry] of Object.entries(savedPolicy.mcp)) addMcp(name, entry || undefined);
     for (const [name, entry] of Object.entries(savedPolicy.local_llm ?? {})) addLocalLlm(name, entry);
     byId('codex-sandbox').value = savedPolicy.codex_sandbox_max ?? 'workspace-write';
+    renderSessionImportSources(savedPolicy.session_import_sources);
+    byId('session-import-origin-hint').value = savedPolicy.session_import_origin_hint ?? '';
     revision = result.revision;
     policyDirty = false;
     policyError = result.error;
@@ -635,12 +670,19 @@ function readPolicy() {
     if (Object.hasOwn(localLlm, name)) throw new Error(text.duplicateLocalLlm);
     localLlm[name] = entry;
   }
+  const sessionImportSources = Array.from(
+    byId('session-import-sources').querySelectorAll('input'),
+    (box) => (box.checked ? box.value : null),
+  ).filter(Boolean);
+  const sessionImportOriginHint = byId('session-import-origin-hint').value || null;
   return {
     ...savedPolicy,
     workspace_roots: Array.from(byId('roots').querySelectorAll('input'), (input) => input.value),
     codex_sandbox_max: byId('codex-sandbox').value,
     mcp,
     local_llm: localLlm,
+    session_import_sources: sessionImportSources,
+    session_import_origin_hint: sessionImportOriginHint,
   };
 }
 
@@ -778,6 +820,7 @@ byId('reload-policy').onclick = () => {
 };
 
 byId('policy-form').oninput = () => { policyDirty = true; };
+byId('policy-form').onchange = () => { policyDirty = true; };
 byId('policy-form').addEventListener('invalid', (event) => {
   for (let parent = event.target.parentElement; parent; parent = parent.parentElement) {
     if (parent.tagName === 'DETAILS') parent.open = true;

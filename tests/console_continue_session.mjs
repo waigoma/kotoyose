@@ -69,6 +69,7 @@ globalThis.document = {
   addEventListener() {},
   removeEventListener() {},
   querySelector: () => null,
+  getElementById: (id) => document.body.querySelectorAll("h2").find((node) => node.getAttribute("id") === id),
 };
 globalThis.window = {};
 const load = (module) => import(pathToFileURL(join(process.argv[2], "js", module)));
@@ -190,6 +191,91 @@ destroyPeek();
 turns = [];
 cleanup = await render();
 assert.equal(root.querySelectorAll("form").length, 0);
+cleanup();
+destroyPeek();
+
+// Server-side search (q) + Load more pagination on Executions sessions card
+const sessionCalls = [];
+api.sessions = async (limit, offset, opts = {}) => {
+  sessionCalls.push([limit, offset, opts]);
+  if (opts.q === "lut") {
+    return {
+      items: [{
+        conversation_key: "import:codex:019e4d94",
+        provider: "codex",
+        model: "gpt-5.5",
+        source_machine: "win-lut",
+        origin_hint: "work",
+        turn_count: 2,
+      }],
+      total: 1,
+    };
+  }
+  if (offset === 0) {
+    return {
+      items: [{ conversation_key: "conv-1", provider: "claude", model: "haiku", turn_count: 1 }],
+      total: 2,
+    };
+  }
+  return {
+    items: [{ conversation_key: "conv-2", provider: "codex", model: "sol", turn_count: 3 }],
+    total: 2,
+  };
+};
+cleanup = await render(config, []);
+assert.ok(main.textContent.includes("1 / 2"));
+assert.ok(main.textContent.includes("conv-1"));
+const loadMore = button("Load more (1 remaining)", main);
+await loadMore.fire("click");
+await flush();
+assert.ok(main.textContent.includes("conv-1"));
+assert.ok(main.textContent.includes("conv-2"));
+assert.equal(main.querySelectorAll("button").filter((b) => b.textContent.startsWith("Load more")).length, 0);
+const searchInput = main.querySelectorAll("input").find((i) => i.getAttribute("type") === "search");
+searchInput.value = "lut";
+await searchInput.fire("input");
+await searchInput.fire("keydown", { key: "Enter" });
+await flush();
+assert.ok(main.textContent.includes("import:codex:019e4d94"));
+assert.ok(main.textContent.includes("win-lut"));
+assert.ok(main.textContent.includes("work"));
+assert.ok(sessionCalls.some(([, offset, opts]) => offset === 0 && opts.q === "lut"));
+cleanup();
+destroyPeek();
+// Rename updates the existing list and peek without replacing the search input.
+let customTitle = null;
+const key = "conversation-title-test";
+api.sessions = async () => ({ items: [{ conversation_key: key, title: "Native title", turn_count: 1 }], total: 1 });
+api.sessionDetail = async () => ({ turns: [{ id: 1, status: "completed" }], title: customTitle || "Native title", custom_title: customTitle });
+const renameCalls = [];
+api.setSessionTitle = async (conversationKey, title) => {
+  renameCalls.push([conversationKey, title]);
+  customTitle = title;
+  return { conversation_key: conversationKey, title };
+};
+cleanup = await render(null, ["session", key]);
+const preservedSearch = main.querySelectorAll("input").find((node) => node.getAttribute("type") === "search");
+const heading = document.getElementById("peek-dialog-title");
+assert.equal(heading.textContent, "Native title");
+await button("Rename", root).fire("click");
+let titleInput = root.querySelectorAll("input").find((node) => node.getAttribute("aria-label") === "Session title");
+assert.equal(titleInput.value, "Native title");
+titleInput.value = "Custom <title>";
+await root.querySelectorAll("form")[0].fire("submit", event);
+assert.equal(heading.textContent, "Custom <title>");
+assert.ok(main.textContent.includes("Custom <title>"));
+assert.equal(main.querySelectorAll("input").find((node) => node.getAttribute("type") === "search"), preservedSearch);
+assert.equal(preservedSearch.value, "lut");
+await button("Rename", root).fire("click");
+titleInput = root.querySelectorAll("input").find((node) => node.getAttribute("aria-label") === "Session title");
+assert.equal(titleInput.value, "Custom <title>");
+await button("Cancel", root).fire("click");
+assert.equal(renameCalls.length, 1);
+await button("Rename", root).fire("click");
+await button("Reset", root).fire("click");
+assert.equal(heading.textContent, "Native title");
+assert.ok(main.textContent.includes("Native title"));
+assert.deepEqual(renameCalls, [[key, "Custom <title>"], [key, null]]);
 cleanup();
 destroyPeek();
 console.log("Console continue session tests passed");

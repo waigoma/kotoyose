@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
-from kotoyose.session_import.models import ImportedTurn
+from kotoyose.session_import.models import ImportedTurn, normalize_session_title
 from kotoyose.session_import.parsers.base import (
     TurnDraft,
     append_turn,
@@ -34,11 +34,14 @@ class _Session:
     cwd: str | None
     default_model: str | None
     created_at: Any
+    session_title: str | None
     usage: dict[int, dict[str, Any]] = field(default_factory=dict)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
+        if path.is_symlink() or any(parent.is_symlink() for parent in path.parents) or not path.is_file():
+            return {}
         return as_dict(json.loads(path.read_bytes()))
     except (OSError, ValueError, RecursionError):
         return {}
@@ -70,6 +73,7 @@ def _read_session(path: Path) -> _Session:
         cwd=non_empty_str(info.get("cwd")) or _cwd_from_directory(path.parent.parent.name),
         default_model=non_empty_str(summary.get("current_model_id")),
         created_at=summary.get("created_at"),
+        session_title=normalize_session_title(summary.get("generated_title")),
         usage=_usage_by_turn(_read_json(path.parent / "usage.json")),
     )
 
@@ -154,4 +158,6 @@ class GrokSessionParser:
                     draft.response_parts.append(text)
 
         finish_turn()
+        for turn in turns:
+            turn.session_title = session.session_title
         return turns

@@ -104,8 +104,8 @@
     }
   },
   "requirements_sha256": {
-    "requirements.txt": "be32849a1745c9e8edffb07cf11b4c1533e7cc33a3b78e816ffbcdb9c7e22bfb",
     "requirements-claude.txt": "2a0a7ed5ce4f26aea89eb98db5d7d26843d2f2a1e896d82e09aff8190566fc63",
-    "requirements-codex.txt": "7122e7723beb95815c5a794d6f06b23eb1262b263073f6c958ee7308113288d1"
+    "requirements-codex.txt": "7122e7723beb95815c5a794d6f06b23eb1262b263073f6c958ee7308113288d1",
+    "requirements.txt": "19c65b95cce167dfea003c811c138d6dbfa9e359bddf8ff9d10c38e96c7a2014"
   }
 }

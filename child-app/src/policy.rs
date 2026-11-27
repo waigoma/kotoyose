@@ -546,4 +546,27 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), edited);
         save(home.path(), &load(home.path(), Vec::new()).revision, raw).unwrap();
     }
+
+    #[test]
+    fn validates_session_import_policy_fields() {
+        let home = tempfile::tempdir().unwrap();
+        let policy = Policy {
+            session_import_sources: vec!["claude".into(), "codex".into(), "grok".into()],
+            session_import_origin_hint: Some("work".into()),
+            ..Policy::default()
+        };
+        assert!(validate(home.path(), policy, Vec::new()).is_ok());
+
+        let bad_source = Policy {
+            session_import_sources: vec!["unknown".into()],
+            ..Policy::default()
+        };
+        assert!(validate(home.path(), bad_source, Vec::new()).is_err());
+
+        let bad_hint = Policy {
+            session_import_origin_hint: Some("secret".into()),
+            ..Policy::default()
+        };
+        assert!(validate(home.path(), bad_hint, Vec::new()).is_err());
+    }
 }

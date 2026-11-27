@@ -17,7 +17,7 @@ from .. import db
 from ..config import get_config
 from .models import (
     IMPORT_VERSION, VALID_ORIGIN_HINTS, FileLedgerEntry, ImportedTurn, ImportOptions,
-    ImportSummary, SourceStatus, ensure_utc, format_utc_iso,
+    ImportSummary, SourceStatus, ensure_utc, format_utc_iso, normalize_session_title,
 )
 from .parsers import get_parser, list_parser_kinds
 from .paths import configured_allowed_roots, default_source_roots, hash_source_path, iter_safe_source_files
@@ -47,6 +47,14 @@ def build_interaction_row(
         "has_tool_calls": turn.has_tool_calls, "truncated": was_truncated, "redacted": was_redacted,
         "imported_at": format_utc_iso(imported_at or datetime.now(timezone.utc)),
     }
+    if isinstance(turn.session_title, str):
+        title, title_redacted, title_truncated = sanitize_text(turn.session_title)
+        normalized = normalize_session_title(title)
+        was_redacted |= title_redacted
+        was_truncated |= title_truncated or len(" ".join(title.split())) > 160
+        if normalized:
+            metadata["session_title"] = normalized
+        metadata.update(redacted=was_redacted, truncated=was_truncated)
     if turn.timestamp_fallback:
         metadata["timestamp_fallback"] = True
     if turn.is_subagent:

@@ -8,13 +8,20 @@ GET  /admin/sessions/{key}             セッションの全ターン
 GET  /admin/stats                      24h / 7d 集計
 """
 
+import json
+
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field, field_validator
 
 from ..activity import public_activity_data, stream_activity
 from ..auth import require_basic_auth
 from ..interactions import (
+    _summarize_prompt_title,
+    get_session_title,
+    set_session_title,
+    normalize_custom_title,
     compute_hourly_stats,
     compute_stats,
     get_interaction,
@@ -110,11 +117,40 @@ async def get_sessions(
     limit: int = Query(50, ge=1, le=500),
     include_subagents: bool = Query(False),
     offset: int = Query(0, ge=0),
+    q: str | None = Query(default=None),
 ) -> dict:
-    return await list_sessions(
-        limit=limit, offset=offset,
-        **({"include_subagents": True} if include_subagents else {}),
-    )
+    extra: dict = {}
+    if include_subagents:
+        extra["include_subagents"] = True
+    if q and q.strip():
+        extra["q"] = q.strip()
+    return await list_sessions(limit=limit, offset=offset, **extra)
+
+
+class SessionTitleBody(BaseModel):
+    """会話キーと正規化後 160 文字以内のタイトル。空文字・null はリセット。"""
+
+    conversation_key: str = Field(min_length=1)
+    title: str | None
+
+    @field_validator("conversation_key")
+    @classmethod
+    def nonempty_key(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("conversation_key must not be empty")
+        return value
+
+    @field_validator("title")
+    @classmethod
+    def normalized_title(cls, value: str | None) -> str | None:
+        return normalize_custom_title(value)
+
+
+@router.put("/sessions/title")
+async def put_session_title(body: SessionTitleBody) -> dict:
+    """タイトルを保存する。空ならリセットし、DB 未接続時も null を返す。"""
+    saved = await set_session_title(body.conversation_key, body.title)
+    return {"conversation_key": body.conversation_key, "title": saved}
 
 
 @router.get(
@@ -136,7 +172,23 @@ async def get_session_detail(
     turns = await get_session_turns(
         conversation_key, runtime_session_id=session_id, provider=provider
     )
+    custom_title = await get_session_title(conversation_key)
+    native_title = None
+    for turn in reversed(turns):
+        metadata = turn.get("metadata")
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except ValueError:
+                continue
+        if isinstance(metadata, dict) and isinstance(metadata.get("session_title"), str) and metadata["session_title"]:
+            native_title = metadata["session_title"]
+            break
+    first_prompt = next((turn.get("prompt") for turn in turns if (turn.get("prompt") or "").strip()), None)
+    title = custom_title or native_title or _summarize_prompt_title(first_prompt)
     return {
+        "title": title,
+        "custom_title": custom_title,
         "conversation_key": conversation_key,
         "runtime_session_id": session_id,
         "provider": provider,

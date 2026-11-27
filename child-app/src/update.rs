@@ -413,8 +413,29 @@ fn digest_hex(hash: Context) -> String {
 
 pub fn sweep(home: &Path) {
     sweep_downloads(home);
+    #[cfg(windows)]
+    if let Some(root) = windows_install_root()
+        && root != home
+    {
+        sweep_downloads(&root);
+    }
     #[cfg(target_os = "linux")]
     crate::update_linux::sweep();
+}
+
+#[cfg(any(windows, test))]
+fn windows_install_root_for(exe: &Path) -> Option<PathBuf> {
+    let bin = exe.parent()?;
+    let version_dir = bin.parent()?;
+    if !version_dir.join("kotoyose-child.install").is_file() {
+        return None;
+    }
+    Some(version_dir.parent()?.to_path_buf())
+}
+
+#[cfg(windows)]
+fn windows_install_root() -> Option<PathBuf> {
+    windows_install_root_for(STARTED.get()?)
 }
 
 fn sweep_downloads(home: &Path) {
@@ -555,10 +576,22 @@ impl Download {
         let directory = private_tempdir(home, DOWNLOAD_PREFIX)?;
         #[cfg(target_os = "linux")]
         let home = directory.path();
-        let file = Builder::new()
-            .prefix(TEMP_PREFIX)
-            .suffix(if cfg!(windows) { ".exe" } else { ".tar.gz" })
-            .tempfile_in(home)?;
+        let make_temp = |dir: &Path| {
+            Builder::new()
+                .prefix(TEMP_PREFIX)
+                .suffix(if cfg!(windows) { ".exe" } else { ".tar.gz" })
+                .tempfile_in(dir)
+        };
+        #[cfg(windows)]
+        let file = match windows_install_root()
+            .filter(|root| root != home)
+            .and_then(|root| make_temp(&root).ok())
+        {
+            Some(file) => file,
+            None => make_temp(home)?,
+        };
+        #[cfg(not(windows))]
+        let file = make_temp(home)?;
         state::protect_secret(file.path())?;
         Ok(Self {
             file,
@@ -733,9 +766,20 @@ pub fn install_and_recover(
         match status {
             Ok(Ok(status)) if status.success() => return Ok(()),
             // NSIS exit codes 1 and 2 indicate setup aborted before launching the child.
-            Ok(Ok(status)) if matches!(status.code(), Some(1 | 2)) => {}
-            Err(_) => {}
+            Ok(Ok(status)) if matches!(status.code(), Some(1 | 2)) => {
+                let reason = format!("setup exited with {status}");
+                crate::local_log::record(home, crate::local_log::Event::AppUpdateFailed(&reason));
+            }
+            Err(error) => {
+                let reason = format!(
+                    "setup launch failed: {}",
+                    crate::local_log::diagnostic(&error)
+                );
+                crate::local_log::record(home, crate::local_log::Event::AppUpdateFailed(&reason));
+            }
             Ok(status) => {
+                let reason = format!("setup wait failed: {status:?}");
+                crate::local_log::record(home, crate::local_log::Event::AppUpdateFailed(&reason));
                 record_setup_error(home);
                 anyhow::bail!("could not confirm the update launch result: {status:?}");
             }
@@ -1057,5 +1101,20 @@ mod tests {
                 assert!(installer.verified_file().is_ok());
             }
         }
+    }
+
+    #[test]
+    fn windows_install_root_requires_install_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let version = root.path().join("1.4.0");
+        let bin = version.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join("kotoyose-child-background.exe");
+        assert_eq!(windows_install_root_for(&exe), None);
+        std::fs::write(version.join("kotoyose-child.install"), []).unwrap();
+        assert_eq!(
+            windows_install_root_for(&exe),
+            Some(root.path().to_path_buf())
+        );
     }
 }

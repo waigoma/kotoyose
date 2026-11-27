@@ -8,15 +8,26 @@ use std::{
 pub enum Event<'a> {
     Connecting,
     Connected,
-    Reconnecting { delay: Duration, reason: &'a str },
+    Reconnecting {
+        delay: Duration,
+        reason: &'a str,
+    },
     Unregistered,
     Stopped(Option<&'a str>),
     RunnerStart(u32),
-    RunnerStop { pid: u32, reason: &'static str },
+    RunnerStop {
+        pid: u32,
+        reason: &'static str,
+    },
     RunnerFailure,
     PolicySaved,
     IdleSaved,
-    ProviderRepair { provider: &'a str, message: &'a str },
+    ProviderRepair {
+        provider: &'a str,
+        message: &'a str,
+    },
+    #[cfg_attr(not(windows), allow(dead_code))]
+    AppUpdateFailed(&'a str),
 }
 
 pub fn diagnostic(error: &anyhow::Error) -> String {
@@ -104,6 +115,7 @@ pub fn record(home: &Path, event: Event<'_>) {
         Event::ProviderRepair { provider, message } => {
             format!("automatic provider repair [{provider}]: {message}")
         }
+        Event::AppUpdateFailed(reason) => format!("app update failed: {reason}"),
     };
     let timestamp = time::OffsetDateTime::now_utc()
         .replace_nanosecond(0)

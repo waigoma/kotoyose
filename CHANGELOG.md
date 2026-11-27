@@ -1,5 +1,28 @@
 # Kotoyose の変更履歴
 
+## 1.4.1 (2026-11-27)
+
+1.4.0 の実機運用で判明した Windows 子機の更新・インストーラー互換性の修正に加え、Codex の圧縮済み履歴 (`.jsonl.zst`) の取り込み、管理コンソールの会話タイトル表示・手動リネーム、サーバー側全件検索に対応しました。
+
+### 会話タイトルの取り込み・自動見出し・手動リネーム
+
+**Executions** 画面で `import:codex:...` などの内部キーではなく、人間が読める会話タイトルを見出しとして表示するようにしました。表示は **手動リネーム ＞ ツール固有のネイティブタイトル ＞ 先頭ユーザープロンプト 1 行目** の優先順で決まり、すでに DB にある過去のライブ・取り込みセッションにも再インポートなしで反映されます。
+
+- **ネイティブタイトル取り込み**: Claude (`custom-title` / `ai-title` / `summary`)、Codex (`~/.codex/session_index.jsonl` の `thread_name`)、Cursor (`store.db` の `meta.name`、汎用名 `"New Agent"` 等は除外)、Grok (`summary.json` の `generated_title`) から抽出し、秘匿化処理を通して `metadata.session_title` へ保存します。
+- **手動リネーム**: 管理コンソールの **Executions** 詳細画面から **Rename** で任意のタイトルを設定・リセットできます (`PUT /admin/sessions/title`、`kotoyose.session_titles` テーブル)。
+
+### Codex `.jsonl.zst` 圧縮ロールアウト対応と Executions 全件検索
+
+- **Codex `.jsonl.zst` 対応**: `~/.codex/sessions/**/*.jsonl.zst` を `zstandard`（256 MiB 展開上限ガード付きストリーミング解凍）でそのまま取り込めるようにしました。Windows 子機ランタイムにも `zstandard` wheel を同梱します。
+- **Executions 全件検索と Load more**: `GET /admin/sessions` にサーバー側検索 `q`（タイトル・会話キー・モデル・プロバイダ・`source_machine`・`origin_hint`・先頭プロンプトを横断検索）を追加し、画面側も先頭 100 件固定のクライアント絞り込みからサーバー側全件検索＋ **Load more** ページネーションへ刷新しました。
+
+### Windows 子機インストーラー・アプリ内更新・子機 Web UI の改善
+
+- **子機 Web UI にセッション収集設定を追加**: **Workspace → Session history collection** から、収集許可ソース (`claude` / `codex` / `antigravity` / `cursor` / `grok`) と `Origin label` (`personal` / `work`) を `policy.json` を直接編集せずに設定できるようにしました。
+- **Windows Setup の `ExecWait` フォールバック**: 企業 PC の EDR / ポリシー等で `nsExec` が起動失敗または `0xC0000005` 等の負の NTSTATUS を返した場合に、NSIS 組み込みの `ExecWait` へ自動フォールバックし、必要に応じて `autostart` もレジストリ直接登録へフォールバックするようにしました。あわせて `%LOCALAPPDATA%\kotoyose-child\logs\setup.log` へ進行ログを記録します。
+- **Windows アプリ内更新のステージング先改善**: `%LOCALAPPDATA%` 配下での一時 `.exe` 実行が制限される環境でもワンクリック更新できるよう、更新インストーラーを現在のインストール先ルートへ優先配置し、失敗時は `child.log` へ診断理由を記録します。
+- **`session_collect` エラーフレーム修正**: 子機が busy またはフレーム検証失敗時に正しい `session_collect_error` 形式で返すよう修正しました。
+
 ## 1.4.0 (2026-11-27)
 
 **どのモデルでも、どの環境でも会話を途切れさせない**ための基盤として、ローカル CLI の会話履歴取り込み、別モデルへの会話引き継ぎ (Fork)、子機からのマルチマシン収集、および読み取り専用 Export API を追加しました。

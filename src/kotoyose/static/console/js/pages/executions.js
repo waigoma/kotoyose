@@ -15,6 +15,7 @@ import {
 } from "../format.js";
 
 const SESSION_LIMIT = 100;
+const SEARCH_DEBOUNCE_MS = 200;
 const COLLAPSE_CHAR_LIMIT = 420;
 const COLLAPSE_LINE_LIMIT = 8;
 
@@ -52,22 +53,6 @@ function parseRoute(rest) {
   return { mode: "empty" };
 }
 
-function sessionMatchesSearch(session, needle) {
-  if (!needle) return true;
-  const haystack = [
-    session.conversation_key,
-    session.model,
-    session.provider,
-    session.runtime_session_id,
-    session.claude_session_id,
-    ...(session.sources || []),
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return haystack.includes(needle);
-}
-
 function isSelectedSession(session, target) {
   if (!target || !target.conversationKey) return false;
   if (session.conversation_key !== target.conversationKey) return false;
@@ -78,39 +63,50 @@ function isSelectedSession(session, target) {
 
 function sessionRow(session, selected) {
   const metaParts = [
+    session.title ? el("span", { class: "mono" }, session.conversation_key) : null,
     session.model,
     session.last_seen_at ? el("span", { class: "mono" }, timeLabel(session.last_seen_at)) : null,
   ];
   if (session.provider) metaParts.push(session.provider);
+  if (session.source_machine) metaParts.push(session.source_machine);
+  if (session.origin_hint) metaParts.push(session.origin_hint);
   return el("a", {
     class: "row route-row",
     href: sessionHref(session),
     "aria-current": selected ? "true" : null,
   },
   el("div", { class: "row-main" },
-    el("span", { class: "row-title mono" }, session.conversation_key || "—"),
+    el("span", { class: session.title ? "row-title" : "row-title mono" }, session.title || session.conversation_key || "—"),
     rowMeta(metaParts)),
   el("span", { class: "row-sub" },
     session.is_active ? dot("positive") : null,
     `${count(session.turn_count)} ${session.turn_count === 1 ? "turn" : "turns"}`));
 }
 
-function sessionsCard(sessions, sessionsError, target, isAlive) {
+function sessionsCard(sessions, sessionsTotal, sessionsError, target, isAlive, registerTimer) {
   const countNode = el("span", { class: "mono small muted" }, "");
   const rowsWrap = el("div", { class: "rows" });
+  const footerWrap = el("div", { class: "card-body" });
   const emptyNode = el("p", { class: "card-body muted" }, "");
   const searchInput = el("input", {
     class: "input",
     type: "search",
     value: searchQuery,
-    placeholder: "Search conversations by key, alias, session…",
+    placeholder: "Search all conversations by title, key, model, machine, session…",
     "aria-label": "Search conversations",
   });
+  let total = typeof sessionsTotal === "number" ? sessionsTotal : sessions.length;
+  let fetchSeq = 0;
+  let searchTimer = null;
+  let loadingMore = false;
 
-  function renderFiltered() {
-    const needle = searchQuery.trim().toLowerCase();
-    const filtered = sessions.filter((s) => sessionMatchesSearch(s, needle));
-    countNode.textContent = needle ? `${filtered.length} / ${sessions.length}` : String(sessions.length);
+  function renderList() {
+    const needle = searchQuery.trim();
+    countNode.textContent = sessions.length < total
+      ? `${count(sessions.length)} / ${count(total)}`
+      : count(total);
+    footerWrap.replaceChildren();
+    footerWrap.hidden = true;
     if (sessionsError) {
       rowsWrap.replaceChildren(
         el("div", { class: "card-body" }, errorLine(`Conversations are unavailable: ${sessionsError.message}`)),
@@ -118,51 +114,104 @@ function sessionsCard(sessions, sessionsError, target, isAlive) {
       return;
     }
     if (sessions.length === 0) {
-      emptyNode.textContent = "No conversations recorded yet.";
-      rowsWrap.replaceChildren(emptyNode);
-      return;
-    }
-    if (filtered.length === 0) {
-      emptyNode.textContent = `No conversations match "${searchQuery.trim()}".`;
+      emptyNode.textContent = needle
+        ? `No conversations match "${needle}".`
+        : "No conversations recorded yet.";
       rowsWrap.replaceChildren(emptyNode);
       return;
     }
     rowsWrap.replaceChildren(
-      ...filtered.map((s) => sessionRow(s, isSelectedSession(s, target))),
+      ...sessions.map((s) => sessionRow(s, isSelectedSession(s, target))),
     );
+    if (sessions.length < total) {
+      const remaining = total - sessions.length;
+      const loadMoreBtn = el("button", {
+        type: "button",
+        class: "btn btn-sm",
+        disabled: loadingMore,
+      }, loadingMore ? "Loading…" : `Load more (${count(remaining)} remaining)`);
+      loadMoreBtn.addEventListener("click", () => {
+        fetchSessions({ append: true });
+      });
+      footerWrap.append(loadMoreBtn);
+      footerWrap.hidden = false;
+    }
+  }
+
+  async function fetchSessions({ append = false } = {}) {
+    const seq = ++fetchSeq;
+    const offset = append ? sessions.length : 0;
+    if (append) {
+      loadingMore = true;
+      renderList();
+    }
+    try {
+      const res = await api.sessions(SESSION_LIMIT, offset, {
+        includeSubagents: showSubagents,
+        q: searchQuery,
+      });
+      if (!isAlive() || seq !== fetchSeq) return;
+      const items = (res && res.items) || [];
+      sessions = append ? [...sessions, ...items] : items;
+      total = (res && typeof res.total === "number") ? res.total : sessions.length;
+      sessionsError = null;
+    } catch (err) {
+      if (!isAlive() || seq !== fetchSeq) return;
+      sessionsError = err;
+    } finally {
+      if (isAlive() && seq === fetchSeq) {
+        loadingMore = false;
+        renderList();
+      }
+    }
   }
 
   searchInput.addEventListener("input", () => {
     searchQuery = searchInput.value;
-    renderFiltered();
+    if (searchTimer !== null) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      searchTimer = null;
+      fetchSessions({ append: false });
+    }, SEARCH_DEBOUNCE_MS);
+    registerTimer(searchTimer);
+  });
+  searchInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      if (searchTimer !== null) {
+        clearTimeout(searchTimer);
+        searchTimer = null;
+      }
+      fetchSessions({ append: false });
+    }
   });
   const subagentToggle = el("input", { type: "checkbox", checked: showSubagents });
   subagentToggle.addEventListener("change", async () => {
     showSubagents = subagentToggle.checked;
     subagentToggle.disabled = true;
-    try {
-      const res = await api.sessions(SESSION_LIMIT, 0, { includeSubagents: showSubagents });
-      sessions = (res && res.items) || [];
-      sessionsError = null;
-    } catch (err) {
-      sessionsError = err;
-    } finally {
-      if (isAlive()) {
-        subagentToggle.disabled = false;
-        renderFiltered();
-      }
-    }
+    await fetchSessions({ append: false });
+    if (isAlive()) subagentToggle.disabled = false;
   });
-  renderFiltered();
+  renderList();
 
-  return el("section", { class: "card", "aria-label": "Conversations" },
+  const card = el("section", { class: "card", "aria-label": "Conversations" },
     el("div", { class: "card-head" },
       el("h2", { class: "card-title" }, "Conversations"),
       countNode),
     el("div", { class: "list-filter" },
       searchInput,
       el("label", { class: "small" }, subagentToggle, " Show subagent / delegated")),
-    rowsWrap);
+    rowsWrap,
+    footerWrap);
+  card.updateTitle = (conversationKey, title, customTitle) => {
+    sessions.forEach((session, index) => {
+      if (session.conversation_key !== conversationKey) return;
+      session.title = title;
+      session.custom_title = customTitle;
+      const row = rowsWrap.children[index];
+      if (row) row.replaceChildren(...sessionRow(session, isSelectedSession(session, target)).children);
+    });
+  };
+  return card;
 }
 
 function previewText(text) {
@@ -464,7 +513,7 @@ function continuePanel(source, config, isAlive) {
     el("div", { class: "card-body" }, form));
 }
 
-function openExecutionPeek({ title, subtitle, turns, targetId, errorMsg, registerStream, isAlive, source, config }) {
+function openExecutionPeek({ title, subtitle, turns, targetId, errorMsg, registerStream, isAlive, source, config, session, onRename }) {
   const onClose = () => { location.hash = "#/executions"; };
   if (errorMsg) {
     return openPeek({
@@ -477,23 +526,66 @@ function openExecutionPeek({ title, subtitle, turns, targetId, errorMsg, registe
     });
   }
   if (!turns) return null;
-  if (turns.length === 0) {
-    return openPeek({
-      title,
-      titleMono: true,
-      subtitle,
-      body: el("p", { class: "muted" }, "No turns found for this conversation."),
-      onClose,
+  const resumeNotes = computeResumeNotes(turns);
+  const rawKey = session?.conversation_key;
+  const keySubtitle = el("span", { class: "mono" }, session?.title ? rawKey : "");
+  const renameArea = el("span", {});
+  if (session) {
+    const rename = el("button", { type: "button", class: "btn btn-sm" }, "Rename");
+    renameArea.append(rename);
+    rename.addEventListener("click", () => {
+      const input = el("input", {
+        type: "text", class: "input", maxlength: 160, "aria-label": "Session title",
+        value: session.custom_title || session.title || "",
+      });
+      const save = el("button", { type: "submit", class: "btn btn-sm" }, "Save");
+      const reset = el("button", { type: "button", class: "btn btn-sm" }, "Reset");
+      const cancel = el("button", { type: "button", class: "btn btn-sm" }, "Cancel");
+      const status = el("span", { "aria-live": "polite" });
+      const form = el("form", {}, input, save, reset, cancel, status);
+      let saving = false;
+      const persist = async (nextTitle) => {
+        if (saving) return;
+        saving = true;
+        save.disabled = reset.disabled = cancel.disabled = input.disabled = true;
+        try {
+          const saved = await api.setSessionTitle(rawKey, nextTitle);
+          const latest = await api.sessionDetail(rawKey, session.query);
+          if (!isAlive()) return;
+          session.custom_title = saved.title;
+          session.title = latest.title;
+          const heading = document.getElementById("peek-dialog-title");
+          if (heading) {
+            heading.textContent = latest.title || rawKey;
+            heading.className = latest.title ? "card-title peek-title" : "card-title peek-title mono";
+          }
+          keySubtitle.textContent = latest.title ? rawKey : "";
+          onRename(rawKey, latest.title, saved.title);
+          renameArea.replaceChildren(rename);
+        } catch (err) {
+          if (isAlive()) status.replaceChildren(errorLine(err.message));
+        } finally {
+          saving = false;
+          save.disabled = reset.disabled = cancel.disabled = input.disabled = false;
+        }
+      };
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        return persist(input.value.trim() || null);
+      });
+      reset.addEventListener("click", () => persist(null));
+      cancel.addEventListener("click", () => renameArea.replaceChildren(rename));
+      renameArea.replaceChildren(form);
+      input.focus();
     });
   }
-
-  const resumeNotes = computeResumeNotes(turns);
   return openPeek({
     title,
-    titleMono: true,
-    subtitle: el("span", { class: "stack" }, subtitle, lineageNote(turns)),
+    titleMono: !session?.title,
+    subtitle: el("span", { class: "stack" }, keySubtitle, subtitle, lineageNote(turns), renameArea),
     body: el("div", { class: "turns-list" },
-      source ? continuePanel(source, config, isAlive) : null,
+      source && turns.length ? continuePanel(source, config, isAlive) : null,
+      turns.length ? null : el("p", { class: "muted" }, "No turns found for this conversation."),
       turns.map((turn, idx) =>
         renderTurnCard(turn, idx, resumeNotes[idx], turn.id === targetId, registerStream, isAlive))),
     onClose,
@@ -504,14 +596,22 @@ export async function renderExecutions(main, { rest, config }) {
   main.classList.add("main--wide");
   const route = parseRoute(rest);
   const activeStreams = new Set();
+  const activeTimers = new Set();
   let disposed = false;
 
   const isAlive = () => !disposed && main.isConnected;
   const registerStream = (source) => {
     activeStreams.add(source);
   };
+  const registerTimer = (timer) => {
+    activeTimers.add(timer);
+  };
   const cleanup = () => {
     disposed = true;
+    for (const timer of activeTimers) {
+      clearTimeout(timer);
+    }
+    activeTimers.clear();
     for (const source of activeStreams) {
       try {
         source.close();
@@ -523,13 +623,15 @@ export async function renderExecutions(main, { rest, config }) {
   };
 
   let sessions = [];
+  let sessionsTotal = null;
   let sessionsError = null;
   let detailProps = { turns: null };
   let highlightTarget = null;
 
-  const sessionsPromise = api.sessions(SESSION_LIMIT, 0, { includeSubagents: showSubagents })
+  const sessionsPromise = api.sessions(SESSION_LIMIT, 0, { includeSubagents: showSubagents, q: searchQuery })
     .then((res) => {
       sessions = (res && res.items) || [];
+      sessionsTotal = (res && typeof res.total === "number") ? res.total : sessions.length;
     })
     .catch((err) => {
       sessionsError = err;
@@ -555,8 +657,8 @@ export async function renderExecutions(main, { rest, config }) {
             turns = turns.length === 0 ? [interaction] : [...turns, interaction];
           }
           detailProps = {
-            title: interaction.conversation_key,
-            subtitle: rowMeta(`${turns.length} ${turns.length === 1 ? "turn" : "turns"}`,
+            title: sessionRes.title || interaction.conversation_key,
+            subtitle: rowMeta(sessionRes.title ? interaction.conversation_key : null, `${turns.length} ${turns.length === 1 ? "turn" : "turns"}`,
               sid ? `session ${shortId(sid)}` : null),
             turns,
             targetId: interaction.id,
@@ -589,7 +691,13 @@ export async function renderExecutions(main, { rest, config }) {
         const totalIn = turns.reduce((sum, t) => sum + (t.tokens_in || 0), 0);
         const totalOut = turns.reduce((sum, t) => sum + (t.tokens_out || 0), 0);
         detailProps = {
-          title: route.conversationKey,
+          title: sessionRes.title || route.conversationKey,
+          session: {
+            conversation_key: route.conversationKey,
+            title: sessionRes.title,
+            custom_title: sessionRes.custom_title,
+            query: { runtimeSessionId: route.runtimeSessionId, provider: route.provider },
+          },
           subtitle: rowMeta(`${turns.length} ${turns.length === 1 ? "turn" : "turns"}`,
             sid ? `session ${shortId(sid)}` : null, `${count(totalIn)} → ${count(totalOut)} tokens`),
           turns,
@@ -607,17 +715,18 @@ export async function renderExecutions(main, { rest, config }) {
     return cleanup;
   }
 
+  const listCard = sessionsCard(sessions, sessionsTotal, sessionsError, highlightTarget, isAlive, registerTimer);
   main.append(
     el("header", { class: "page-head" },
       el("div", {},
         el("h1", { class: "page-title" }, "Executions"),
         el("p", { class: "page-sub" }, "Browse conversations, inspect turns, and follow live activity.")),
       el("a", { class: "btn", href: "#/usage" }, "View usage")),
-    sessionsCard(sessions, sessionsError, highlightTarget, isAlive),
+    listCard,
   );
 
   const peekBody = route.mode !== "empty"
-    ? openExecutionPeek({ ...detailProps, registerStream, isAlive, config,
+    ? openExecutionPeek({ ...detailProps, registerStream, isAlive, config, onRename: listCard.updateTitle,
       source: route.mode === "session" ? {
         source_conversation_key: route.conversationKey,
         ...(route.provider ? { source_provider: route.provider } : {}),

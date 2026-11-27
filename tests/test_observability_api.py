@@ -1,5 +1,6 @@
 """/admin/interactions, /admin/sessions, /admin/stats の API テスト。"""
 
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -167,6 +168,14 @@ def test_get_sessions_envelope():
     assert res.json()["total"] == 0
 
 
+def test_get_sessions_forwards_search_query():
+    mock_list = AsyncMock(return_value={"items": [], "total": 0, "limit": 100, "offset": 0})
+    with patch("kotoyose.routes.observability.list_sessions", new=mock_list):
+        res = client.get("/admin/sessions?limit=100&offset=0&q=lut")
+    assert res.status_code == 200
+    mock_list.assert_awaited_once_with(limit=100, offset=0, q="lut")
+
+
 def test_get_session_detail():
     with patch(
         "kotoyose.routes.observability.get_session_turns",
@@ -219,3 +228,39 @@ def test_get_stats():
     body = res.json()
     assert body["past_24h"]["total_requests"] == 5
     assert body["past_7d"]["total_requests"] == 10
+
+
+@pytest.mark.parametrize(('custom', 'native', 'expected'), [
+    ('Custom', 'Native', 'Custom'), (None, 'Native', 'Native'), (None, None, 'First prompt'),
+])
+def test_session_detail_title_priority(custom, native, expected):
+    turns = [{'prompt': '\nFirst  prompt\nnext', 'metadata': {'session_title': 'Old'}},
+             {'metadata': '{broken'}, {'metadata': json.dumps({'session_title': native})}]
+    if native is None:
+        turns[0]['metadata'] = {}
+    with (
+        patch('kotoyose.routes.observability.get_session_turns', new=AsyncMock(return_value=turns)),
+        patch('kotoyose.routes.observability.get_session_title', new=AsyncMock(return_value=custom)),
+    ):
+        response = client.get('/admin/sessions/conversation')
+    assert response.status_code == 200
+    assert response.json()['title'] == expected
+    assert response.json()['custom_title'] == custom
+
+
+@pytest.mark.parametrize('title', [' New\n title ', None, '', 'a' * 160])
+def test_put_session_title(title):
+    expected = ' '.join((title or '').split()) or None
+    with patch('kotoyose.routes.observability.set_session_title', new=AsyncMock(return_value=expected)) as save:
+        response = client.put('/admin/sessions/title', json={'conversation_key': 'conversation', 'title': title})
+    assert response.status_code == 200
+    assert response.json() == {'conversation_key': 'conversation', 'title': expected}
+    save.assert_awaited_once_with('conversation', expected)
+
+
+@pytest.mark.parametrize('body', [
+    {'conversation_key': '', 'title': 'Title'}, {'conversation_key': '  ', 'title': None},
+    {'conversation_key': 'conversation', 'title': 'a' * 161},
+])
+def test_put_session_title_validation(body):
+    assert client.put('/admin/sessions/title', json=body).status_code == 422

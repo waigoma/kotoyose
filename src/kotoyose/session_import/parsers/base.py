@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import io
 import json
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol
 
 from kotoyose.session_import.models import DEFAULT_FALLBACK_EPOCH, ImportedTurn, ensure_utc
 
 _MILLISECONDS_THRESHOLD = 1e12
+_MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024
 _DRIVE_ROOT = re.compile(r"[A-Za-z]:")
 _UNSAFE_BASENAMES = ("", ".", "..", "tmp")
 _OPENING_TAG = re.compile(r"<([A-Za-z_][\w-]*)(?:\s[^<>]*)?>")
@@ -71,18 +74,71 @@ def extract_cwd_basename(cwd: str | None) -> str | None:
     return basename
 
 
+class _BoundedReader(io.RawIOBase):
+    """Stop streaming decompression once a file exceeds ``limit`` decoded bytes."""
+
+    def __init__(self, stream: BinaryIO, limit: int) -> None:
+        self._stream = stream
+        self._remaining = limit
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: bytearray | memoryview) -> int:
+        if self._remaining <= 0:
+            return 0
+        chunk = self._stream.read(min(len(buffer), self._remaining))
+        if not chunk:
+            return 0
+        size = len(chunk)
+        buffer[:size] = chunk
+        self._remaining -= size
+        return size
+
+
+@contextmanager
+def _open_jsonl_lines(path: Path) -> Iterator[Iterator[str]]:
+    if not path.name.endswith(".zst"):
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            yield handle
+        return
+    try:
+        from compression import zstd as stdlib_zstd  # type: ignore[import-not-found]
+    except ImportError:
+        stdlib_zstd = None
+    if stdlib_zstd is not None:
+        with stdlib_zstd.open(path, "rb") as raw:
+            with io.TextIOWrapper(io.BufferedReader(_BoundedReader(raw, _MAX_DECOMPRESSED_BYTES)), encoding="utf-8", errors="replace") as text:
+                yield text
+        return
+    import zstandard
+
+    with path.open("rb") as raw:
+        with zstandard.ZstdDecompressor().stream_reader(raw, read_across_frames=True) as reader:
+            with io.TextIOWrapper(io.BufferedReader(_BoundedReader(reader, _MAX_DECOMPRESSED_BYTES)), encoding="utf-8", errors="replace") as text:
+                yield text
+
+
 def iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
-    """Yield the JSON objects of a JSONL file, skipping blank, malformed and non-object lines."""
-    with Path(path).open("r", encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                value = json.loads(line)
-            except (ValueError, RecursionError):
-                continue
-            if isinstance(value, dict):
-                yield value
+    """Yield the JSON objects of a JSONL (or ``.jsonl.zst``) file, skipping malformed lines."""
+    target = Path(path)
+    try:
+        with _open_jsonl_lines(target) as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    value = json.loads(line)
+                except (ValueError, RecursionError):
+                    continue
+                if isinstance(value, dict):
+                    yield value
+    except (OSError, EOFError, ValueError):
+        return
+    except Exception as exc:
+        if type(exc).__name__ == "ZstdError":
+            return
+        raise
 
 
 def as_dict(value: Any) -> dict[str, Any]:

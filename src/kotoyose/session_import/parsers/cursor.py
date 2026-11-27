@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from kotoyose.session_import.models import ImportedTurn
+from kotoyose.session_import.models import ImportedTurn, normalize_session_title
 from kotoyose.session_import.parsers.base import (
     TurnDraft,
     append_turn,
@@ -74,6 +74,7 @@ class _Chat:
     cwd: str | None
     created_at: datetime | None
     updated_at: datetime | None
+    session_title: str | None
 
 
 @contextmanager
@@ -111,6 +112,8 @@ def _json_object(data: str | bytes) -> dict[str, Any]:
 
 def _read_sidecar(path: Path) -> dict[str, Any]:
     try:
+        if path.is_symlink() or any(parent.is_symlink() for parent in path.parents) or not path.is_file():
+            return {}
         return _json_object(path.read_bytes())
     except OSError:
         return {}
@@ -124,10 +127,14 @@ def _read_chat(connection: sqlite3.Connection, path: Path) -> _Chat | None:
     root_id = non_empty_str(meta.get("latestRootBlobId"))
     if root_id is None:
         return None
+    title = normalize_session_title(meta.get("name"))
+    if title and title.casefold() in {"new agent", "new chat", "untitled"}:
+        title = None
     sidecar = _read_sidecar(path.parent / "meta.json")
     return _Chat(
         session_id=non_empty_str(meta.get("agentId")) or path.parent.name or path.stem,
         root_id=root_id,
+        session_title=title,
         cwd=non_empty_str(sidecar.get("cwd")),
         created_at=parse_timestamp(meta.get("createdAt")) or parse_timestamp(sidecar.get("createdAtMs")),
         updated_at=parse_timestamp(sidecar.get("updatedAtMs")),
@@ -309,6 +316,8 @@ def _collect_turns(source_kind: str, chat: _Chat, messages: Iterator[dict[str, A
             draft.completed_at = _message_time(message) or draft.completed_at
 
     append_turn(turns, source_kind, draft)
+    for turn in turns:
+        turn.session_title = chat.session_title
     return turns
 
 

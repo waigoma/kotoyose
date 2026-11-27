@@ -9,6 +9,7 @@ const script = asset('app.js');
 const providersScript = asset('providers.js');
 const emptyPolicy = {
   workspace_roots: [], adapters: [], mcp: {}, logins: [], codex_sandbox_max: 'workspace-write', local_llm: {},
+  session_import_sources: [], session_import_origin_hint: null,
 };
 const status = {
   link: { connection: 'connected', runner: false, work: 0 },
@@ -1562,4 +1563,57 @@ test('Linux source shows manual instructions without an offer or install button'
   assert.equal(get('restart').hidden, true);
   assert.equal(get('update-offer').hidden, true);
   assert.match(get('update-state').textContent, /Update by hand.*uv sync.*cargo build/);
+});
+
+test('Workspace edits and saves session history collection sources and origin label', async () => {
+  let policy = {
+    ...emptyPolicy,
+    session_import_sources: ['claude'],
+    session_import_origin_hint: null,
+  };
+  let revision = 'rev-1';
+  const ui = browser(({ path, method, body }) => {
+    if (path === '/api/session') return [200, { token: 'session-token' }];
+    if (path === '/api/status') return [200, status];
+    if (path === '/api/components') return [200, emptyComponents];
+    if (path === '/api/policy' && method === 'GET') return [200, policyRead(policy, revision)];
+    if (path === '/api/policy' && method === 'POST') {
+      policy = body.policy;
+      revision = 'rev-2';
+      return [200, { revision, warnings: [] }];
+    }
+    throw new Error(`${method} ${path}`);
+  });
+  await flush();
+  ui.showWorkspace();
+  await flush();
+
+  const boxes = ui.elements.get('session-import-sources').querySelectorAll('input');
+  assert.deepEqual(boxes.map((box) => [box.value, box.checked]), [
+    ['claude', true],
+    ['codex', false],
+    ['antigravity', false],
+    ['cursor', false],
+    ['grok', false],
+  ]);
+  assert.equal(ui.elements.get('session-import-origin-hint').value, '');
+
+  boxes.find((box) => box.value === 'codex').checked = true;
+  boxes.find((box) => box.value === 'cursor').checked = true;
+  ui.elements.get('session-import-origin-hint').value = 'work';
+  ui.elements.get('policy-form').onchange();
+  ui.elements.get('policy-form').onsubmit({ preventDefault() {} });
+  await flush();
+
+  assert.deepEqual(policy.session_import_sources, ['claude', 'codex', 'cursor']);
+  assert.equal(policy.session_import_origin_hint, 'work');
+
+  // Policy with ["all"] renders all 5 source checkboxes as checked.
+  policy = { ...policy, session_import_sources: ['all'], session_import_origin_hint: 'personal' };
+  ui.showConnection();
+  ui.showWorkspace();
+  await flush();
+  const reloaded = ui.elements.get('session-import-sources').querySelectorAll('input');
+  assert.equal(reloaded.every((box) => box.checked), true);
+  assert.equal(ui.elements.get('session-import-origin-hint').value, 'personal');
 });

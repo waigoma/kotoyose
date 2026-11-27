@@ -49,6 +49,11 @@ async def init_db() -> None:
             END
             $$;
             CREATE SCHEMA IF NOT EXISTS kotoyose;
+            CREATE TABLE IF NOT EXISTS kotoyose.session_titles (
+                conversation_key TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
             CREATE TABLE IF NOT EXISTS kotoyose.sessions (
                 conversation_key  TEXT PRIMARY KEY,
                 claude_session_id TEXT NOT NULL,

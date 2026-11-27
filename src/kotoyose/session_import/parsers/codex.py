@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from kotoyose.session_import.models import ImportedTurn
+from kotoyose.session_import.models import ImportedTurn, normalize_session_title
 from kotoyose.session_import.parsers.base import (
     TurnDraft,
     add_tokens,
@@ -90,6 +91,35 @@ def _user_text(content: Any) -> str:
     return join_text_blocks(content, _USER_BLOCKS)
 
 
+@lru_cache(maxsize=8)
+def _session_titles(resolved_path: str, mtime_ns: int, size: int) -> dict[str, str]:
+    return {
+        session_id: title
+        for line in iter_jsonl(Path(resolved_path))
+        if (session_id := non_empty_str(line.get("id")))
+        and (title := normalize_session_title(line.get("thread_name")))
+    }
+
+
+def _session_title(path: Path, session_id: str) -> str | None:
+    try:
+        for parent in path.parents[:4]:
+            if parent.is_symlink():
+                return None
+            if parent.name != "sessions":
+                continue
+            index = parent.parent / "session_index.jsonl"
+            if index.is_symlink() or not index.is_file():
+                return None
+            if any(ancestor.is_symlink() for ancestor in index.parents):
+                return None
+            stat = index.stat()
+            return _session_titles(str(index.resolve()), stat.st_mtime_ns, stat.st_size).get(session_id)
+    except OSError:
+        return None
+    return None
+
+
 class _RolloutReader:
     """Mutable state for reading one rollout file."""
 
@@ -97,7 +127,7 @@ class _RolloutReader:
         self.source_kind = source_kind
         self.turns: list[ImportedTurn] = []
         self.draft: _CodexDraft | None = None
-        self.session_id = path.stem
+        self.session_id = Path(path.name.removesuffix(".zst")).stem
         self.session_meta_seen = False
         self.is_subagent = False
         self.agent_origin: str | None = None
@@ -235,4 +265,7 @@ class CodexSessionParser:
         for line in iter_jsonl(path):
             reader.read(line)
         reader.finish_turn()
+        title = _session_title(Path(path), reader.session_id)
+        for turn in reader.turns:
+            turn.session_title = title
         return reader.turns

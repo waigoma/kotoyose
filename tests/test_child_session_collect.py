@@ -201,3 +201,44 @@ async def test_since_truncation_and_chunked_ledger(tmp_path):
     summary = await ingest_remote_batches(batches, source_machine="child", store=filtered, remote_stats=stats)
     assert summary.turns_imported == 2 and summary.turns_skipped_since == 1
     assert not filtered._files
+
+
+async def test_remote_session_title_passthrough_and_host_redaction(tmp_path):
+    path = history(tmp_path, count=2)
+    with path.open("a") as handle:
+        handle.write("\n" + json.dumps({"type": "custom-title", "customTitle": "Title\n" + SECRET}))
+    batches, stats = collect_local_batches(allowed_sources=["claude"], home=tmp_path)
+    assert all(turn["session_title"] == "Title [REDACTED]" for batch in batches for turn in batch["turns"])
+    assert SECRET not in json.dumps(batches)
+    batches[0]["turns"][1]["session_title"] = "Host\n" + SECRET + " " + "x" * 200
+    store = SessionImportStore(None)
+    result = await ingest_remote_batches(batches, source_machine="child", remote_stats=stats, store=store)
+    assert result.turns_imported == 2
+    rows = list(store._interactions.values())
+    assert rows[0]["metadata"]["session_title"] == "Title [REDACTED]"
+    assert rows[1]["metadata"]["session_title"].startswith("Host [REDACTED] ")
+    assert len(rows[1]["metadata"]["session_title"]) == 160
+    assert rows[1]["metadata"]["redacted"] and rows[1]["metadata"]["truncated"]
+    assert SECRET not in json.dumps(rows, default=str)
+
+
+def test_collection_normalizes_and_limits_title_before_transfer(tmp_path, monkeypatch):
+    from kotoyose.session_import import remote
+    from kotoyose.session_import.parsers import ClaudeSessionParser
+
+    path = history(tmp_path)
+    turns = ClaudeSessionParser().parse_file(path)
+    turns[0].prompt = "q"
+    turns[0].session_title = "Title\n" + SECRET + " " + "x" * 200
+
+    class Parser:
+        def parse_file(self, path):
+            return turns
+
+    monkeypatch.setattr(remote, "get_parser", lambda kind: Parser())
+    batches, stats = collect_local_batches(allowed_sources=["claude"], home=tmp_path)
+    turn = batches[0]["turns"][0]
+    assert turn["session_title"].startswith("Title [REDACTED] ")
+    assert len(turn["session_title"]) == 160
+    assert turn["redacted"] and turn["truncated"]
+    assert stats["redactions_count"] == stats["truncations_count"] == 1
