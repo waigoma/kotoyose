@@ -159,3 +159,18 @@ summary.card-head:focus-visible { outline-offset: -3px; }
   color: var(--positive);
   margin-right: 12px;
 }
+
+.unrestricted-review {
+  background: var(--page);
+  border: 1px solid var(--warning);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.unrestricted-review[hidden] { display: none; }
+.unrestricted-warning { color: var(--text); overflow-wrap: anywhere; }
+.declaration-step { width: 100%; color: var(--text-3); }

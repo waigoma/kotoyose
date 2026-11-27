@@ -1,5 +1,21 @@
 # Kotoyose の変更履歴
 
+## 1.4.2 (2026-11-28)
+
+子機向けのオプション CLI プロバイダー管理をワンクリック配信・Web UI フォームビルダー・全製品共通のバージョン更新（SHA-256 自動計算）へ刷新し、Grok Build に加えて Antigravity / Cursor の同梱プリセットと `tar.gz` 展開に対応しました。あわせて子機の不要なブラウザー自動起動の抑止と承認画面の UI を改善しています。
+
+### オプション CLI プロバイダー管理の刷新（Host & `provider-data/1`）
+
+- **同梱プリセット 3 種をワンクリック配信**: Grok Build (`linux-x64` / `windows-x64`)、Antigravity (`agy-cli`, `linux-x64`)、Cursor (`cursor-cli`, `linux-x64`) をパッケージに同梱し、管理コンソールの **Providers → Optional CLI providers for children** からワンクリックで子機へ配信・更新・削除できるようにしました (`GET /admin/provider-declarations` `bundled`、`POST /admin/provider-declarations/bundled/{provider}`)。
+- **Web UI フォームビルダー & JSON エディタ**: 生の JSON ファイルアップロードだけでなく、複数テンプレート選択・2 列フォーム入力（`tar.gz` レイアウトやドライバに応じた条件付き表示）・同期 JSON エディタ・`.json` インポートをダークテーマ統一 UI で提供します。
+- **全製品共通の `Bump version`（SHA-256 自動計算）**: 各プロバイダー行の **Bump version** から新バージョンを指定すると、宣言済みの公式 `download_hosts` から各 OS の成果物を安全取得して SHA-256 を自動計算し、検証済み JSON をプレビューまたは即時反映できます (`POST /admin/provider-declarations/{provider}/bump-version`)。
+- **`tar.gz` アーカイブ展開対応**: `kotoyose.provider-data/1` で単一ファイル抽出 (`member`) とディレクトリバンドル (`directory` + `entrypoint`) の両方を上限・パス検証・展開後ハッシュ検証付きでサポートしました。
+
+### 子機アプリのブラウザー自動起動抑止と Providers UI 改善
+
+- **バックグラウンド重複起動の静音化 & オープン理由ログ**: `kotoyose-child-background.exe` が `--open-settings` なしで重複起動された場合は既存プロセスにブラウザーを開かせず静かに終了するようにし、設定画面を開いた理由を `child.log` (`settings opened (...)`) へ記録するようにしました。
+- **子機 Providers UI 修正**: `Review unrestricted approval` の警告・確認チェック・承認／キャンセルボタンを専用の縦組みパネルに整理してエラー時の固まりを修正し、現在 OS 非対応の宣言（Windows 上の Linux 専用プリセット等）は空カードではなく `Not available on this child` へ分類するようにしました。各宣言カードには 4 段階の手順ガイドを表示します。
+
 ## 1.4.1 (2026-11-27)
 
 1.4.0 の実機運用で判明した Windows 子機の更新・インストーラー互換性の修正に加え、Codex の圧縮済み履歴 (`.jsonl.zst`) の取り込み、管理コンソールの会話タイトル表示・手動リネーム、サーバー側全件検索に対応しました。

@@ -1,0 +1,70 @@
+{
+  "schema": "kotoyose.provider-data/1",
+  "driver": {
+    "id": "cli.acp",
+    "contract_version": 1
+  },
+  "connection_kinds": [
+    "subscription"
+  ],
+  "acp": {
+    "argv": [
+      "acp"
+    ],
+    "placeholders": []
+  },
+  "identity": {
+    "id": "cursor-cli",
+    "profile_id": "cursor-cli",
+    "display_name": "Cursor",
+    "publisher": "Cursor"
+  },
+  "platforms": {
+    "linux-x64": {
+      "max_capability": "read",
+      "install": {
+        "version": "2026.11.19-f005e9d",
+        "urls": [
+          "https://downloads.cursor.com/lab/2026.11.19-f005e9d/linux/x64/agent-cli-package.tar.gz"
+        ],
+        "sha256": "a25986eaf0c9330aeeec599a139711cb9f267c64562d073a72b751edf5161695",
+        "format": "tar.gz",
+        "binary": "agent",
+        "directory": "dist-package",
+        "entrypoint": "cursor-agent"
+      }
+    }
+  },
+  "network": {
+    "download_hosts": [
+      "downloads.cursor.com"
+    ],
+    "login_hosts": [
+      "cursor.com",
+      "authenticate.cursor.sh",
+      "prod.authentication.cursor.sh",
+      "authentication.cursor.sh"
+    ],
+    "runtime_hosts": [
+      "api2.cursor.sh",
+      "agentn.global.api5.cursor.sh"
+    ]
+  },
+  "operations": {
+    "login": {
+      "argv": [
+        "login"
+      ],
+      "flow": "browser_wait",
+      "timeout_seconds": 300
+    },
+    "status": {
+      "argv": [
+        "status",
+        "--format",
+        "json"
+      ],
+      "timeout_seconds": 15
+    }
+  }
+}

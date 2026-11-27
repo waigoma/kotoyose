@@ -7,12 +7,14 @@ from contextlib import ExitStack
 import ctypes
 import errno
 import hashlib
+from io import BytesIO
 import json
 import os
 import socket
 import stat
 import subprocess
 import sys
+import tarfile
 import time
 from pathlib import Path
 from textwrap import dedent
@@ -1991,3 +1993,289 @@ def test_isolated_grok_accepts_a_user_private_group(tmp_path, monkeypatch):
     with ExitStack() as leases:
         env = acp_data_env(row, tmp_path / "child", leases)
         assert env["GROK_HOME"] == str(grok_home)
+
+
+def test_bundled_provider_bytes_and_owner_api(monkeypatch):
+    from kotoyose.provider_data_host import bundled_declaration_bytes, bundled_declarations
+
+    raw = (Path(__file__).resolve().parents[1] / "examples/provider-declarations/grok-build.json").read_bytes()
+    assert bundled_declaration_bytes("grok-build") == raw
+    assert any(row.id == "grok-build" for row in bundled_declarations())
+    with pytest.raises(FileNotFoundError):
+        bundled_declaration_bytes("../grok-build")
+    monkeypatch.setattr("kotoyose.auth.API_KEY", "owner-secret")
+    monkeypatch.setattr("kotoyose.auth.BASIC_AUTH_USER", "owner-name")
+    endpoint = "/admin/provider-declarations/bundled/grok-build"
+    csrf = {"X-Kotoyose-Admin": "1", "Origin": "http://testserver"}
+    with TestClient(app) as client:
+        assert client.post(endpoint).status_code == 401
+        assert client.post(endpoint, headers={"Authorization": "Bearer owner-secret"}).status_code == 401
+        client.auth = ("owner-name", "owner-secret")
+        preset = next(row for row in client.get("/admin/provider-declarations").json()["bundled"] if row["id"] == "grok-build")
+        assert preset["id"] == "grok-build"
+        assert preset["installed"] is False
+        assert preset["document"].encode() == raw
+        assert client.post(endpoint).status_code == 403
+        response = client.post(endpoint, headers=csrf)
+        assert response.status_code == 200
+        preset = next(row for row in response.json()["bundled"] if row["id"] == "grok-build")
+        assert preset["installed"] is True
+        assert preset["up_to_date"] is True
+        assert response.json()["declarations"][0]["document"].encode() == raw
+        assert response.json()["declarations"][0]["platforms"]
+        assert client.post("/admin/provider-declarations/bundled/missing", headers=csrf).status_code == 404
+
+
+@pytest.mark.parametrize("provider", ["grok-build", "agy-cli", "cursor-cli"])
+def test_all_bundled_presets_match_examples(provider):
+    from kotoyose.provider_data_host import bundled_declaration_bytes, bundled_declarations
+
+    raw = (_GROK_DECLARATION.parent / f"{provider}.json").read_bytes()
+    assert bundled_declaration_bytes(provider) == raw
+    row = parse_declaration(raw)
+    assert row.id == provider
+    assert len(validate_catalog(bundled_declarations())) == 3
+    if provider != "grok-build":
+        assert row.acp.argv == ("acp",)
+        assert next(command for command in row.commands("linux-x64") if command["operation"] == "acp")["placeholders"] == {}
+    if provider == "agy-cli":
+        assert row.login_flow == "paste_code"
+        assert row.login.code_prompt_pattern == r"(?i)paste the authorization code"
+        assert row.login.matches_status(0, {"status": "SUCCESS"})
+        assert not row.login.matches_status(0, {"status": "FAILURE"})
+
+
+def _archive_declaration(layout, bad_member=None):
+    executable = b"#!/bin/sh\necho 1.0.0\n"
+    stream = BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
+        files = [("vendor/fake", executable, 0o755)] if layout == "member" else [
+            ("dist/bin/fake", executable, 0o755), ("dist/lib/data", b"resource", 0o644),
+            ("dist/helper", b"helper", 0o755),
+        ]
+        for name, content, mode in files:
+            member = tarfile.TarInfo(name)
+            member.mode, member.size = mode, len(content)
+            archive.addfile(member, BytesIO(content))
+        if bad_member:
+            member = tarfile.TarInfo("../escaped" if bad_member == "traversal" else "dist/link")
+            if bad_member == "symlink":
+                member.type, member.linkname = tarfile.SYMTYPE, "/etc/passwd"
+            archive.addfile(member)
+    payload = stream.getvalue()
+    doc = json.loads(_declaration(platform_key()))
+    pin = doc["platforms"][platform_key()]["install"]
+    pin.update(format="tar.gz", sha256=hashlib.sha256(payload).hexdigest())
+    pin.update({"member": "vendor/fake"} if layout == "member" else {"directory": "dist", "entrypoint": "bin/fake"})
+    return json.dumps(doc).encode(), payload, executable
+
+
+@pytest.mark.parametrize("layout", ["member", "directory"])
+@pytest.mark.parametrize("method", ["local", "stream", "download"])
+def test_archive_install_integrity_and_permissions(tmp_path, monkeypatch, layout, method):
+    raw, payload, executable = _archive_declaration(layout)
+    row = parse_declaration(raw)
+    upload_declaration(raw)
+    home = _child_home(tmp_path / "child")
+    store_offers(home, _FINGERPRINT, [row.offer()])
+    approve(home, row.id, sha256=row.sha256)
+    assert preview(home)["offers"][0]["can_install"] is True
+    if method == "local":
+        source = tmp_path / "artifact.tar.gz"
+        source.write_bytes(payload)
+        path = install_local(row, source, child_home=home)
+    elif method == "stream":
+        path = provider_data_runtime.install_stream(row, BytesIO(payload), child_home=home, source="test")
+    else:
+        async def fetch(urls, hosts, output):
+            output.write(payload)
+            output.seek(0)
+            return urls[0]
+
+        monkeypatch.setattr(provider_data_download, "_fetch", fetch)
+        provider_data_download.install_download(row, child_home=home)
+        path = installed_path(row, home)
+    assert installed_path(row, home) == path
+    assert path.read_bytes() == executable
+    release = path.parent if layout == "member" else path.parent.parent
+    assert not (release / "artifact.part").exists()
+    manifest = json.loads((release / "manifest.json").read_bytes())
+    assert manifest["artifact"] == "sha256:" + hashlib.sha256(payload).hexdigest()
+    assert manifest["executable"] == hashlib.sha256(executable).hexdigest()
+    assert manifest["version"] == "1.0.0"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o500
+    if layout == "directory":
+        assert stat.S_IMODE((release / "lib").stat().st_mode) == 0o700
+        assert stat.S_IMODE((release / "lib/data").stat().st_mode) == 0o400
+        assert stat.S_IMODE((release / "helper").stat().st_mode) == 0o500
+    path.chmod(0o700)
+    path.write_bytes(b"modified")
+    path.chmod(0o500)
+    assert installed_path(row, home) is None
+
+
+@pytest.mark.parametrize("layout", ["member", "directory"])
+@pytest.mark.parametrize("bad_member", ["traversal", "symlink"])
+def test_archive_rejects_unsafe_members(tmp_path, layout, bad_member):
+    raw, payload, _ = _archive_declaration(layout, bad_member)
+    row = parse_declaration(raw)
+    upload_declaration(raw)
+    home = _child_home(tmp_path / "child")
+    store_offers(home, _FINGERPRINT, [row.offer()])
+    approve(home, row.id, sha256=row.sha256)
+    with pytest.raises(ValueError, match="Unsafe"):
+        provider_data_runtime.install_stream(row, BytesIO(payload), child_home=home, source="test")
+    assert installed_path(row, home) is None
+
+
+@pytest.mark.parametrize("layout", [
+    {"format": "raw", "member": "binary"},
+    {"format": "tar.gz"},
+    {"format": "tar.gz", "directory": "dist"},
+    {"format": "tar.gz", "directory": "dist", "entrypoint": "../binary"},
+    {"format": "tar.gz", "directory": "dist", "entrypoint": "binary", "member": "binary"},
+])
+def test_archive_schema_rejects_invalid_layout(layout):
+    doc = json.loads(_declaration())
+    doc["platforms"]["linux-x64"]["install"].update(layout)
+    with pytest.raises(ValueError):
+        parse_declaration(json.dumps(doc).encode())
+
+
+async def _bump_fetch(urls, hosts, output):
+    assert all(url.startswith("https://") for url in urls)
+    output.write(b"new distribution")
+    output.seek(0)
+    return urls[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["grok-build", "agy-cli", "cursor-cli"])
+async def test_bump_version_all_products(provider):
+    from kotoyose.provider_data_bump import bump_declaration_version
+    from kotoyose.provider_data_host import bundled_declaration_bytes
+
+    document = bundled_declaration_bytes(provider).decode()
+    result = await bump_declaration_version(document, "2.0.0", fetcher=_bump_fetch)
+    updated = parse_declaration(result["document"].encode())
+    assert updated.install.version == result["version"] == "2.0.0"
+    assert updated.sha256 == result["sha256"]
+    assert "native_skill_layout" not in json.loads(result["document"])
+    for platform in result["platforms"]:
+        assert all("2.0.0" in url for url in platform["urls"])
+        assert platform["sha256"] == hashlib.sha256(b"new distribution").hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_bump_overrides_and_validation():
+    from kotoyose.provider_data_bump import bump_declaration_version
+
+    document = _declaration().decode()
+    fetcher = AsyncMock(side_effect=_bump_fetch)
+    with pytest.raises(ValueError, match="override required"):
+        await bump_declaration_version(document, "2.0.0", fetcher=fetcher)
+    with pytest.raises(ValueError, match="declared host"):
+        await bump_declaration_version(document, "2.0.0", url_overrides={"linux-x64": ["https://evil.com/cli"]}, fetcher=fetcher)
+    for version in ("latest", "1.2", "1.2.3/evil", None):
+        with pytest.raises(ValueError, match="version"):
+            await bump_declaration_version(document, version, fetcher=fetcher)
+    fetcher.assert_not_called()
+    result = await bump_declaration_version(
+        document, "2.0.0", url_overrides={"linux-x64": ["https://example.com/new-cli"]}, fetcher=fetcher,
+    )
+    assert result["platforms"][0]["urls"] == ["https://example.com/new-cli"]
+
+
+def test_bump_version_api_preview_apply_and_owner_security(monkeypatch):
+    monkeypatch.setattr("kotoyose.auth.API_KEY", "owner-secret")
+    monkeypatch.setattr("kotoyose.auth.BASIC_AUTH_USER", "owner-name")
+    fetcher = AsyncMock(side_effect=_bump_fetch)
+    monkeypatch.setattr(provider_data_download, "_fetch", fetcher)
+    endpoint = "/admin/provider-declarations/agy-cli/bump-version"
+    csrf = {"X-Kotoyose-Admin": "1", "Origin": "http://testserver"}
+    with TestClient(app) as client:
+        assert client.post(endpoint, json={"version": "2.0.0"}).status_code == 401
+        assert client.post(endpoint, headers={"Authorization": "Bearer owner-secret"}, json={"version": "2.0.0"}).status_code in (401, 403)
+        client.auth = ("owner-name", "owner-secret")
+        assert client.post(endpoint, json={"version": "2.0.0"}).status_code == 403
+        fetcher.assert_not_called()
+        response = client.post(endpoint, headers=csrf, json={"version": "2.0.0"})
+        assert response.status_code == 200, response.text
+        assert response.json()["applied"] is False
+        assert not host_catalog().rows
+        response = client.post(endpoint, headers=csrf, json={"version": "2.0.0", "apply": True})
+        assert response.status_code == 200, response.text
+        assert response.json()["applied"] is True
+        assert response.json()["catalog"]["declarations"][0]["sha256"] == response.json()["sha256"]
+        assert host_catalog().rows[0].install.version == "2.0.0"
+        # 同梱版ではなく、適用済みの版から URL を更新する。
+        response = client.post(endpoint, headers=csrf, json={"version": "3.0.0"})
+        assert response.status_code == 200
+        assert "3.0.0" in response.json()["platforms"][0]["urls"][0]
+        count = fetcher.call_count
+        assert client.post(endpoint, headers=csrf, json={
+            "version": "2.0.0", "url_overrides": {"linux-x64": ["https://evil.com/artifact"]},
+        }).status_code == 422
+        assert client.post(endpoint, headers=csrf, json={"version": "latest"}).status_code == 422
+        assert client.post(endpoint, headers=csrf, json={"version": "2.0.0", "apply": "false"}).status_code == 422
+        assert client.post("/admin/provider-declarations/missing/bump-version", headers=csrf, json={"version": "2.0.0"}).status_code == 404
+        assert fetcher.call_count == count
+        fetcher.side_effect = provider_data_download.DownloadError("offline")
+        assert client.post(endpoint, headers=csrf, json={"version": "3.0.0"}).status_code == 422
+    monkeypatch.setattr("kotoyose.auth.API_KEY", None)
+    with TestClient(app) as client:
+        assert client.post(endpoint, headers=csrf, json={"version": "2.0.0"}).status_code == 403
+
+
+@pytest.mark.parametrize("layout", ["member", "directory"])
+def test_archive_pin_is_checked_before_extraction(tmp_path, monkeypatch, layout):
+    raw, payload, _ = _archive_declaration(layout)
+    row = parse_declaration(raw)
+    home = _child_home(tmp_path / "child")
+    store_offers(home, _FINGERPRINT, [row.offer()])
+    approve(home, row.id, sha256=row.sha256)
+    extract = Mock(side_effect=AssertionError("extraction ran before pin verification"))
+    monkeypatch.setattr(provider_data_runtime, "_extract_archive", extract)
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        provider_data_runtime.install_stream(row, BytesIO(payload + b"corrupt"), child_home=home, source="test")
+    extract.assert_not_called()
+
+
+@pytest.mark.parametrize("layout", ["member", "directory"])
+def test_archive_detects_version_check_modification(tmp_path, monkeypatch, layout):
+    raw, payload, _ = _archive_declaration(layout)
+    row = parse_declaration(raw)
+    home = _child_home(tmp_path / "child")
+    store_offers(home, _FINGERPRINT, [row.offer()])
+    approve(home, row.id, sha256=row.sha256)
+
+    def run(binary, *args, **kwargs):
+        binary.chmod(0o700)
+        binary.write_bytes(b"changed during version check")
+        binary.chmod(0o500)
+        return subprocess.CompletedProcess([], 0, b"1.0.0", b"")
+
+    monkeypatch.setattr(provider_data_runtime, "_run", run)
+    with pytest.raises(ValueError, match="changed during"):
+        provider_data_runtime.install_stream(row, BytesIO(payload), child_home=home, source="test")
+    assert installed_path(row, home) is None
+
+
+@pytest.mark.parametrize("field,value", [
+    ("executable", None), ("executable", "short"), ("executable", "a" * 64),
+    ("artifact", "sha256:" + "a" * 64), ("version", "9.0.0"),
+])
+def test_archive_manifest_integrity(tmp_path, field, value):
+    from kotoyose.provider_data_storage import atomic_write
+
+    raw, payload, _ = _archive_declaration("directory")
+    row = parse_declaration(raw)
+    home = _child_home(tmp_path / "child")
+    store_offers(home, _FINGERPRINT, [row.offer()])
+    approve(home, row.id, sha256=row.sha256)
+    path = provider_data_runtime.install_stream(row, BytesIO(payload), child_home=home, source="test")
+    manifest = path.parent.parent / "manifest.json"
+    record = json.loads(manifest.read_bytes())
+    record[field] = value
+    atomic_write(manifest, json.dumps(record).encode(), child=True)
+    assert installed_path(row, home) is None

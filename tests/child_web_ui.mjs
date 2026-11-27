@@ -96,7 +96,9 @@ function browser(reply, confirm = () => false) {
   };
   let timerId = 0;
 
-  runInNewContext(script + providersScript, {
+  const testViews = {};
+  runInNewContext(script + providersScript + "\ntestViews.declarations = declarationCards;", {
+    testViews,
     document,
     window: { confirm },
     location,
@@ -136,6 +138,7 @@ function browser(reply, confirm = () => false) {
 
   return {
     elements, intervals, location, requests, timeouts,
+    declarations: testViews.declarations,
     showWorkspace: () => select('workspace'),
     showProviders: () => select('providers'),
     showConnection: () => select('connection'),
@@ -1084,6 +1087,53 @@ test('a stored catalog error is shown and a matching declaration replaces its bu
   assert.equal(notice.querySelectorAll('h2').length, 0);
 });
 
+for (const displayName of ['Grok Build', '  gRoK bUiLd  ']) {
+  test(`a host offer named "${displayName}" hides only the matching unavailable built-in`, async () => {
+    const providers = [
+      { id: 'grok', name: 'Grok Build' },
+      { id: 'antigravity', name: 'Antigravity' },
+      { id: 'cursor', name: 'Cursor' },
+    ].map((provider) => ({
+      ...provider, initial: 'G', tone: 'cli', driver: 'cli.acp',
+      packages: [], aliases: [], quota: false,
+    }));
+    const ui = browser(({ path }) => {
+      if (path === '/api/session') return [200, { token: 'session-token' }];
+      if (path === '/api/status') return [200, status];
+      if (path === '/api/policy') return [200, policyRead()];
+      if (path === '/api/components') return [200, {
+        providers,
+        installed: providers.map(({ id }) => ({
+          id, packages: {}, system_cli: false, bundled_cli: false,
+          choice: 'bundled', turns_supported: false, sdk_importable: false,
+          managed_available: false,
+        })),
+        can_manage_packages: true, needs_reinstall: [],
+      }];
+      if (path === '/api/provider-declarations') return [200, {
+        offers: [{
+          id: 'grok-build', display_name: displayName, capability: 'read',
+          sha256: 'cd'.repeat(32), status: 'pending',
+        }],
+      }];
+      assert.fail(path);
+    });
+    await flush();
+    ui.showProviders();
+    await flush();
+    const rows = ui.elements.get('component-rows');
+    assert.deepEqual(rows.querySelectorAll('article').map((card) =>
+      card.querySelectorAll('h2')[0].textContent), [displayName]);
+    const unavailable = rows.querySelectorAll('details')
+      .find((node) => node.className === 'unavailable-providers');
+    assert.match(unavailable.querySelectorAll('summary')[0].textContent, /Not available on this child/);
+    const names = unavailable.querySelectorAll('li').map((node) => node.textContent);
+    assert.equal(names.some((name) => /Grok Build/i.test(name)), false);
+    assert.ok(names.some((name) => /Antigravity/.test(name)));
+    assert.ok(names.some((name) => /Cursor/.test(name)));
+  });
+}
+
 test('host declarations render only the validated preview for this machine', async () => {
   const poisoned = JSON.stringify({
     identity: { display_name: 'Spoofed', publisher: 'Other OS' },
@@ -1105,6 +1155,7 @@ test('host declarations render only the validated preview for this machine', asy
         host_fingerprint: 'ab'.repeat(32),
         offers: [{
           id: 'fake-cli',
+          capability: 'read',
           sha256: 'cd'.repeat(32),
           status: 'pending',
           document: poisoned,
@@ -1616,4 +1667,68 @@ test('Workspace edits and saves session history collection sources and origin la
   const reloaded = ui.elements.get('session-import-sources').querySelectorAll('input');
   assert.equal(reloaded.every((box) => box.checked), true);
   assert.equal(ui.elements.get('session-import-origin-hint').value, 'personal');
+});
+
+
+test('unrestricted review groups controls, cancels and recovers from confirmation errors', async () => {
+  let attempts = 0;
+  const ui = browser(({ path }) => {
+    if (path === '/api/session') return [200, { token: 'session-token' }];
+    if (path === '/api/status') return [200, status];
+    if (path === '/api/components') return [200, emptyComponents];
+    if (path === '/api/policy') return [200, policyRead()];
+    if (path === '/api/provider-declarations') return [200, { offers: [{
+      id: 'grok-build', capability: 'unrestricted', status: 'pending', sha256: 'ab',
+    }] }];
+    assert.equal(path, '/api/provider-declarations/grok-build/confirmation');
+    if (++attempts === 1) return [500, { error: 'Confirmation unavailable' }];
+    return [200, { nonce: 'fresh', warning: 'Runs with your rights.' }];
+  });
+  await flush();
+  const card = () => ui.elements.get('component-rows').querySelectorAll('article')[0];
+  const panel = () => card().querySelectorAll('div').find((node) => node.className === 'unrestricted-review');
+  assert.equal(panel().hidden, true);
+  await findButton(card(), 'Review unrestricted approval').listeners.get('click')();
+  assert.match(cardResult(card()).textContent, /Confirmation unavailable/);
+  assert.equal(Boolean(ui.declarations.get('grok-build').confirming), false);
+  await findButton(card(), 'Review unrestricted approval').listeners.get('click')();
+  const review = panel();
+  assert.equal(review.hidden, false);
+  assert.equal(review.querySelectorAll('p')[0].className, 'unrestricted-warning');
+  assert.equal(review.querySelectorAll('p')[0].textContent, 'Runs with your rights.');
+  const checkbox = review.querySelectorAll('input')[0];
+  const approve = findButton(review, 'Approve unrestricted');
+  assert.equal(approve.parentElement.className, 'actions');
+  checkbox.checked = true;
+  checkbox.onchange();
+  assert.equal(approve.disabled, false);
+  await findButton(review, 'Cancel').listeners.get('click')();
+  assert.equal(review.hidden, true);
+  assert.equal(checkbox.checked, false);
+  assert.equal(approve.disabled, true);
+  await findButton(card(), 'Review unrestricted approval').listeners.get('click')();
+  assert.equal(panel().hidden, false);
+  assert.equal(attempts, 3);
+});
+
+for (const matched of [true, false]) test(`unsupported declaration is unavailable (matched built-in: ${matched})`, async () => {
+  const ui = browser(({ path }) => {
+    if (path === '/api/session') return [200, { token: 'session-token' }];
+    if (path === '/api/status') return [200, status];
+    if (path === '/api/policy') return [200, policyRead()];
+    if (path === '/api/components') return [200, { ...emptyComponents, providers: matched ? [{
+      id: 'cursor', name: 'Cursor', driver: 'cli.print', packages: [], aliases: [],
+    }] : [] }];
+    if (path === '/api/provider-declarations') return [200, { offers: [{
+      id: 'cursor-cli', profile_id: 'cursor', display_name: 'Cursor',
+      capability: null, platform: 'windows-x64', status: 'pending',
+    }] }];
+    assert.fail(path);
+  });
+  await flush();
+  const rows = ui.elements.get('component-rows');
+  assert.equal(rows.querySelectorAll('article').length, 0);
+  const group = rows.querySelectorAll('details').find((node) => node.className === 'unavailable-providers');
+  assert.equal(group.querySelectorAll('summary')[0].textContent, 'Not available on this child');
+  assert.deepEqual(group.querySelectorAll('li').map((node) => node.textContent), ['Cursor — Not available on windows-x64.']);
 });

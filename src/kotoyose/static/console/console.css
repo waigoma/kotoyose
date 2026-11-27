@@ -1830,3 +1830,22 @@ p.card-body.muted {
   text-align: left;
   overflow-wrap: anywhere;
 }
+
+/* Optional provider declarations */
+.decl-item { align-items: flex-start; flex-wrap: wrap; }
+.decl-main { flex: 1 1 280px; gap: 8px; overflow-wrap: anywhere; }
+.decl-main .candidate-title { flex-wrap: wrap; }
+.decl-item .candidate-actions { flex-wrap: wrap; max-width: 100%; }
+.decl-details { color: var(--text-2); font-size: 13px; }
+.decl-details summary { color: var(--text-3); cursor: pointer; }
+.decl-details summary:hover { color: var(--text); }
+.decl-details p, .decl-details li { overflow-wrap: anywhere; }
+.decl-details h4 { margin: 12px 0 4px; font-size: 12px; font-weight: 500; }
+.decl-details ul { margin: 0; padding-left: 18px; }
+.decl-builder { min-width: 0; }
+#data-declarations > .card-head { flex-wrap: wrap; align-items: center; }
+
+.decl-bump { margin-top: 8px; display: grid; gap: 8px; }
+.decl-bump[hidden] { display: none; }
+.decl-bump .form-actions { flex-wrap: wrap; }
+.decl-template-select { height: 28px; min-width: 0; width: auto; max-width: 240px; padding: 2px 8px; background: var(--raised); color: var(--text); }

@@ -94,7 +94,9 @@ impl Listener {
                             stop.send_replace(true);
                             let _ = socket.send_to(quit_ack.as_ref(), addr).await;
                         } else if bool::from(buf[..size].ct_eq(open.as_ref()))
-                            && commands.try_send(Request::Open).is_ok()
+                            && commands
+                                .try_send(Request::Open("duplicate_instance"))
+                                .is_ok()
                         {
                             let _ = socket.send_to(open_ack.as_ref(), addr).await;
                         }
@@ -125,12 +127,21 @@ impl Drop for Primary {
 }
 
 pub fn claim(home: &Path) -> Result<Option<(Primary, Listener)>> {
+    claim_with_open(home, true)
+}
+
+/// 主インスタンスを取得し、既存なら open_existing に応じて設定画面を要求する。
+/// 既存インスタンスがある場合は None、ロックや通知に失敗した場合はエラーを返す。
+pub fn claim_with_open(home: &Path, open_existing: bool) -> Result<Option<(Primary, Listener)>> {
     state::private_dir(home).context("cannot create child state directory")?;
     let path = home.join("instance.endpoint");
     let deadline = Instant::now() + OPEN_TIMEOUT;
     loop {
         if let Some(lock) = state::lock(home)? {
             return Primary::start(path, lock).map(Some);
+        }
+        if !open_existing {
+            return Ok(None);
         }
         let next = Instant::now() + RETRY;
         if let Ok(endpoint) = state::read_json::<Endpoint>(&path)
@@ -200,7 +211,10 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(matches!(requests.try_recv().unwrap(), Request::Open));
+        assert!(matches!(
+            requests.try_recv().unwrap(),
+            Request::Open("duplicate_instance")
+        ));
         assert!(!*stopping.borrow());
         listener.abort();
         let _ = listener.await;
@@ -209,11 +223,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn duplicate_background_claim_is_silent_but_explicit_open_is_forwarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_primary, listener) = claim_with_open(dir.path(), false).unwrap().unwrap();
+        let (send, mut requests) = mpsc::channel(1);
+        let (stop, _stopping) = watch::channel(false);
+        let listener = listener.listen(send, stop).unwrap();
+        assert!(claim_with_open(dir.path(), false).unwrap().is_none());
+        assert!(tokio::time::timeout(RETRY, requests.recv()).await.is_err());
+        let home = dir.path().to_owned();
+        assert!(
+            tokio::task::spawn_blocking(move || claim_with_open(&home, true))
+                .await
+                .unwrap()
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            requests.try_recv().unwrap(),
+            Request::Open("duplicate_instance")
+        ));
+        listener.abort();
+        let _ = listener.await;
+    }
+
+    #[tokio::test]
     async fn quit_signals_with_a_full_command_queue_and_waits_for_unlock() {
         let dir = tempfile::tempdir().unwrap();
         let (primary, listener) = claim(dir.path()).unwrap().unwrap();
         let (send, _requests) = mpsc::channel(1);
-        send.try_send(Request::Open).unwrap();
+        send.try_send(Request::Open("test")).unwrap();
         let (stop, mut stopping) = watch::channel(false);
         let listener = listener.listen(send, stop).unwrap();
 

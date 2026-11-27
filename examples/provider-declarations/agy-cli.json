@@ -1,0 +1,73 @@
+{
+  "schema": "kotoyose.provider-data/1",
+  "driver": {
+    "id": "cli.acp",
+    "contract_version": 1
+  },
+  "connection_kinds": [
+    "subscription"
+  ],
+  "acp": {
+    "argv": [
+      "acp"
+    ],
+    "placeholders": []
+  },
+  "identity": {
+    "id": "agy-cli",
+    "profile_id": "agy-cli",
+    "display_name": "Antigravity",
+    "publisher": "Google"
+  },
+  "platforms": {
+    "linux-x64": {
+      "max_capability": "read",
+      "install": {
+        "version": "1.5.13",
+        "urls": [
+          "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.13-5999302598852608/linux-x64/cli_linux_x64.tar.gz"
+        ],
+        "sha256": "7fa9cc6df0d09562693d637c406a86c1b0f52ab3364714b1fd2d79cc6060d4b2",
+        "format": "tar.gz",
+        "binary": "agy",
+        "member": "antigravity"
+      }
+    }
+  },
+  "network": {
+    "download_hosts": [
+      "storage.googleapis.com"
+    ],
+    "login_hosts": [
+      "accounts.google.com"
+    ],
+    "runtime_hosts": [
+      "daily-cloudcode-pa.googleapis.com",
+      "aicode.googleapis.com",
+      "www.googleapis.com",
+      "play.googleapis.com",
+      "lh3.googleusercontent.com"
+    ]
+  },
+  "operations": {
+    "login": {
+      "argv": [
+        "-p",
+        "/usage",
+        "--output-format",
+        "json"
+      ],
+      "flow": "paste_code",
+      "timeout_seconds": 60
+    },
+    "status": {
+      "argv": [
+        "-p",
+        "/usage",
+        "--output-format",
+        "json"
+      ],
+      "timeout_seconds": 30
+    }
+  }
+}

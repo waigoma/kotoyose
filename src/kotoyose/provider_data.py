@@ -45,10 +45,10 @@ _SHELL = re.compile(
     re.I,
 )
 _CREDENTIAL = re.compile(r"(?i)(api[_-]?key|token|secret|password|credential)")
-_ACP_ARGV = {("acp", "--model", "{model}"), GROK_ACP_READ_ARGV}
+_ACP_ARGV = {("acp",), ("acp", "--model", "{model}"), GROK_ACP_READ_ARGV}
 _ACP_WRITE_ARGV = {GROK_ACP_WRITE_ARGV}
-_LOGIN_ARGV = {("login",), ("login", "--device-auth")}
-_STATUS_ARGV = {("status",), ("login", "status"), ("models",)}
+_LOGIN_ARGV = {("-p", "/usage", "--output-format", "json"), ("login",), ("login", "--device-auth")}
+_STATUS_ARGV = {("status", "--format", "json"), ("-p", "/usage", "--output-format", "json"), ("status",), ("login", "status"), ("models",)}
 _PRINT_ARGV = {("--", "{prompt}"), ("--prompt={prompt}",)}
 _PROMPT_FLAG = re.compile(r"--[a-z0-9][a-z0-9-]*=\{prompt\}")
 
@@ -241,12 +241,16 @@ def _argv(value, allowed, placeholders):
 
 def _acp_commands(value) -> tuple[AcpSpec | None, AcpSpec | None, AcpSpec | None, str | None]:
     obj = _object(value, ("placeholders",), ("argv", "write_argv", "unrestricted_argv", "mcp_guard"))
-    if obj["placeholders"] != ["model"]:
-        raise ValueError("acp placeholders do not match the driver contract")
     read = AcpSpec(_argv(obj["argv"], _ACP_ARGV, {"{model}"})) if "argv" in obj else None
     write = AcpSpec(_argv(obj["write_argv"], _ACP_WRITE_ARGV, {"{model}"})) if "write_argv" in obj else None
     unrestricted = (AcpSpec(_argv(obj["unrestricted_argv"], {GROK_ACP_UNRESTRICTED_ARGV}, {"{model}"}))
                     if "unrestricted_argv" in obj else None)
+    model = any(spec is not None and "{model}" in spec.argv for spec in (read, write, unrestricted))
+    if not ((model and obj["placeholders"] == ["model"]) or (
+        read is not None and read.argv == ("acp",) and obj["placeholders"] == []
+        and "write_argv" not in obj and "unrestricted_argv" not in obj
+    )):
+        raise ValueError("acp placeholders do not match the driver contract")
     guard = obj.get("mcp_guard")
     if "mcp_guard" in obj and guard != GROK_MCP_GUARD:
         raise ValueError("unsupported ACP mcp_guard")
@@ -265,16 +269,21 @@ def _login_operations(operations, hosts):
     login_argv = _argv(login["argv"], _LOGIN_ARGV, ())
     status_argv = _argv(status["argv"], _STATUS_ARGV, ())
     flow = login.get("flow", "browser_wait")
-    if flow != "browser_wait" and (flow != "device_code" or login_argv != ("login", "--device-auth") or not hosts):
+    paste = flow == "paste_code" and login_argv == ("-p", "/usage", "--output-format", "json") and bool(hosts)
+    if flow != "browser_wait" and not paste and (flow != "device_code" or login_argv != ("login", "--device-auth") or not hosts):
         raise ValueError("unsupported declaration login flow")
     signed_out = status.get("signed_out_pattern")
     if signed_out is not None and (status_argv != ("models",) or signed_out != GROK_SIGNED_OUT_PATTERN):
         raise ValueError("unsupported declaration signed-out pattern")
+    login_limit = 300 if flow == "device_code" or (
+        flow == "browser_wait" and login_argv == ("login",) and status_argv == ("status", "--format", "json")
+    ) else 120
     return PrintCliLoginSpec(
         command=login_argv, status_command=status_argv, url_pattern=DEVICE_LOGIN_URL_PATTERN, url_hosts=hosts,
         user_code_pattern=GROK_DEVICE_CODE_PATTERN if flow == "device_code" else None,
-        success_json_field=None, signed_out_pattern=signed_out,
-        cli_timeout_seconds=_timeout("login", login["timeout_seconds"], 300 if flow == "device_code" else 120),
+        code_prompt_pattern=r"(?i)paste the authorization code" if paste else None,
+        success_json_field="status" if paste else None, signed_out_pattern=signed_out,
+        cli_timeout_seconds=_timeout("login", login["timeout_seconds"], login_limit),
     ), flow, _timeout("status", status["timeout_seconds"], 120)
 
 
@@ -368,7 +377,7 @@ class Declaration:
         if acp is not None:
             rows.append({
                 "operation": "acp", "argv": [binary, *acp.argv],
-                "placeholders": {"model": "child-validated model id"},
+                "placeholders": {"model": "child-validated model id"} if "{model}" in acp.argv else {},
             })
         if self.acp_write is not None and row.supports("write"):
             rows.append({
@@ -476,9 +485,12 @@ def parse_declaration(raw: bytes) -> Declaration:
                 raise ValueError("Windows x64 requires unrestricted capability")
         elif key.startswith("windows-") or capability not in SANDBOX_CAPABILITIES:
             raise ValueError("unsupported capability for this platform")
-        pin = _object(row["install"], ("version", "urls", "sha256", "format", "binary"), ("member",))
+        pin = _object(row["install"], ("version", "urls", "sha256", "format", "binary"), ("member", "directory", "entrypoint"))
         kind = pin["format"]
-        if kind not in ("raw", "tar.gz") or ("member" in pin) != (kind == "tar.gz"):
+        layout = set(pin) & {"member", "directory", "entrypoint"}
+        if not ((kind == "raw" and not layout) or (
+            kind == "tar.gz" and layout in ({"member"}, {"directory", "entrypoint"})
+        )):
             raise ValueError("unsupported artifact layout")
         os_name, arch = key.split("-", 1)
         binary = identifier(pin["binary"]) if os_name != "windows" else _text(pin["binary"], 52)
@@ -490,6 +502,8 @@ def parse_declaration(raw: bytes) -> Declaration:
         artifact = CliArtifact(
             key, os_name, arch, _array(pin["urls"], lambda url: check_url(url, download), 4, 1),
             f"sha256:{digest(pin['sha256'])}", kind, _path(pin["member"]) if "member" in pin else None,
+            _path(pin["directory"]) if "directory" in pin else None,
+            _path(pin["entrypoint"]) if "entrypoint" in pin else None,
         )
         platforms.append(Platform(artifact, binary, capability))
         versions.add(_text(pin["version"], 64))

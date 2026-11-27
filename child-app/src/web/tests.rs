@@ -623,16 +623,28 @@ async fn desktop_opens_loopback_lazily_and_closes_on_exit() {
             assert!(notices.try_recv().is_err());
             assert!(!control.status().runner);
 
-            commands.send(Command::Open).await.unwrap();
+            commands.send(Command::Open("tray_menu")).await.unwrap();
             let url = match notices.recv().await.unwrap() {
                 crate::desktop::Notice::Browser(url) => url,
                 crate::desktop::Notice::Error(error) => panic!("{error}"),
             };
-            commands.send(Command::Open).await.unwrap();
+            commands
+                .send(Command::Open("duplicate_instance"))
+                .await
+                .unwrap();
             let other_url = match notices.recv().await.unwrap() {
                 crate::desktop::Notice::Browser(url) => url,
                 crate::desktop::Notice::Error(error) => panic!("{error}"),
             };
+            let logs = crate::local_log::tail(home.path()).unwrap();
+            assert!(
+                logs.iter()
+                    .any(|line| line.ends_with("settings opened (tray_menu)"))
+            );
+            assert!(
+                logs.iter()
+                    .any(|line| line.ends_with("settings opened (duplicate_instance)"))
+            );
             assert_ne!(url, other_url);
             let (address, token) = open_page(&url).await;
             let (other_address, other_token) = open_page(&other_url).await;

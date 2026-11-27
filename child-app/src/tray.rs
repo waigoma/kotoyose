@@ -323,7 +323,7 @@ fn pump(
                         show_error(messages::action_error(&message))
                     }
                     Event::Menu(Item::Show) => show_status(&state.status()),
-                    Event::Menu(Item::Settings) => send(commands, Request::Open),
+                    Event::Menu(Item::Settings) => send(commands, Request::Open("tray_menu")),
                     Event::Menu(Item::Logs) => {
                         if let Err(problem) = open_folder(&local_log::folder(home)) {
                             show_error(format!("{problem:#}"));
@@ -371,7 +371,13 @@ fn pump(
 pub fn run(background: bool) -> Result<()> {
     let _apartment = Apartment::enter();
     let home = state::home()?;
-    let Some((instance, listener)) = instance::claim(&home)? else {
+    let open_existing = !background
+        || std::env::args_os()
+            .nth(1)
+            .is_some_and(|arg| arg == "--open-settings")
+        || std::env::var_os(crate::update::OPEN_SETTINGS).as_deref()
+            == Some(std::ffi::OsStr::new("1"));
+    let Some((instance, listener)) = instance::claim_with_open(&home, open_existing)? else {
         return Ok(());
     };
     let (mailbox, receiver) = Mailbox::new()?;

@@ -245,18 +245,24 @@ function renderDeclarationPrimary(entry, offer) {
   entry.loginButton = null;
   const endpoint = `provider-declarations/${offer.id}`;
   const step = declarationStep(offer);
+  const hint = offer.capability && !(savedPolicy?.adapters.includes(offer.id) ?? false)
+    ? text.declarationStep(step) || (offer.status === 'approved' && offer.installed && offer.local_login
+      ? text.declarationCheckingLogin : '') : '';
+  if (hint) primary.append(textLine('p', 'hint declaration-step', hint));
   if (step === 'review') {
     primary.append(primaryButton(text.reviewApproval, () => entry.run(
       () => api(endpoint, { sha256: offer.sha256, capability: 'read' }), text.declarationApproved)));
   } else if (step === 'review-unrestricted') {
     let nonce;
-    const warning = textLine('p', '', '');
+    const reviewPanel = element('div', 'unrestricted-review');
+    const warning = textLine('p', 'unrestricted-warning', '');
     warning.hidden = true;
     const confirm = checkBox(text.unrestrictedConfirm, (checked) => {
       approval.disabled = !nonce || !checked;
     });
     const reset = () => {
       nonce = undefined;
+      reviewPanel.hidden = true;
       warning.hidden = true;
       confirm.wrapper.hidden = true;
       confirm.input.checked = false;
@@ -268,8 +274,9 @@ function renderDeclarationPrimary(entry, offer) {
     };
     const review = primaryButton(text.reviewUnrestrictedApproval, () => entry.run(async () => {
       reset();
-      entry.confirming = true;
       const challenge = await api(`${endpoint}/confirmation`, { sha256: offer.sha256 });
+      entry.confirming = true;
+      reviewPanel.hidden = false;
       nonce = challenge.nonce;
       warning.textContent = challenge.warning;
       warning.hidden = false;
@@ -286,8 +293,11 @@ function renderDeclarationPrimary(entry, offer) {
         return api(endpoint, { sha256: offer.sha256, capability: 'unrestricted', nonce: confirmation });
       }, text.declarationApproved);
     });
+    const reviewActions = element('div', 'actions');
+    reviewActions.append(approval, button(text.cancelLogin, reset));
+    reviewPanel.append(warning, confirm.wrapper, reviewActions);
     reset();
-    primary.append(review, warning, confirm.wrapper, approval);
+    primary.append(review, reviewPanel);
   } else if (step === 'install') {
     primary.append(primaryButton(text.install, () => entry.run(
       () => api(`${endpoint}/install`, { sha256: offer.sha256 }), text.declarationInstalled)));
@@ -414,7 +424,7 @@ function unavailableGroup(providers) {
   group.append(element('summary', '', text.notAvailableOnChild));
   const list = element('ul', 'component-details');
   for (const provider of providers) {
-    const reason = provider.packages.length ? text.childTurnsUnavailable : text.cliPlatformUnavailable;
+    const reason = provider.reason || (provider.packages?.length ? text.childTurnsUnavailable : text.cliPlatformUnavailable);
     list.append(element('li', '', `${provider.name} — ${reason}`));
   }
   group.append(list);
@@ -443,6 +453,10 @@ function renderProviderPage() {
     const offer = offers.find((item) => !usedOffers.has(item) && offerMatches(item, provider));
     if (offer) {
       usedOffers.add(offer);
+      if (!offer.capability && offer.status !== 'approved') {
+        unavailable.push({ name: offer.display_name || offer.id, reason: text.declarationPlatformUnavailable(offer.platform || '') });
+        continue;
+      }
       const built = renderDeclarationCard(offer, declarationView, previousDeclarations.get(offer.id));
       container.append(built.card);
       declarationCards.set(offer.id, built.entry);
@@ -450,7 +464,9 @@ function renderProviderPage() {
     }
     const probe = installed.find((row) => row.id === provider.id);
     if (unavailableOnThisChild(provider, probe)) {
-      unavailable.push(provider);
+      if (!offers.some((offer) => offer.display_name?.trim().toLowerCase() === provider.name.trim().toLowerCase())) {
+        unavailable.push(provider);
+      }
       continue;
     }
     const previous = previousCards.get(provider.id);
@@ -510,6 +526,10 @@ function renderProviderPage() {
   }
   for (const offer of offers) {
     if (usedOffers.has(offer)) continue;
+    if (!offer.capability && offer.status !== 'approved') {
+      unavailable.push({ name: offer.display_name || offer.id, reason: text.declarationPlatformUnavailable(offer.platform || '') });
+      continue;
+    }
     const built = renderDeclarationCard(offer, declarationView, previousDeclarations.get(offer.id));
     container.append(built.card);
     declarationCards.set(offer.id, built.entry);

@@ -1,0 +1,89 @@
+{
+  "schema": "kotoyose.provider-data/1",
+  "identity": {
+    "id": "grok-build",
+    "profile_id": "grok-build",
+    "display_name": "Grok Build",
+    "publisher": "xAI"
+  },
+  "driver": {"id": "cli.acp", "contract_version": 1},
+  "native_skill_layout": "grok_agents_home_v1",
+  "platforms": {
+    "linux-x64": {
+      "max_capability": "mcp",
+      "install": {
+        "version": "1.0.89",
+        "urls": [
+          "https://x.ai/cli/grok-1.0.89-linux-x86_64",
+          "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-1.0.89-linux-x86_64"
+        ],
+        "sha256": "a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f",
+        "format": "raw",
+        "binary": "grok"
+      }
+    },
+    "windows-x64": {
+      "max_capability": "unrestricted",
+      "install": {
+        "version": "1.0.89",
+        "urls": [
+          "https://x.ai/cli/grok-1.0.89-windows-x86_64.exe",
+          "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-1.0.89-windows-x86_64.exe"
+        ],
+        "sha256": "24384a5a03d61d2c45416ef3d535bff5379fde4844b87a52c1bb882686e39469",
+        "format": "raw",
+        "binary": "grok.exe"
+      }
+    }
+  },
+  "connection_kinds": ["subscription"],
+  "network": {
+    "download_hosts": ["x.ai", "storage.googleapis.com"],
+    "login_hosts": ["accounts.x.ai", "auth.x.ai", "x.ai", "grok.com"],
+    "runtime_hosts": ["cli-chat-proxy.grok.com", "auth.x.ai"]
+  },
+  "operations": {
+    "login": {"argv": ["login", "--device-auth"], "flow": "device_code", "timeout_seconds": 300},
+    "status": {"argv": ["models"], "signed_out_pattern": "(?i)\\bnot authenticated\\b", "timeout_seconds": 8}
+  },
+  "acp": {
+    "argv": [
+      "--sandbox", "read-only", "--permission-mode", "dontAsk", "--no-subagents", "--disable-web-search",
+      "--tools", "Read,Grep,Glob",
+      "--allow", "Read", "--allow", "Grep", "--allow", "Glob",
+      "--deny", "Bash", "--deny", "Edit", "--deny", "Write", "--deny", "MCPTool",
+      "agent", "--no-leader", "--model", "{model}", "stdio"
+    ],
+    "write_argv": [
+      "--sandbox", "strict", "--no-subagents", "--disable-web-search",
+      "agent", "--no-leader", "--model", "{model}", "stdio"
+    ],
+    "unrestricted_argv": [
+      "--no-subagents", "--disable-web-search",
+      "agent", "--no-leader", "--model", "{model}", "stdio"
+    ],
+    "placeholders": ["model"],
+    "mcp_guard": "grok_servers_updated_v1"
+  },
+  "isolation": {
+    "private_home": true,
+    "keep_home_env": ["GROK_HOME"],
+    "env": {
+      "GROK_CLAUDE_HOOKS_ENABLED": "0",
+      "GROK_CLAUDE_MCPS_ENABLED": "0",
+      "GROK_CLAUDE_SKILLS_ENABLED": "0",
+      "GROK_CLAUDE_RULES_ENABLED": "0",
+      "GROK_CLAUDE_AGENTS_ENABLED": "0",
+      "GROK_CURSOR_HOOKS_ENABLED": "0",
+      "GROK_CURSOR_MCPS_ENABLED": "0",
+      "GROK_CURSOR_SKILLS_ENABLED": "0",
+      "GROK_CURSOR_RULES_ENABLED": "0",
+      "GROK_CURSOR_AGENTS_ENABLED": "0",
+      "GROK_CODEX_HOOKS_ENABLED": "0",
+      "GROK_CODEX_MCPS_ENABLED": "0",
+      "GROK_CODEX_SKILLS_ENABLED": "0",
+      "GROK_CODEX_RULES_ENABLED": "0",
+      "GROK_CODEX_AGENTS_ENABLED": "0"
+    }
+  }
+}

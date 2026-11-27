@@ -14,6 +14,8 @@ config.example.yml
 execution.example.json
 conversation.example.json
 examples/provider-declarations/grok-build.json
+examples/provider-declarations/agy-cli.json
+examples/provider-declarations/cursor-cli.json
 .env.example
 # docs は公開するものだけを列挙する。設計・ADR・運用手順・リリース手順・作業履歴は公開しない。
 docs/README.md

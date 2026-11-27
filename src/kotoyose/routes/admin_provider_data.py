@@ -10,7 +10,10 @@ from ..child_server import active_child_hub
 from ..cli_install_spec import platform_key
 from ..config import get_config
 from ..provider_data import MAX_DOCUMENT
-from ..provider_data_host import Catalog, host_catalog, reload_catalog, remove_declaration, upload_declaration
+from ..provider_data_host import (
+    Catalog, bundled_declarations, host_catalog, install_bundled_declaration,
+    reload_catalog, remove_declaration, upload_declaration,
+)
 
 router = APIRouter(
     prefix="/admin",
@@ -31,6 +34,20 @@ def _view(catalog: Catalog) -> dict:
     return {
         "error": catalog.error,
         "startup_warnings": list(get_config().startup_warnings),
+        "bundled": [
+            {
+                "id": row.id, "profile_id": row.profile_id, "display_name": row.name,
+                "publisher": row.publisher, "driver": row.driver, "contract_version": row.contract_version,
+                "version": row.install.version, "sha256": row.sha256, "document": row.document,
+                "platforms": [
+                    {"platform": p.artifact.platform, "max_capability": p.capability, "binary": p.binary}
+                    for p in row.platforms
+                ],
+                "installed": any(active.id == row.id for active in catalog.rows),
+                "up_to_date": any(active.id == row.id and active.sha256 == row.sha256 for active in catalog.rows),
+            }
+            for row in bundled_declarations()
+        ],
         "declarations": [
             {
                 "id": row.id,
@@ -40,6 +57,12 @@ def _view(catalog: Catalog) -> dict:
                 "sha256": row.sha256,
                 "driver": row.driver,
                 "contract_version": row.contract_version,
+                "document": row.document,
+                "platforms": [
+                    {"platform": p.artifact.platform, "max_capability": p.capability,
+                     "binary": p.binary, "version": row.install.version}
+                    for p in row.platforms
+                ],
                 "commands": row.commands(key),
                 "artifacts": [
                     {
@@ -120,3 +143,42 @@ async def delete_provider_declaration(provider: str, request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return await _publish(catalog)
+
+
+@router.post("/provider-declarations/bundled/{provider}", summary="Offer a bundled provider declaration")
+async def install_bundled_provider_declaration(provider: str, request: Request):
+    _owner(request)
+    try:
+        catalog = install_bundled_declaration(provider)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="bundled provider declaration was not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return await _publish(catalog)
+
+
+@router.post("/provider-declarations/{provider}/bump-version", summary="Preview or apply a pinned version update")
+async def bump_provider_declaration_version(provider: str, request: Request):
+    """所有者の明示指定で版とハッシュを更新し、apply 時のみ保存・配信する。"""
+    from ..provider_data_bump import bump_declaration_version
+
+    _owner(request)
+    row = next((row for row in host_catalog().rows if row.id == provider), None)
+    if row is None:
+        row = next((row for row in bundled_declarations() if row.id == provider), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="provider declaration was not found")
+    try:
+        body = await request.json()
+        if (not isinstance(body, dict) or not {"version"} <= body.keys() <= {"version", "url_overrides", "apply"}
+                or type(body.get("apply", False)) is not bool):
+            raise ValueError("invalid version bump request")
+        result = await bump_declaration_version(
+            row.document, body["version"], url_overrides=body.get("url_overrides"),
+        )
+        if body.get("apply", False):
+            catalog = upload_declaration(result["document"].encode("utf-8"))
+            return {**result, "applied": True, "catalog": await _publish(catalog)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {**result, "applied": False}

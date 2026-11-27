@@ -6,6 +6,7 @@ use std::{
 };
 
 pub enum Event<'a> {
+    SettingsOpened(&'a str),
     Connecting,
     Connected,
     Reconnecting {
@@ -96,6 +97,7 @@ fn append(home: &Path, line: &str) -> io::Result<()> {
 
 pub fn record(home: &Path, event: Event<'_>) {
     let text = match event {
+        Event::SettingsOpened(reason) => format!("settings opened ({reason})"),
         Event::Connecting => "connecting to host".into(),
         Event::Connected => "connected to host".into(),
         Event::Reconnecting { delay, reason } => {

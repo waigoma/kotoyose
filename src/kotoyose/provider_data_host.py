@@ -221,3 +221,23 @@ def remove_declaration(provider: str) -> Catalog:
         catalog = _build_catalog(entries)
         path.unlink()
         return _publish(catalog)
+
+
+def bundled_declarations() -> tuple[Declaration, ...]:
+    """同梱 JSON を検証し、宣言 ID 順で返す。"""
+    directory = Path(__file__).resolve().parent / "provider_declarations"
+    rows = (parse_declaration(path.read_bytes()) for path in directory.glob("*.json"))
+    return tuple(sorted(rows, key=lambda row: row.id))
+
+
+def bundled_declaration_bytes(provider: str) -> bytes:
+    """同梱 ID の元の UTF-8 バイト列を返す。未登録 ID は FileNotFoundError。"""
+    for row in bundled_declarations():
+        if row.id == provider:
+            return row.document.encode("utf-8")
+    raise FileNotFoundError(provider)
+
+
+def install_bundled_declaration(provider: str) -> Catalog:
+    """同梱宣言を通常のアップロードと同じ検証・保存処理で公開する。"""
+    return upload_declaration(bundled_declaration_bytes(provider))

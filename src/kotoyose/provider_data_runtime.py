@@ -18,6 +18,7 @@ import re
 import select
 import stat
 import subprocess
+import tarfile
 import tempfile
 import threading
 import time
@@ -334,6 +335,27 @@ def _cached_digest(path: Path, info: os.stat_result) -> str:
     return digest
 
 
+def _executable_path(release: Path, platform) -> Path:
+    return release / (platform.artifact.entrypoint or platform.binary)
+
+
+def _extract_archive(download: Path, stage: Path, platform) -> Path:
+    from .cli_installer import _extract
+
+    binary = _executable_path(stage, platform)
+    try:
+        _extract(download, platform.artifact, stage, binary)
+    except (OSError, EOFError, tarfile.TarError) as exc:
+        raise ValueError("invalid artifact archive") from exc
+    for path in stage.rglob("*"):
+        if path == download:
+            continue
+        path.chmod(0o700 if path.is_dir() else 0o500 if path.stat().st_mode & 0o111 else 0o400)
+    binary.chmod(0o500)
+    download.unlink()
+    return binary
+
+
 def installed_path(row: Declaration, child_home: Path | None) -> Path | None:
     try:
         platform = row.platform(platform_key())
@@ -344,7 +366,7 @@ def installed_path(row: Declaration, child_home: Path | None) -> Path | None:
             return None
         private_directory(release)
         record = json.loads(private_read(release / "manifest.json", 4096))
-        path = release / platform.binary
+        path = _executable_path(release, platform)
         if _windows():
             from .provider_data_windows import storage_file
 
@@ -357,7 +379,10 @@ def installed_path(row: Declaration, child_home: Path | None) -> Path | None:
             not isinstance(record, dict)
             or record.get("artifact") != platform.artifact.digest
             or record.get("version") != row.install.version
-            or record.get("executable") != platform.artifact.digest.removeprefix("sha256:")
+            or (platform.artifact.format == "raw"
+                and record.get("executable") != platform.artifact.digest.removeprefix("sha256:"))
+            or (platform.artifact.format == "tar.gz"
+                and (not isinstance(record.get("executable"), str) or len(record["executable"]) != 64))
         ):
             return None
         if _windows() or platform.supports(UNRESTRICTED):
@@ -401,14 +426,14 @@ def install_stream(row: Declaration, payload: BinaryIO, *, child_home: Path | No
     ensure_executable(row, child_home)
     platform = row.platform(platform_key())
     assert platform is not None
-    if platform.artifact.format != "raw":
+    if platform.artifact.format not in ("raw", "tar.gz"):
         raise ValueError("archive install is not enabled for this local artifact")
     release = _release(row, child_home)
     with locked(release.parent):
         with tempfile.TemporaryDirectory(dir=release.parent, prefix=".install-") as temporary:
             stage = Path(temporary)
             binary = stage / platform.binary
-            download = stage / "artifact.part" if _windows() else binary
+            download = stage / "artifact.part" if _windows() or platform.artifact.format == "tar.gz" else binary
             with download.open("xb") as destination:
                 size = 0
                 while chunk := payload.read(1024 * 1024):
@@ -426,27 +451,32 @@ def install_stream(row: Declaration, payload: BinaryIO, *, child_home: Path | No
                 return existing
             if release.exists() or release.is_symlink():
                 raise ValueError("managed release already exists with invalid contents")
-            if _windows():
+            if platform.artifact.format == "tar.gz":
+                binary = _extract_archive(download, stage, platform)
+            elif _windows():
                 from .provider_data_windows import storage_file
 
                 storage_file(download)
                 download.rename(binary)
             else:
                 binary.chmod(0o500)
+            executable_digest = _digest(binary)
+            if platform.artifact.format == "raw" and executable_digest != actual:
+                raise ValueError("staged artifact changed before the version check")
             output = _run(binary, ("--version",), timeout=15, child_home=child_home, row=row, check=True)
             text = output.stdout[:1024].decode("utf-8", errors="replace")
             if not re.search(rf"(?<![\w.-])v?{re.escape(row.install.version)}(?![\w.-])", text):
                 raise ValueError("artifact reported an unexpected version")
-            if _digest(binary) != actual:
+            if _digest(binary) != executable_digest:
                 raise ValueError("staged artifact changed during the version check")
             ensure_executable(row, child_home)
             atomic_write(stage / "manifest.json", json.dumps({
                 "url": source, "version": row.install.version, "artifact": platform.artifact.digest,
-                "executable": actual, "platform": platform.artifact.platform,
+                "executable": executable_digest, "platform": platform.artifact.platform,
                 "verified_at": datetime.now(timezone.utc).isoformat(),
             }).encode(), child=child_home is not None)
             stage.rename(release)
-        installed = release / platform.binary
+        installed = _executable_path(release, platform)
         if _windows():
             _harden_windows_executable(installed)
     if installed_path(row, child_home) != installed:

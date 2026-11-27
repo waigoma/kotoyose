@@ -27,16 +27,27 @@ impl Mode {
         let service_reopen = crate::update_linux::take_reopen(home);
         #[cfg(not(target_os = "linux"))]
         let service_reopen = false;
-        if service_reopen
-            || matches!(self, Self::Preview)
-            || enrollment::needed(home)
-            || std::env::var_os(update::OPEN_SETTINGS).as_deref() == Some(std::ffi::OsStr::new("1"))
-            || (cfg!(windows)
-                && std::env::args_os()
-                    .nth(1)
-                    .is_some_and(|arg| arg == "--open-settings"))
+        let reason = if service_reopen {
+            Some("initial:reopen")
+        } else if matches!(self, Self::Preview) {
+            Some("initial:preview")
+        } else if enrollment::needed(home) {
+            Some("initial:unregistered")
+        } else if std::env::var_os(update::OPEN_SETTINGS).as_deref()
+            == Some(std::ffi::OsStr::new("1"))
         {
-            let _ = commands.try_send(Request::Open);
+            Some("initial:env")
+        } else if cfg!(windows)
+            && std::env::args_os()
+                .nth(1)
+                .is_some_and(|arg| arg == "--open-settings")
+        {
+            Some("initial:arg")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            let _ = commands.try_send(Request::Open(reason));
         }
     }
 }
@@ -57,7 +68,7 @@ pub enum ActionError {
 type ActionResult = Result<String, ActionError>;
 
 pub enum Request {
-    Open,
+    Open(&'static str),
     Action {
         action: Action,
         interrupt: bool,
@@ -236,7 +247,8 @@ pub async fn run(
             };
             match request {
                 None => break (Action::Exit { restart: false }, None),
-                Some(Request::Open) => {
+                Some(Request::Open(reason)) => {
+                    local_log::record(&home, local_log::Event::SettingsOpened(reason));
                     if server.as_ref().is_none_or(web::Server::finished) {
                         match web::Server::start(
                             home.clone(),

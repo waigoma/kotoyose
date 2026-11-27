@@ -188,6 +188,8 @@ export const api = {
   putSecret: (name, value, purpose = "") => request("PUT", `/admin/secrets/${enc(name)}`, { value, purpose }),
   deleteSecret: (name) => request("DELETE", `/admin/secrets/${enc(name)}`),
   providerDeclarations: () => request("GET", "/admin/provider-declarations"),
+  installBundledProviderDeclaration: (id) => request("POST", `/admin/provider-declarations/bundled/${enc(id)}`),
   uploadProviderDeclaration: (bytes) => request("POST", "/admin/provider-declarations", undefined, { raw: bytes }),
+  bumpProviderDeclarationVersion: (id, payload) => request("POST", `/admin/provider-declarations/${enc(id)}/bump-version`, payload),
   deleteProviderDeclaration: (id) => request("DELETE", `/admin/provider-declarations/${enc(id)}`),
 };

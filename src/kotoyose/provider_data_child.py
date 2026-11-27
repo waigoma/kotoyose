@@ -318,7 +318,7 @@ def preview(home: Path) -> dict:
             "contract_version": row.contract_version, "status": state,
             "capability": target.capability if target is not None else None,
             "approved_capability": current_approval.capability if state == "approved" else None,
-            "can_install": state == "approved" and target is not None and target.artifact.format == "raw",
+            "can_install": state == "approved" and target is not None and target.artifact.format in ("raw", "tar.gz"),
             "installed": state == "approved" and installed_path(row, home) is not None,
             "local_login": target is not None and (platform.startswith("linux-") or target.supports(UNRESTRICTED)),
             "platform": platform, "host_fingerprint": fingerprint,
